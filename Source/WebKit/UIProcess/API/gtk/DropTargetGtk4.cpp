@@ -312,9 +312,14 @@ void DropTarget::didLoadData()
         return;
 
     // Build the URI list after collecting everything from transferred files,
-    // and the uri-list mimetype
+    // and the uri-list mimetype. External drops are a user grant: promote
+    // file:// lines into filenames so dataTransfer.files can work. Web-authored
+    // uri-list never reaches this UIProcess path with attacker-chosen paths
+    // unless the user actually dropped them from another app.
     if (!m_uriListBuilder.isEmpty()) {
-        m_selectionData->setURIList(m_uriListBuilder.toString());
+        auto uriList = m_uriListBuilder.toString();
+        m_selectionData->setURIList(uriList);
+        m_selectionData->setFilenamesFromURIList(uriList);
         m_uriListBuilder.clear();
     }
 

@@ -196,8 +196,12 @@ void DropTarget::dataReceived(IntPoint&& position, GtkSelectionData* data, unsig
     case DropTargetType::URIList: {
         gint length;
         const auto* uriListData = gtk_selection_data_get_data_with_length(data, &length);
-        if (length > 0)
-            m_selectionData->setURIList(String(unsafeMakeSpan(uriListData, length)));
+        if (length > 0) {
+            // UIProcess external drop: user is granting these paths.
+            String uriList(unsafeMakeSpan(uriListData, length));
+            m_selectionData->setURIList(uriList);
+            m_selectionData->setFilenamesFromURIList(uriList);
+        }
         break;
     }
     case DropTargetType::NetscapeURL: {

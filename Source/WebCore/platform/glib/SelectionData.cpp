@@ -58,22 +58,34 @@ void SelectionData::setText(const String& newText)
     replaceNonBreakingSpaceWithSpace(m_text);
 }
 
-void SelectionData::setURIList(const String& uriListString)
+static void updateURLFromURIList(const String& uriListString, URL& url, bool& urlIsSet)
 {
-    m_uriList = uriListString;
-
-    // This code is originally from: platform/chromium/ChromiumDataObject.cpp.
-    // FIXME: We should make this code cross-platform eventually.
+    if (urlIsSet)
+        return;
 
     // Line separator is \r\n per RFC 2483 - however, for compatibility
     // reasons we also allow just \n here.
+    for (auto& line : uriListString.split('\n')) {
+        line = line.trim(deprecatedIsSpaceOrNewline);
+        if (line.isEmpty())
+            continue;
+        if (line[0] == '#')
+            continue;
 
-    // Process the input and copy the first valid URL into the url member.
-    // In case no URLs can be found, subsequent calls to getData("URL")
-    // will get an empty string. This is in line with the HTML5 spec (see
-    // "The DragEvent and DataTransfer interfaces"). Also extract all filenames
-    // from the URI list.
-    bool setURL = hasURL();
+        URL parsed { line };
+        if (!parsed.isValid())
+            continue;
+
+        url = WTFMove(parsed);
+        urlIsSet = true;
+        return;
+    }
+}
+
+Vector<String> SelectionData::filenamesFromURIList(const String& uriListString)
+{
+    // This code is originally from: platform/chromium/ChromiumDataObject.cpp.
+    Vector<String> filenames;
     for (auto& line : uriListString.split('\n')) {
         line = line.trim(deprecatedIsSpaceOrNewline);
         if (line.isEmpty())
@@ -82,18 +94,42 @@ void SelectionData::setURIList(const String& uriListString)
             continue;
 
         URL url { line };
-        if (url.isValid()) {
-            if (!setURL) {
-                m_url = url;
-                setURL = true;
-            }
+        if (!url.isValid())
+            continue;
 
-            GUniqueOutPtr<GError> error;
-            GUniquePtr<gchar> filename(g_filename_from_uri(line.utf8().data(), 0, &error.outPtr()));
-            if (!error && filename)
-                m_filenames.append(String::fromUTF8(filename.get()));
-        }
+        GUniqueOutPtr<GError> error;
+        GUniquePtr<gchar> filename(g_filename_from_uri(line.utf8().data(), 0, &error.outPtr()));
+        if (!error && filename)
+            filenames.append(String::fromUTF8(filename.get()));
     }
+    return filenames;
+}
+
+void SelectionData::setURIList(const String& uriListString)
+{
+    m_uriList = uriListString;
+
+    // Process the input and copy the first valid URL into the url member.
+    // In case no URLs can be found, subsequent calls to getData("URL")
+    // will get an empty string. This is in line with the HTML5 spec (see
+    // "The DragEvent and DataTransfer interfaces").
+    //
+    // Intentionally do not promote file:// URIs into m_filenames here.
+    // Script can write text/uri-list via DataTransfer.setData; treating those
+    // strings as user-granted filesystem paths is the CVE-2025-13947 hole.
+    // Trusted UIProcess drop/clipboard code must call setFilenames* explicitly.
+    bool setURL = hasURL();
+    updateURLFromURIList(uriListString, m_url, setURL);
+}
+
+void SelectionData::setFilenames(Vector<String>&& filenames)
+{
+    m_filenames = WTFMove(filenames);
+}
+
+void SelectionData::setFilenamesFromURIList(const String& uriListString)
+{
+    m_filenames = filenamesFromURIList(uriListString);
 }
 
 void SelectionData::setURL(const URL& url, const String& label)

@@ -46,12 +46,21 @@ public:
     bool hasURL() const { return !m_url.isEmpty() && m_url.isValid(); }
     void clearURL() { m_url = URL(); }
 
+    // Sets the uri-list text (and the primary URL). Never promotes file:// URIs into
+    // m_filenames. Filenames are a separate trust channel used for dataTransfer.files.
     void setURIList(const String&);
     const String& uriList() const LIFETIME_BOUND { return m_uriList; }
     const Vector<String>& filenames() const LIFETIME_BOUND { return m_filenames; }
     bool hasURIList() const { return !m_uriList.isEmpty(); }
     bool hasFilenames() const { return !m_filenames.isEmpty(); }
     void clearURIList() { m_uriList = emptyString(); }
+
+    // Trusted UIProcess paths only (external drops, portal file lists). Web-authored
+    // setData("text/uri-list", ...) must not call these.
+    void setFilenames(Vector<String>&&);
+    void setFilenamesFromURIList(const String&);
+    void clearFilenames() { m_filenames.clear(); }
+    static Vector<String> filenamesFromURIList(const String&);
 
     void setImage(RefPtr<Image>&& newImage) { m_image = WTF::move(newImage); }
     const RefPtr<Image>& image() const { return m_image; }

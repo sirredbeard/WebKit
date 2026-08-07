@@ -43,6 +43,15 @@ using namespace WebCore;
 
 enum DropTargetType { Markup, Text, URIList, NetscapeURL, SmartPaste };
 
+static OptionSet<DragApplicationFlags> applicationFlagsForDrop(GdkDrop* drop)
+{
+    OptionSet<DragApplicationFlags> flags;
+    // Non-null when the drag originates in this application (in-process web source).
+    if (drop && gdk_drop_get_drag(drop))
+        flags.add(DragApplicationFlags::IsSource);
+    return flags;
+}
+
 DropTarget::DropTarget(GtkWidget* webView)
     : m_webView(webView)
 {
@@ -354,7 +363,7 @@ void DropTarget::enter(IntPoint&& position, unsigned)
     ASSERT(page);
     page->resetCurrentDragInformation();
 
-    DragData dragData(&m_selectionData.value(), *m_position, *m_position, gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())));
+    DragData dragData(&m_selectionData.value(), *m_position, *m_position, gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())), applicationFlagsForDrop(m_drop.get()));
     page->dragEntered(dragData);
 }
 
@@ -367,7 +376,7 @@ void DropTarget::update(IntPoint&& position, unsigned)
     auto* page = webkitWebViewBaseGetPage(WEBKIT_WEB_VIEW_BASE(m_webView));
     ASSERT(page);
 
-    DragData dragData(&m_selectionData.value(), *m_position, *m_position, gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())));
+    DragData dragData(&m_selectionData.value(), *m_position, *m_position, gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())), applicationFlagsForDrop(m_drop.get()));
     page->dragUpdated(dragData);
 }
 
@@ -395,7 +404,7 @@ void DropTarget::leave()
     ASSERT(page);
 
     auto position = m_position.value_or(IntPoint());
-    DragData dragData(&m_selectionData.value(), position, position, { });
+    DragData dragData(&m_selectionData.value(), position, position, { }, applicationFlagsForDrop(m_drop.get()));
     page->dragExited(dragData);
     page->resetCurrentDragInformation();
 
@@ -414,7 +423,7 @@ void DropTarget::drop(IntPoint&& position, unsigned)
     auto* page = webkitWebViewBaseGetPage(WEBKIT_WEB_VIEW_BASE(m_webView));
     ASSERT(page);
 
-    DragData dragData(&m_selectionData.value(), *m_position, *m_position, gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())));
+    DragData dragData(&m_selectionData.value(), *m_position, *m_position, gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())), applicationFlagsForDrop(m_drop.get()));
     page->performDragOperation(dragData, { }, { }, { });
     gdk_drop_finish(m_drop.get(), gdk_drop_get_actions(m_drop.get()));
 

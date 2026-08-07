@@ -61,6 +61,9 @@ public:
     void setFilenamesFromURIList(const String&);
     void clearFilenames() { m_filenames.clear(); }
     static Vector<String> filenamesFromURIList(const String&);
+    // Drops file:// lines from a uri-list so web drag sources cannot export
+    // path-shaped payloads that look like user file grants to other apps.
+    static String uriListWithoutFilenames(const String&);
 
     void setImage(RefPtr<Image>&& newImage) { m_image = WTF::move(newImage); }
     const RefPtr<Image>& image() const { return m_image; }

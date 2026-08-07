@@ -132,6 +132,31 @@ void SelectionData::setFilenamesFromURIList(const String& uriListString)
     m_filenames = filenamesFromURIList(uriListString);
 }
 
+String SelectionData::uriListWithoutFilenames(const String& uriListString)
+{
+    StringBuilder builder;
+    for (auto& line : uriListString.split('\n')) {
+        auto trimmed = line.trim(deprecatedIsSpaceOrNewline);
+        if (trimmed.isEmpty())
+            continue;
+        if (trimmed[0] == '#')
+            continue;
+
+        URL url { trimmed };
+        if (url.isValid()) {
+            GUniqueOutPtr<GError> error;
+            GUniquePtr<gchar> filename(g_filename_from_uri(trimmed.utf8().data(), 0, &error.outPtr()));
+            if (!error && filename)
+                continue;
+        }
+
+        if (!builder.isEmpty())
+            builder.append("\r\n"_s);
+        builder.append(trimmed);
+    }
+    return builder.toString();
+}
+
 void SelectionData::setURL(const URL& url, const String& label)
 {
     m_url = url;

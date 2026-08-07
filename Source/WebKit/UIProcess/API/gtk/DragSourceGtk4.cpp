@@ -82,13 +82,19 @@ void DragSource::begin(SelectionData&& selectionData, OptionSet<DragOperation> o
         providers.append(gdk_content_provider_new_for_bytes("text/html", bytes.get()));
     }
 
+    // Never export SelectionData filenames as a GdkFileList from a web drag.
+    // Also strip file:// lines from uri-list so other apps do not treat
+    // script-supplied paths as a user file grant.
     if (m_selectionData->hasURIList()) {
-        CString uriList = m_selectionData->uriList().utf8();
-        GRefPtr<GBytes> bytes = adoptGRef(g_bytes_new(uriList.data(), uriList.length()));
-        providers.append(gdk_content_provider_new_for_bytes("text/uri-list", bytes.get()));
+        auto sanitizedURIList = SelectionData::uriListWithoutFilenames(m_selectionData->uriList());
+        if (!sanitizedURIList.isEmpty()) {
+            CString uriList = sanitizedURIList.utf8();
+            GRefPtr<GBytes> bytes = adoptGRef(g_bytes_new(uriList.data(), uriList.length()));
+            providers.append(gdk_content_provider_new_for_bytes("text/uri-list", bytes.get()));
+        }
     }
 
-    if (m_selectionData->hasURL()) {
+    if (m_selectionData->hasURL() && !m_selectionData->url().protocolIsFile()) {
         CString urlString = m_selectionData->url().string().utf8();
         gchar* url = g_strdup_printf("%s\n%s", urlString.data(), m_selectionData->hasText() ? m_selectionData->text().utf8().data() : urlString.data());
         IGNORE_CLANG_WARNINGS_BEGIN("unsafe-buffer-usage-in-libc-call")

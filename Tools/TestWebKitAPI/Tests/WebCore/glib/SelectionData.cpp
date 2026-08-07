@@ -29,6 +29,7 @@
 
 #include "Helpers/Test.h"
 
+#include <WebCore/DragData.h>
 #include <WebCore/SelectionData.h>
 #include <wtf/URL.h>
 #include <wtf/text/WTFString.h>
@@ -105,6 +106,34 @@ TEST(SelectionData, ClearFilenames)
     EXPECT_TRUE(data.hasFilenames());
     data.clearFilenames();
     EXPECT_FALSE(data.hasFilenames());
+}
+
+TEST(SelectionData, URIListWithoutFilenamesStripsFileURLs)
+{
+    auto sanitized = SelectionData::uriListWithoutFilenames(
+        "file:///etc/passwd\r\nhttps://example.com/a\r\nfile:///tmp/x\r\n"_s);
+    EXPECT_EQ(sanitized, "https://example.com/a"_s);
+}
+
+TEST(SelectionData, URIListWithoutFilenamesEmptyWhenOnlyFiles)
+{
+    auto sanitized = SelectionData::uriListWithoutFilenames("file:///tmp/only\n"_s);
+    EXPECT_TRUE(sanitized.isEmpty());
+}
+
+TEST(SelectionData, DragDataIsSourceDeniesFilenameAccess)
+{
+    SelectionData selection;
+    selection.setFilenames(Vector<String> { "/tmp/trusted-looking.txt"_s });
+
+    DragData external(&selection, { }, { }, { });
+    EXPECT_TRUE(external.containsFiles());
+    EXPECT_EQ(external.numberOfFiles(), 1u);
+
+    DragData local(&selection, { }, { }, { }, DragApplicationFlags::IsSource);
+    EXPECT_FALSE(local.containsFiles());
+    EXPECT_EQ(local.numberOfFiles(), 0u);
+    EXPECT_TRUE(local.asFilenames().isEmpty());
 }
 
 } // namespace TestWebKitAPI

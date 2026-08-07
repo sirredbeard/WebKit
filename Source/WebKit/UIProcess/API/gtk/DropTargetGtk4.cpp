@@ -113,6 +113,8 @@ void DropTarget::accept(GdkDrop* drop, std::optional<WebCore::IntPoint> position
     m_dataRequestCount = 0;
     m_cancellable = adoptGRef(g_cancellable_new());
     m_uriListBuilder.clear();
+    m_portalFilenames.clear();
+    m_transferredFilesFromPortal = false;
 
     // WebCore needs the selection data to decide, so we need to preload the
     // data of targets we support. Once all data requests are done we start
@@ -148,15 +150,15 @@ void DropTarget::accept(GdkDrop* drop, std::optional<WebCore::IntPoint> position
         "org.webkitgtk.WebKit.custom-pasteboard-data"_s,
     };
 
-    bool transferredFilesFromPortal = false;
     for (const ASCIILiteral& mimeType : supportedMimeTypes) {
         if (!gdk_content_formats_contain_mime_type(formats, mimeType))
             continue;
 
         // Reading from the File Transfer portal is a bit special. When either portal
-        // mimetypes are present, GTK serializes them using the GdkFileList type. If
-        // this type is present, ignore file:// URIs from the "text/uri-list" later on.
-        if (!transferredFilesFromPortal && std::ranges::find(portalMIMETypes, mimeType) != portalMIMETypes.end()) {
+        // mimetypes are present, GTK serializes them using the GdkFileList type. That
+        // list is the trusted filename grant. Prefer it over file:// lines in
+        // text/uri-list so a parallel untrusted uri-list cannot widen the set.
+        if (!m_transferredFilesFromPortal && std::ranges::find(portalMIMETypes, mimeType) != portalMIMETypes.end()) {
             ASSERT(gdk_content_formats_contain_gtype(formats, GDK_TYPE_FILE_LIST));
 
             m_dataRequestCount++;
@@ -164,21 +166,25 @@ void DropTarget::accept(GdkDrop* drop, std::optional<WebCore::IntPoint> position
                 if (g_cancellable_is_cancelled(cancellable.get()))
                     return;
 
-                // Convert files transferred by the File Transfer portal into URIs
                 for (auto& fileUri : fileUris) {
                     if (!m_uriListBuilder.isEmpty())
                         m_uriListBuilder.append("\r\n"_s);
                     m_uriListBuilder.append(fileUri);
+
+                    GUniqueOutPtr<GError> error;
+                    GUniquePtr<gchar> filename(g_filename_from_uri(fileUri.utf8().data(), 0, &error.outPtr()));
+                    if (!error && filename)
+                        m_portalFilenames.append(String::fromUTF8(filename.get()));
                 }
 
                 didLoadData();
             });
-            transferredFilesFromPortal = true;
+            m_transferredFilesFromPortal = true;
             continue;
         }
 
         m_dataRequestCount++;
-        loadData(mimeType, [this, transferredFilesFromPortal, mimeType, cancellable = m_cancellable](GRefPtr<GBytes>&& data) {
+        loadData(mimeType, [this, mimeType, cancellable = m_cancellable](GRefPtr<GBytes>&& data) {
             if (g_cancellable_is_cancelled(cancellable.get()))
                 return;
 
@@ -217,9 +223,10 @@ void DropTarget::accept(GdkDrop* drop, std::optional<WebCore::IntPoint> position
                         if (line[0] == '#')
                             continue;
 
-                        // If we have file transfers from the portal, ignore file:// URIs.
+                        // Portal GdkFileList already owns the filename grant. Skip
+                        // file:// from uri-list so it cannot add extra paths.
                         URL url { line };
-                        if (transferredFilesFromPortal && url.isValid()) {
+                        if (m_transferredFilesFromPortal && url.isValid()) {
                             GUniqueOutPtr<GError> error;
                             GUniquePtr<gchar> filename(g_filename_from_uri(line.utf8().data(), 0, &error.outPtr()));
                             if (!error && filename)
@@ -312,16 +319,19 @@ void DropTarget::didLoadData()
         return;
 
     // Build the URI list after collecting everything from transferred files,
-    // and the uri-list mimetype. External drops are a user grant: promote
-    // file:// lines into filenames so dataTransfer.files can work. Web-authored
-    // uri-list never reaches this UIProcess path with attacker-chosen paths
-    // unless the user actually dropped them from another app.
+    // and the uri-list mimetype. Filename grants:
+    // 1) Portal / GdkFileList paths win when present (sandbox-aware user grant).
+    // 2) Otherwise classic external uri-list file:// lines (file manager drops).
     if (!m_uriListBuilder.isEmpty()) {
         auto uriList = m_uriListBuilder.toString();
         m_selectionData->setURIList(uriList);
-        m_selectionData->setFilenamesFromURIList(uriList);
+        if (!m_portalFilenames.isEmpty())
+            m_selectionData->setFilenames(WTFMove(m_portalFilenames));
+        else
+            m_selectionData->setFilenamesFromURIList(uriList);
         m_uriListBuilder.clear();
-    }
+    } else if (!m_portalFilenames.isEmpty())
+        m_selectionData->setFilenames(WTFMove(m_portalFilenames));
 
     m_cancellable = nullptr;
 
@@ -393,6 +403,9 @@ void DropTarget::leave()
     m_position = std::nullopt;
     m_selectionData = std::nullopt;
     m_cancellable = nullptr;
+    m_uriListBuilder.clear();
+    m_portalFilenames.clear();
+    m_transferredFilesFromPortal = false;
 }
 
 void DropTarget::drop(IntPoint&& position, unsigned)
@@ -406,6 +419,8 @@ void DropTarget::drop(IntPoint&& position, unsigned)
     gdk_drop_finish(m_drop.get(), gdk_drop_get_actions(m_drop.get()));
 
     m_drop = nullptr;
+    m_portalFilenames.clear();
+    m_transferredFilesFromPortal = false;
 }
 
 } // namespace WebKit

@@ -87,6 +87,8 @@ private:
 #if USE(GTK4)
     GRefPtr<GCancellable> m_cancellable;
     StringBuilder m_uriListBuilder;
+    Vector<String> m_portalFilenames;
+    bool m_transferredFilesFromPortal { false };
 #else
     RunLoop::Timer m_leaveTimer;
 #endif

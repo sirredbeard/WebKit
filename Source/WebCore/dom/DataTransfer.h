@@ -125,8 +125,16 @@ private:
     {
 #if PLATFORM(COCOA)
         return !forDrag() || forFileDrag();
+#elif PLATFORM(GTK) || PLATFORM(WPE)
+        // After CVE-2025-13947, non-Cocoa ports disabled all file access. GTK/WPE now
+        // keep filenames off the web-writable uri-list path (SelectionData) and only
+        // populate them from trusted UIProcess drops. Re-enable contents solely for
+        // DragAndDropFiles. Paste stays off here: GTK3 clipboard still maps uri-list
+        // to paths, and that needs its own audit before matching Cocoa paste policy.
+        // See webkit.org/b/271957 and webkit.org/b/303434.
+        return forFileDrag();
 #else
-        // Check https://webkit.org/b/271957 before allowing file access for your port.
+        // Other non-Cocoa ports have not been re-audited for 271957.
         return false;
 #endif
     }

@@ -124,6 +124,7 @@ void DropTarget::accept(GdkDrop* drop, std::optional<WebCore::IntPoint> position
     m_uriListBuilder.clear();
     m_portalFilenames.clear();
     m_transferredFilesFromPortal = false;
+    m_pendingDrop = false;
 
     // WebCore needs the selection data to decide, so we need to preload the
     // data of targets we support. Once all data requests are done we start
@@ -349,6 +350,14 @@ void DropTarget::didLoadData()
         return;
     }
 
+    // Deferred drop waited for async load (enter/update already wait on m_cancellable;
+    // drop used to race and see empty filenames).
+    if (m_pendingDrop) {
+        m_pendingDrop = false;
+        drop(IntPoint(m_position.value()));
+        return;
+    }
+
     // Call enter again.
     enter(IntPoint(m_position.value()));
 }
@@ -415,11 +424,19 @@ void DropTarget::leave()
     m_uriListBuilder.clear();
     m_portalFilenames.clear();
     m_transferredFilesFromPortal = false;
+    m_pendingDrop = false;
 }
 
 void DropTarget::drop(IntPoint&& position, unsigned)
 {
     m_position = WTF::move(position);
+    // Wait for async SelectionData (filenames) before performDragOperation.
+    // Without this, fast drops see empty files (Opus B5).
+    if (m_cancellable) {
+        m_pendingDrop = true;
+        return;
+    }
+
     auto* page = webkitWebViewBaseGetPage(WEBKIT_WEB_VIEW_BASE(m_webView));
     ASSERT(page);
 
@@ -430,6 +447,7 @@ void DropTarget::drop(IntPoint&& position, unsigned)
     m_drop = nullptr;
     m_portalFilenames.clear();
     m_transferredFilesFromPortal = false;
+    m_pendingDrop = false;
 }
 
 } // namespace WebKit

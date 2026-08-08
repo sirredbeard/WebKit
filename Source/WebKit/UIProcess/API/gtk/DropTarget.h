@@ -89,6 +89,8 @@ private:
     StringBuilder m_uriListBuilder;
     Vector<String> m_portalFilenames;
     bool m_transferredFilesFromPortal { false };
+    // True when drop() arrived before async mime loads finished.
+    bool m_pendingDrop { false };
 #else
     RunLoop::Timer m_leaveTimer;
 #endif

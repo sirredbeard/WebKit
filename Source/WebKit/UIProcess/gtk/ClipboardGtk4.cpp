@@ -260,10 +260,16 @@ void Clipboard::write(WebCore::SelectionData&& selectionData, CompletionHandler<
         providers.append(gdk_content_provider_new_for_bytes("text/html", bytes.get()));
     }
 
+    // Match DragSource: never export file:// lines as clipboard uri-list from web
+    // content. Paste Files stay off via allowsFileAccess; this closes the
+    // clipboard-write half of the path-leak surface Opus flagged.
     if (selectionData.hasURIList()) {
-        CString uriList = selectionData.uriList().utf8();
-        GRefPtr<GBytes> bytes = adoptGRef(g_bytes_new(uriList.data(), uriList.length()));
-        providers.append(gdk_content_provider_new_for_bytes("text/uri-list", bytes.get()));
+        auto sanitizedURIList = WebCore::SelectionData::uriListWithoutFilenames(selectionData.uriList());
+        if (!sanitizedURIList.isEmpty()) {
+            CString uriList = sanitizedURIList.utf8();
+            GRefPtr<GBytes> bytes = adoptGRef(g_bytes_new(uriList.data(), uriList.length()));
+            providers.append(gdk_content_provider_new_for_bytes("text/uri-list", bytes.get()));
+        }
     }
 
     if (selectionData.hasImage()) {

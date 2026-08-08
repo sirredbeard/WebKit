@@ -167,6 +167,55 @@ TEST(SelectionData, DragDataIsSourceDeniesFilenameAccess)
     EXPECT_TRUE(local.asFilenames().isEmpty());
 }
 
+// Portal / trusted list wins over a parallel hostile uri-list (DropTargetGtk4 policy).
+// UIProcess sets filenames from portal only; uri-list may still carry strings.
+TEST(SelectionData, PortalFilenamesNotWidenedByHostileURIList)
+{
+    SelectionData data;
+    data.setURIList("file:///etc/passwd\r\nhttps://example.com/\r\nfile:///tmp/extra-from-uri-list.txt\r\n"_s);
+    data.setFilenames(Vector<String> { "/run/user/1000/doc/portal-only.txt"_s });
+
+    ASSERT_EQ(data.filenames().size(), 1u);
+    EXPECT_EQ(data.filenames()[0], "/run/user/1000/doc/portal-only.txt"_s);
+    EXPECT_FALSE(data.filenames().contains("/etc/passwd"_s));
+    EXPECT_FALSE(data.filenames().contains("/tmp/extra-from-uri-list.txt"_s));
+    EXPECT_TRUE(data.hasURIList());
+}
+
+// Export sanitize contract used by DragSource and clipboard write.
+TEST(SelectionData, UriListWithoutFilenamesKeepsHttpOnly)
+{
+    auto out = SelectionData::uriListWithoutFilenames(
+        "file:///etc/passwd\r\nhttps://example.com/a\r\nhttp://example.org/b\r\nfile:///tmp/x\r\n"_s);
+    EXPECT_TRUE(out.contains("https://example.com/a"_s));
+    EXPECT_TRUE(out.contains("http://example.org/b"_s));
+    EXPECT_FALSE(out.contains("file://"_s));
+    EXPECT_FALSE(out.contains("passwd"_s));
+}
+
+// Trusted external drop shape after IPC: filenames present, uri-list may list files,
+// containsFiles true only when not IsSource.
+TEST(SelectionData, TrustedDropShapeAfterIpcRoundTrip)
+{
+    SelectionData decoded(
+        String(),
+        String(),
+        URL(),
+        "file:///home/user/doc.txt\r\n"_s,
+        Vector<String> { "/home/user/doc.txt"_s },
+        nullptr,
+        nullptr,
+        false);
+
+    EXPECT_TRUE(decoded.hasFilenames());
+    DragData external(&decoded, { }, { }, { });
+    EXPECT_TRUE(external.containsFiles());
+    EXPECT_EQ(external.numberOfFiles(), 1u);
+
+    DragData asSource(&decoded, { }, { }, { }, DragApplicationFlags::IsSource);
+    EXPECT_FALSE(asSource.containsFiles());
+}
+
 } // namespace TestWebKitAPI
 
 #endif // PLATFORM(GTK) || PLATFORM(WPE)

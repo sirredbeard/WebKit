@@ -121,6 +121,37 @@ TEST(SelectionData, URIListWithoutFilenamesEmptyWhenOnlyFiles)
     EXPECT_TRUE(sanitized.isEmpty());
 }
 
+// Mirrors SelectionData.serialization.in decode: filenames survive without setURIList promotion.
+TEST(SelectionData, IpcConstructorPreservesFilenamesWithoutURIListPromotion)
+{
+    SelectionData decoded(
+        String(),
+        String(),
+        URL(),
+        "file:///etc/passwd\r\nhttps://example.com/\r\n"_s,
+        Vector<String> { "/tmp/trusted-drop.txt"_s },
+        nullptr,
+        nullptr,
+        false);
+
+    EXPECT_TRUE(decoded.hasURIList());
+    EXPECT_TRUE(decoded.hasFilenames());
+    ASSERT_EQ(decoded.filenames().size(), 1u);
+    EXPECT_EQ(decoded.filenames()[0], "/tmp/trusted-drop.txt"_s);
+
+    SelectionData uriOnly(
+        String(),
+        String(),
+        URL(),
+        "file:///etc/passwd\r\n"_s,
+        Vector<String> { },
+        nullptr,
+        nullptr,
+        false);
+    EXPECT_TRUE(uriOnly.hasURIList());
+    EXPECT_FALSE(uriOnly.hasFilenames());
+}
+
 TEST(SelectionData, DragDataIsSourceDeniesFilenameAccess)
 {
     SelectionData selection;

@@ -86,7 +86,10 @@ public:
     void clearAll();
     void clearAllExceptFilenames();
 
-    SelectionData(const String& text, const String& markup, const URL&, const String& uriList, RefPtr<WebCore::Image>&&, RefPtr<WebCore::SharedBuffer>&&, bool);
+    // IPC decode path (SelectionData.serialization.in). Filenames are a separate
+    // channel from uriList so trusted UIProcess grants survive the hop without
+    // re-promoting file:// lines through setURIList.
+    SelectionData(const String& text, const String& markup, const URL&, const String& uriList, Vector<String>&& filenames, RefPtr<WebCore::Image>&&, RefPtr<WebCore::SharedBuffer>&&, bool);
     SelectionData() = default;
 
 private:

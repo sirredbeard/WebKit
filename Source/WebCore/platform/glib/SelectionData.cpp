@@ -19,7 +19,6 @@
 #include "config.h"
 #include "SelectionData.h"
 
-#include <wtf/StdLibExtras.h>
 #include <wtf/TZoneMallocInlines.h>
 #include <wtf/glib/GUniquePtr.h>
 #include <wtf/text/CString.h>
@@ -31,7 +30,7 @@ namespace WebCore {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(SelectionData);
 
-SelectionData::SelectionData(const String& text, const String& markup, const URL& url, const String& uriList, RefPtr<WebCore::Image>&& image, RefPtr<WebCore::SharedBuffer>&& buffer, bool canSmartReplace)
+SelectionData::SelectionData(const String& text, const String& markup, const URL& url, const String& uriList, Vector<String>&& filenames, RefPtr<WebCore::Image>&& image, RefPtr<WebCore::SharedBuffer>&& buffer, bool canSmartReplace)
 {
     if (!text.isEmpty())
         setText(text);
@@ -41,6 +40,9 @@ SelectionData::SelectionData(const String& text, const String& markup, const URL
         setURL(url, String());
     if (!uriList.isEmpty())
         setURIList(uriList);
+    // Apply after setURIList. setURIList must never refill m_filenames.
+    if (!filenames.isEmpty())
+        setFilenames(WTF::move(filenames));
     if (image)
         setImage(WTF::move(image));
     if (buffer)
@@ -77,7 +79,7 @@ static void updateURLFromURIList(const String& uriListString, URL& url, bool& ur
         if (!parsed.isValid())
             continue;
 
-        url = WTFMove(parsed);
+        url = WTF::move(parsed);
         urlIsSet = true;
         return;
     }
@@ -125,7 +127,7 @@ void SelectionData::setURIList(const String& uriListString)
 
 void SelectionData::setFilenames(Vector<String>&& filenames)
 {
-    m_filenames = WTFMove(filenames);
+    m_filenames = WTF::move(filenames);
 }
 
 void SelectionData::setFilenamesFromURIList(const String& uriListString)

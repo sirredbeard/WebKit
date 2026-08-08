@@ -335,12 +335,12 @@ void DropTarget::didLoadData()
         auto uriList = m_uriListBuilder.toString();
         m_selectionData->setURIList(uriList);
         if (!m_portalFilenames.isEmpty())
-            m_selectionData->setFilenames(WTFMove(m_portalFilenames));
+            m_selectionData->setFilenames(WTF::move(m_portalFilenames));
         else
             m_selectionData->setFilenamesFromURIList(uriList);
         m_uriListBuilder.clear();
     } else if (!m_portalFilenames.isEmpty())
-        m_selectionData->setFilenames(WTFMove(m_portalFilenames));
+        m_selectionData->setFilenames(WTF::move(m_portalFilenames));
 
     m_cancellable = nullptr;
 

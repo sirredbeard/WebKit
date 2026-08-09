@@ -442,7 +442,13 @@ void DropTarget::drop(IntPoint&& position, unsigned)
 
     DragData dragData(&m_selectionData.value(), *m_position, *m_position, gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())), applicationFlagsForDrop(m_drop.get()));
     page->performDragOperation(dragData, { }, { }, { });
-    gdk_drop_finish(m_drop.get(), gdk_drop_get_actions(m_drop.get()));
+    // gdk_drop_finish requires a unique action (or 0). gdk_drop_get_actions() is a
+    // mask (often COPY|MOVE|LINK) and trips gdk_drag_action_is_unique — fatal under
+    // Epiphany's criticals-as-fatal — which aborted multi-file host drops.
+    auto finishAction = dragOperationToSingleGdkDragAction(m_operation);
+    if (!finishAction)
+        finishAction = dragOperationToSingleGdkDragAction(gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())));
+    gdk_drop_finish(m_drop.get(), finishAction);
 
     m_drop = nullptr;
     m_portalFilenames.clear();

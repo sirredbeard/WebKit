@@ -216,6 +216,62 @@ TEST(SelectionData, TrustedDropShapeAfterIpcRoundTrip)
     EXPECT_FALSE(asSource.containsFiles());
 }
 
+// setTrustedDrop is the single entry point UIProcess drop targets use, so the
+// portal-wins rule cannot drift between the GTK3 and GTK4 implementations.
+
+TEST(SelectionData, TrustedDropPrefersPortalFilenames)
+{
+    SelectionData data;
+    data.setTrustedDrop("file:///etc/passwd\r\nfile:///tmp/extra.txt\r\n"_s,
+        Vector<String> { "/run/user/1000/doc/portal-only.txt"_s });
+
+    ASSERT_EQ(data.filenames().size(), 1u);
+    EXPECT_EQ(data.filenames()[0], "/run/user/1000/doc/portal-only.txt"_s);
+    EXPECT_FALSE(data.filenames().contains("/etc/passwd"_s));
+    EXPECT_FALSE(data.filenames().contains("/tmp/extra.txt"_s));
+}
+
+TEST(SelectionData, TrustedDropFallsBackToURIListWhenNoPortalList)
+{
+    SelectionData data;
+    data.setTrustedDrop("file:///home/user/a.txt\r\nfile:///home/user/b.txt\r\nhttps://example.com/\r\n"_s, { });
+
+    ASSERT_EQ(data.filenames().size(), 2u);
+    EXPECT_EQ(data.filenames()[0], "/home/user/a.txt"_s);
+    EXPECT_EQ(data.filenames()[1], "/home/user/b.txt"_s);
+    EXPECT_TRUE(data.hasURIList());
+}
+
+TEST(SelectionData, TrustedDropWithoutFilesGrantsNothing)
+{
+    SelectionData data;
+    data.setTrustedDrop("https://example.com/\r\n"_s, { });
+
+    EXPECT_FALSE(data.hasFilenames());
+    EXPECT_TRUE(data.hasURL());
+}
+
+TEST(SelectionData, TrustedDropWithOnlyPortalListHasNoURIList)
+{
+    SelectionData data;
+    data.setTrustedDrop(emptyString(), Vector<String> { "/run/user/1000/doc/only.txt"_s });
+
+    ASSERT_EQ(data.filenames().size(), 1u);
+    EXPECT_EQ(data.filenames()[0], "/run/user/1000/doc/only.txt"_s);
+    EXPECT_FALSE(data.hasURIList());
+}
+
+// A second drop must not inherit the previous grant.
+TEST(SelectionData, TrustedDropReplacesPreviousFilenames)
+{
+    SelectionData data;
+    data.setTrustedDrop("file:///home/user/first.txt\r\n"_s, { });
+    ASSERT_EQ(data.filenames().size(), 1u);
+
+    data.setTrustedDrop("https://example.com/\r\n"_s, { });
+    EXPECT_FALSE(data.hasFilenames());
+}
+
 } // namespace TestWebKitAPI
 
 #endif // PLATFORM(GTK) || PLATFORM(WPE)

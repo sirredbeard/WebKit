@@ -351,19 +351,13 @@ void DropTarget::didLoadData()
         return;
 
     // Build the URI list after collecting everything from transferred files,
-    // and the uri-list mimetype. Filename grants:
-    // 1) Portal / GdkFileList paths win when present (sandbox-aware user grant).
-    // 2) Otherwise classic external uri-list file:// lines (file manager drops).
-    if (!m_uriListBuilder.isEmpty()) {
-        auto uriList = m_uriListBuilder.toString();
-        m_selectionData->setURIList(uriList);
-        if (!m_portalFilenames.isEmpty())
-            m_selectionData->setFilenames(WTF::move(m_portalFilenames));
-        else
-            m_selectionData->setFilenamesFromURIList(uriList);
+    // and the uri-list mimetype. SelectionData picks the filename grant: the
+    // portal / GdkFileList paths when the drop came through the portal, the
+    // file:// lines of the uri-list otherwise.
+    if (!m_uriListBuilder.isEmpty() || !m_portalFilenames.isEmpty()) {
+        m_selectionData->setTrustedDrop(m_uriListBuilder.toString(), WTF::move(m_portalFilenames));
         m_uriListBuilder.clear();
-    } else if (!m_portalFilenames.isEmpty())
-        m_selectionData->setFilenames(WTF::move(m_portalFilenames));
+    }
 
     m_cancellable = nullptr;
     m_state.didFinishLoadingData();

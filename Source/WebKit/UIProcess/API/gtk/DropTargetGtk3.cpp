@@ -205,10 +205,9 @@ void DropTarget::dataReceived(IntPoint&& position, GtkSelectionData* data, unsig
         gint length;
         const auto* uriListData = gtk_selection_data_get_data_with_length(data, &length);
         if (length > 0) {
-            // UIProcess external drop: user is granting these paths.
-            String uriList(unsafeMakeSpan(uriListData, length));
-            m_selectionData->setURIList(uriList);
-            m_selectionData->setFilenamesFromURIList(uriList);
+            // UIProcess external drop: user is granting these paths. GTK3 has no
+            // portal file list, so the uri-list is the only grant channel here.
+            m_selectionData->setTrustedDrop(String(unsafeMakeSpan(uriListData, length)), { });
         }
         break;
     }

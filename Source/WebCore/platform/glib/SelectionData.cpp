@@ -135,6 +135,23 @@ void SelectionData::setFilenamesFromURIList(const String& uriListString)
     m_filenames = filenamesFromURIList(uriListString);
 }
 
+void SelectionData::setTrustedDrop(const String& uriListString, Vector<String>&& portalFilenames)
+{
+    setURIList(uriListString);
+
+    // Both channels describe the same user gesture, so they must never be summed.
+    // The portal file list is the sandbox-aware grant and wins whenever it is
+    // present; a parallel text/uri-list can then only be a way to widen the set.
+    // Classic file manager drops have no portal list, and there the file:// lines
+    // of the uri-list are the grant.
+    if (!portalFilenames.isEmpty()) {
+        setFilenames(WTF::move(portalFilenames));
+        return;
+    }
+
+    setFilenamesFromURIList(uriListString);
+}
+
 String SelectionData::uriListWithoutFilenames(const String& uriListString)
 {
     StringBuilder builder;

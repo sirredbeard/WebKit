@@ -59,6 +59,11 @@ public:
     // setData("text/uri-list", ...) must not call these.
     void setFilenames(Vector<String>&&);
     void setFilenamesFromURIList(const String&);
+    // Applies a complete external drop: sets the uri-list and picks the filename
+    // grant from the portal file list when there is one, falling back to the
+    // file:// lines of the uri-list otherwise. UIProcess drop targets should use
+    // this rather than combining the setters themselves.
+    void setTrustedDrop(const String& uriList, Vector<String>&& portalFilenames);
     void clearFilenames() { m_filenames.clear(); }
     static Vector<String> filenamesFromURIList(const String&);
     // Drops file:// lines from a uri-list so web drag sources cannot export

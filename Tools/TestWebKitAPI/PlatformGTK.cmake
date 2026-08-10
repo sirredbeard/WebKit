@@ -44,6 +44,7 @@ list(APPEND TestWebCore_SOURCES
     Tests/WebCore/UserAgentQuirks.cpp
 
     Tests/WebCore/glib/Damage.cpp
+    Tests/WebCore/glib/DropTargetState.cpp
     Tests/WebCore/glib/GraphicsContextGLTextureMapper.cpp
     Tests/WebCore/glib/RunLoopObserver.cpp
     Tests/WebCore/glib/SelectionData.cpp
@@ -54,6 +55,10 @@ list(APPEND TestWebCore_SOURCES
     Tests/WebCore/gstreamer/GstMappedBuffer.cpp
 
     generic/main.cpp
+)
+
+list(APPEND TestWebCore_PRIVATE_INCLUDE_DIRECTORIES
+    "${CMAKE_SOURCE_DIR}/Source"
 )
 
 list(APPEND TestWebCore_SYSTEM_INCLUDE_DIRECTORIES

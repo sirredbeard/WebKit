@@ -112,10 +112,26 @@ DropTarget::DropTarget(GtkWidget* webView)
 DropTarget::~DropTarget()
 {
     g_cancellable_cancel(m_cancellable.get());
+    finishUnfinishedDrop();
+}
+
+// GtkDropTargetAsync gives us the GdkDrop once ::drop returns TRUE, and the drag
+// source stays blocked until gdk_drop_finish() is called for it. A deferred drop
+// outlives the ::drop handler, so every teardown path has to settle the obligation.
+void DropTarget::finishUnfinishedDrop()
+{
+    if (!m_state.takeUnfinishedDrop())
+        return;
+
+    if (m_drop)
+        gdk_drop_finish(m_drop.get(), static_cast<GdkDragAction>(0));
 }
 
 void DropTarget::accept(GdkDrop* drop, std::optional<WebCore::IntPoint> position, unsigned)
 {
+    g_cancellable_cancel(m_cancellable.get());
+    finishUnfinishedDrop();
+
     m_drop = drop;
     m_position = position;
     m_selectionData = SelectionData();
@@ -124,7 +140,6 @@ void DropTarget::accept(GdkDrop* drop, std::optional<WebCore::IntPoint> position
     m_uriListBuilder.clear();
     m_portalFilenames.clear();
     m_transferredFilesFromPortal = false;
-    m_pendingDrop = false;
 
     // WebCore needs the selection data to decide, so we need to preload the
     // data of targets we support. Once all data requests are done we start
@@ -258,6 +273,13 @@ void DropTarget::accept(GdkDrop* drop, std::optional<WebCore::IntPoint> position
             didLoadData();
         });
     }
+
+    m_state.didAccept(m_dataRequestCount > 0);
+    if (!m_dataRequestCount) {
+        // Nothing to wait for, so didLoadData() will never run. Leaving m_cancellable
+        // set here would stall enter(), update() and drop() for the whole drag.
+        m_cancellable = nullptr;
+    }
 }
 
 template<typename T>
@@ -344,28 +366,28 @@ void DropTarget::didLoadData()
         m_selectionData->setFilenames(WTF::move(m_portalFilenames));
 
     m_cancellable = nullptr;
+    m_state.didFinishLoadingData();
 
     if (!m_position) {
         // Enter hasn't been emitted yet, so just wait for it.
         return;
     }
 
-    // Deferred drop waited for async load (enter/update already wait on m_cancellable;
-    // drop used to race and see empty filenames).
-    if (m_pendingDrop) {
-        m_pendingDrop = false;
-        drop(IntPoint(m_position.value()));
-        return;
-    }
-
-    // Call enter again.
+    // Call enter again. This has to happen even when a drop is already waiting:
+    // DragController only dispatches the drop event once a previous dragEntered or
+    // dragUpdated worked out how the document handles the drag.
     enter(IntPoint(m_position.value()));
+
+    // A drop that arrived while the data was still loading was deferred, because it
+    // would otherwise have raced the mime loads and seen empty filenames.
+    if (m_state.takeDeferredDrop())
+        drop(IntPoint(m_position.value()));
 }
 
 void DropTarget::enter(IntPoint&& position, unsigned)
 {
     m_position = WTF::move(position);
-    if (m_cancellable)
+    if (m_state.isWaitingForData())
         return;
 
     auto* page = webkitWebViewBaseGetPage(WEBKIT_WEB_VIEW_BASE(m_webView));
@@ -379,7 +401,7 @@ void DropTarget::enter(IntPoint&& position, unsigned)
 void DropTarget::update(IntPoint&& position, unsigned)
 {
     m_position = WTF::move(position);
-    if (m_cancellable)
+    if (m_state.isWaitingForData())
         return;
 
     auto* page = webkitWebViewBaseGetPage(WEBKIT_WEB_VIEW_BASE(m_webView));
@@ -408,6 +430,9 @@ void DropTarget::didPerformAction()
 void DropTarget::leave()
 {
     g_cancellable_cancel(m_cancellable.get());
+    // Cancelling the reads means didLoadData() will not run, so a deferred drop has
+    // to be released here instead of waiting for a completion that never arrives.
+    finishUnfinishedDrop();
 
     auto* page = webkitWebViewBaseGetPage(WEBKIT_WEB_VIEW_BASE(m_webView));
     ASSERT(page);
@@ -424,18 +449,15 @@ void DropTarget::leave()
     m_uriListBuilder.clear();
     m_portalFilenames.clear();
     m_transferredFilesFromPortal = false;
-    m_pendingDrop = false;
 }
 
 void DropTarget::drop(IntPoint&& position, unsigned)
 {
     m_position = WTF::move(position);
-    // Wait for async SelectionData (filenames) before performDragOperation.
-    // Without this, fast drops see empty files (Opus B5).
-    if (m_cancellable) {
-        m_pendingDrop = true;
+    // Wait for the asynchronous mime loads to finish, otherwise the drop races them
+    // and the page sees an empty dataTransfer.files. didLoadData() completes it.
+    if (m_state.didRequestDrop())
         return;
-    }
 
     auto* page = webkitWebViewBaseGetPage(WEBKIT_WEB_VIEW_BASE(m_webView));
     ASSERT(page);
@@ -449,11 +471,11 @@ void DropTarget::drop(IntPoint&& position, unsigned)
     if (!finishAction)
         finishAction = dragOperationToSingleGdkDragAction(gdkDragActionToDragOperation(gdk_drop_get_actions(m_drop.get())));
     gdk_drop_finish(m_drop.get(), finishAction);
+    m_state.didFinishDrop();
 
     m_drop = nullptr;
     m_portalFilenames.clear();
     m_transferredFilesFromPortal = false;
-    m_pendingDrop = false;
 }
 
 } // namespace WebKit

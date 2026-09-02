@@ -648,6 +648,8 @@ enum ContentsFormat {
 
     DOMString documentBackgroundColor();
 
+    DOMString paintedCaretColor();
+
     boolean displayP3Available();
 
     undefined setPagination(DOMString mode, long gap, optional long pageLength = 0);
@@ -768,6 +770,7 @@ enum ContentsFormat {
 
     unsigned long imageFrameIndex(HTMLImageElement element);
     unsigned long imageFrameCount(HTMLImageElement element);
+    boolean forceDecodeImageFrameAtIndex(HTMLImageElement element, unsigned long index);
     float imageFrameDurationAtIndex(HTMLImageElement element, unsigned long index);
     undefined setImageFrameDecodingDuration(HTMLImageElement element, unrestricted float duration);
     undefined resetImageAnimation(HTMLImageElement element);
@@ -925,6 +928,8 @@ enum ContentsFormat {
     undefined setHeaderHeight(unrestricted float height);
     undefined setFooterHeight(unrestricted float height);
 
+    float obscuredContentInsetTop();
+
     undefined setFullscreenInsets(FullscreenInsets insets);
     undefined setFullscreenAutoHideDuration(double duration);
 
@@ -961,6 +966,9 @@ enum ContentsFormat {
 
     DOMString requestAnimationFrameThrottlingReasons();
     boolean areTimersThrottled();
+
+    double domTimerAlignmentInterval();
+    double domTimerAlignmentIntervalIncreaseLimit();
 
     undefined setLowPowerModeEnabled(boolean enabled);
     undefined setAggressiveThermalMitigationEnabled(boolean enabled);
@@ -1016,6 +1024,7 @@ enum ContentsFormat {
     undefined setUsesOverlayScrollbars(boolean enabled);
 
     undefined forceAXObjectCacheUpdate();
+    undefined setAccessibilityAnnouncementTranslationTimeout(unrestricted double seconds);
     unsigned long liveRegionSnapshotBuildCount();
     undefined resetLiveRegionSnapshotBuildCount();
     undefined setShouldMockParentSearchResultsForTesting(boolean enabled);
@@ -1114,6 +1123,9 @@ enum ContentsFormat {
     [Conditional=VIDEO] undefined setMediaElementRestrictions(HTMLMediaElement element, DOMString restrictions);
     [Conditional=WEB_AUDIO] undefined setAudioContextRestrictions(AudioContext context, DOMString restrictions);
     [Conditional=VIDEO] undefined postRemoteControlCommand(DOMString command, optional unrestricted float argument = 0);
+    // Injects at the GPU process's NowPlayingManager (as a real system command arrives); requires the
+    // allowTestOnlyIPC test option, otherwise the GPU message is rejected and the WebContent process is killed.
+    [Conditional=VIDEO] undefined postSystemRemoteControlCommand(DOMString command, optional unrestricted float argument = 0);
     [Conditional=VIDEO] undefined activeAudioRouteDidChange(boolean shouldPause);
     [Conditional=VIDEO] undefined beginAudioSessionInterruption();
     [Conditional=VIDEO] undefined endAudioSessionInterruption();
@@ -1125,6 +1137,7 @@ enum ContentsFormat {
     [Conditional=WIRELESS_PLAYBACK_TARGET] undefined setMockMediaPlaybackTargetPickerEnabled(boolean enabled);
     [Conditional=WIRELESS_PLAYBACK_TARGET] undefined setMockMediaPlaybackTargetPickerState(DOMString deviceName, DOMString deviceState);
     [Conditional=WIRELESS_PLAYBACK_TARGET] undefined mockMediaPlaybackTargetPickerDismissPopup();
+    [Conditional=WIRELESS_PLAYBACK_TARGET] Promise<DOMRect> mockMediaPlaybackTargetPickerRect();
     [Conditional=MEDIA_RECORDER] undefined setCustomPrivateRecorderCreator();
 
     readonly attribute boolean isMonitoringWirelessRoutes;
@@ -1311,9 +1324,12 @@ enum ContentsFormat {
     undefined updateQuotaBasedOnSpaceUsage();
 
     undefined setConsoleMessageListener(StringCallback? callback);
+    undefined configureLoggingChannel(DOMString channelName, boolean enabled);
 
     readonly attribute boolean supportsAudioSession;
     AudioSessionCategory audioSessionCategory();
+    Promise<AudioSessionCategory> systemAudioSessionCategory();
+    Promise<unsigned long long> systemAudioSessionActivationCount();
     AudioSessionMode audioSessionMode();
     [Conditional=VIDEO] AudioSessionCategory categoryAtMostRecentPlayback(HTMLMediaElement element);
     [Conditional=VIDEO] AudioSessionMode modeAtMostRecentPlayback(HTMLMediaElement element);
@@ -1362,6 +1378,8 @@ enum ContentsFormat {
     [Conditional=VIDEO] readonly attribute NowPlayingMetadata? nowPlayingMetadata;
     [Conditional=VIDEO] readonly attribute NowPlayingState nowPlayingState;
     [Conditional=VIDEO] boolean elementIsActiveNowPlayingSession(HTMLMediaElement element);
+    [Conditional=VIDEO] Promise<boolean> elementIsActiveNowPlayingSessionInGPUProcess(HTMLMediaElement element);
+    [Conditional=VIDEO] Promise<boolean> elementIsRemoteCommandTargetInGPUProcess(HTMLMediaElement element);
     [Conditional=VIDEO] attribute double nowPlayingUpdateInterval;
 
     [Conditional=VIDEO] HTMLMediaElement? bestMediaElementForRemoteControls(PlaybackControlsPurpose purpose);
@@ -1543,6 +1561,7 @@ enum ContentsFormat {
     Promise<ImageBufferResourceLimits> getImageBufferResourceLimits();
 
     undefined setTopDocumentURLForQuirks(DOMString urlString);
+    sequence<DOMString> activeQuirks();
 
     [CallWith=CurrentGlobalObject] ReadableStream readableStreamFromMessagePort(MessagePort port);
     [CallWith=CurrentGlobalObject] WritableStream writableStreamFromMessagePort(MessagePort port);
@@ -1552,7 +1571,6 @@ enum ContentsFormat {
     [Conditional=MODEL_ELEMENT] boolean isModelElementIntersectingViewport(HTMLModelElement element);
 
     [Conditional=SPATIAL_PORTAL] unsigned long numberOfHostedModelsInSpatialPortal(Element element);
-    [Conditional=SPATIAL_PORTAL] unsigned long numberOfLoadedModelsInSpatialPortal(Element element);
     [Conditional=SPATIAL_PORTAL] boolean establishesSpatialPortal(Element element);
     [Conditional=SPATIAL_PORTAL] sequence<unrestricted double>? spatialPortalResolvedTransform(Element element);
 

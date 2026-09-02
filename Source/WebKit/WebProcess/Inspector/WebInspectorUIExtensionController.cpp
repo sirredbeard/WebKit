@@ -30,6 +30,7 @@
 
 #include "JavaScriptEvaluationResult.h"
 #include "Logging.h"
+#include "RunJavaScriptResult.h"
 #include "WebInspectorUI.h"
 #include "WebInspectorUIExtensionControllerMessages.h"
 #include "WebInspectorUIExtensionControllerProxyMessages.h"
@@ -112,7 +113,7 @@ std::optional<Inspector::ExtensionError> WebInspectorUIExtensionController::pars
 
 // WebInspectorUIExtensionController IPC messages.
 
-void WebInspectorUIExtensionController::registerExtension(const Inspector::ExtensionID& extensionID, const String& extensionBundleIdentifier, const String& displayName, CompletionHandler<void(Expected<void, Inspector::ExtensionError>)>&& completionHandler)
+void WebInspectorUIExtensionController::registerExtension(const Inspector::ExtensionID& extensionID, const String& extensionBundleIdentifier, const String& displayName, CompletionHandler<void(std::expected<void, Inspector::ExtensionError>)>&& completionHandler)
 {
     if (!m_frontendClient) {
         completionHandler(makeUnexpected(Inspector::ExtensionError::InvalidRequest));
@@ -139,7 +140,7 @@ void WebInspectorUIExtensionController::registerExtension(const Inspector::Exten
     });
 }
 
-void WebInspectorUIExtensionController::unregisterExtension(const Inspector::ExtensionID& extensionID, CompletionHandler<void(Expected<void, Inspector::ExtensionError>)>&& completionHandler)
+void WebInspectorUIExtensionController::unregisterExtension(const Inspector::ExtensionID& extensionID, CompletionHandler<void(std::expected<void, Inspector::ExtensionError>)>&& completionHandler)
 {
     if (!m_frontendClient) {
         completionHandler(makeUnexpected(Inspector::ExtensionError::InvalidRequest));
@@ -174,7 +175,7 @@ JSC::JSObject* WebInspectorUIExtensionController::unwrapEvaluationResultAsObject
     return valueOrException.value().getObject();
 }
 
-void WebInspectorUIExtensionController::createTabForExtension(const Inspector::ExtensionID& extensionID, const String& tabName, const URL& tabIconURL, const URL& sourceURL, WTF::CompletionHandler<void(Expected<Inspector::ExtensionTabID, Inspector::ExtensionError>)>&& completionHandler)
+void WebInspectorUIExtensionController::createTabForExtension(const Inspector::ExtensionID& extensionID, const String& tabName, const URL& tabIconURL, const URL& sourceURL, WTF::CompletionHandler<void(std::expected<Inspector::ExtensionTabID, Inspector::ExtensionError>)>&& completionHandler)
 {
     if (!m_frontendClient) {
         completionHandler(makeUnexpected(Inspector::ExtensionError::InvalidRequest));
@@ -217,7 +218,7 @@ void WebInspectorUIExtensionController::createTabForExtension(const Inspector::E
     });
 }
 
-void WebInspectorUIExtensionController::evaluateScriptForExtension(const Inspector::ExtensionID& extensionID, const String& scriptSource, const std::optional<URL>& frameURL, const std::optional<URL>& contextSecurityOrigin, const std::optional<bool>& useContentScriptContext, CompletionHandler<void(Expected<WebKit::JavaScriptEvaluationResult, std::optional<WebCore::ExceptionDetails>>&&, const std::optional<Inspector::ExtensionError>&)>&& completionHandler)
+void WebInspectorUIExtensionController::evaluateScriptForExtension(const Inspector::ExtensionID& extensionID, const String& scriptSource, const std::optional<URL>& frameURL, const std::optional<URL>& contextSecurityOrigin, const std::optional<bool>& useContentScriptContext, CompletionHandler<void(RunJavaScriptResult&&, const std::optional<Inspector::ExtensionError>&)>&& completionHandler)
 {
     if (!m_frontendClient) {
         completionHandler(makeUnexpected(std::nullopt), Inspector::ExtensionError::InvalidRequest);
@@ -334,7 +335,7 @@ void WebInspectorUIExtensionController::reloadForExtension(const Inspector::Exte
     });
 }
 
-void WebInspectorUIExtensionController::showExtensionTab(const Inspector::ExtensionTabID& extensionTabIdentifier, CompletionHandler<void(Expected<void, Inspector::ExtensionError>)>&& completionHandler)
+void WebInspectorUIExtensionController::showExtensionTab(const Inspector::ExtensionTabID& extensionTabIdentifier, CompletionHandler<void(std::expected<void, Inspector::ExtensionError>)>&& completionHandler)
 {
     if (!m_frontendClient) {
         completionHandler(makeUnexpected(Inspector::ExtensionError::InvalidRequest));
@@ -410,7 +411,7 @@ void WebInspectorUIExtensionController::navigateTabForExtension(const Inspector:
 
 // WebInspectorUIExtensionController IPC messages for testing.
 
-void WebInspectorUIExtensionController::evaluateScriptInExtensionTab(const Inspector::ExtensionTabID& extensionTabID, const String& scriptSource, CompletionHandler<void(Expected<JavaScriptEvaluationResult, std::optional<WebCore::ExceptionDetails>>&&, const std::optional<Inspector::ExtensionError>&)>&& completionHandler)
+void WebInspectorUIExtensionController::evaluateScriptInExtensionTab(const Inspector::ExtensionTabID& extensionTabID, const String& scriptSource, CompletionHandler<void(RunJavaScriptResult&&, const std::optional<Inspector::ExtensionError>&)>&& completionHandler)
 {
     if (!m_frontendClient) {
         completionHandler(makeUnexpected(std::nullopt), Inspector::ExtensionError::InvalidRequest);

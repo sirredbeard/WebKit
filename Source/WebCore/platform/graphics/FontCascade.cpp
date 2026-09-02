@@ -446,7 +446,7 @@ float FontCascade::zeroWidth() const
     // This represents the advance measure of the glyph 0 (zero, the Unicode character U+0030)
     // in the element's font. In cases where it is impossible or impractical to determine the measure of the 0 glyph,
     // it must be assumed to be 0.5em
-    auto defaultZeroWidthValue = fontDescription().computedSize() / 2;
+    auto defaultZeroWidthValue = fontDescription().usedSize() / 2;
     if (!metricsOfPrimaryFont().zeroWidth())
         return defaultZeroWidthValue;
 
@@ -1403,6 +1403,17 @@ static GlyphUnderlineType computeUnderlineType(const TextRun& textRun, const Gly
     case UBLOCK_HANGUL_SYLLABLES:
     case UBLOCK_HANGUL_JAMO_EXTENDED_A:
     case UBLOCK_HANGUL_JAMO_EXTENDED_B:
+    case UBLOCK_ARABIC:
+    case UBLOCK_ARABIC_SUPPLEMENT:
+    case UBLOCK_ARABIC_EXTENDED_A:
+    case UBLOCK_ARABIC_EXTENDED_B:
+#if U_ICU_VERSION_MAJOR_NUM >= 72
+    // Arabic Extended-C is Unicode 15.0, which ICU only knows about since 72; older ICU
+    // returns UBLOCK_NO_BLOCK for those code points, so the case is dead there anyway.
+    case UBLOCK_ARABIC_EXTENDED_C:
+#endif
+    case UBLOCK_ARABIC_PRESENTATION_FORMS_A:
+    case UBLOCK_ARABIC_PRESENTATION_FORMS_B:
         return GlyphUnderlineType::DrawOverGlyph;
     default:
         return GlyphUnderlineType::SkipDescenders;

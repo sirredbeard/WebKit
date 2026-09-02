@@ -1389,7 +1389,7 @@ void WebExtensionContext::addInjectedContent(const InjectedContentVector& inject
 
         HashSet<String> excludeMatchPatternsSet;
         excludeMatchPatternsSet.addAll(injectedContentData.expandedExcludeMatchPatternStrings());
-        excludeMatchPatternsSet.unionWith(baseExcludeMatchPatternsSet);
+        excludeMatchPatternsSet.addAll(baseExcludeMatchPatternsSet);
 
         auto excludeMatchPatterns = copyToVector(excludeMatchPatternsSet);
 
@@ -1668,10 +1668,10 @@ bool WebExtensionContext::isPrivilegedMessage(IPC::Decoder& message) const
 {
     if (!m_privilegedIdentifier)
         return false;
-    return m_privilegedIdentifier.value().toRawValue() == message.destinationID();
+    return m_privilegedIdentifier.value().toUInt64() == message.destinationID();
 }
 
-WebExtensionContextParameters WebExtensionContext::parameters(IncludePrivilegedIdentifier includePrivilegedIdentifier) const
+WebExtensionContextParameters WebExtensionContext::parameters(IncludePrivilegedIdentifier includePrivilegedIdentifier, WebProcessProxy& destinationProcess) const
 {
     RefPtr extension = m_extension;
 
@@ -1685,15 +1685,15 @@ WebExtensionContextParameters WebExtensionContext::parameters(IncludePrivilegedI
         extension->serializeLocalization(),
         extension->serializeManifest(),
         extension->manifestVersion(),
-        isSessionStorageAllowedInContentScripts(),
+        m_storageAccessLevels,
         extensionController()->configuration().defaultWebsiteDataStore().sessionID(),
-        backgroundPageIdentifier(),
+        backgroundPageIdentifier(destinationProcess),
 #if ENABLE(INSPECTOR_EXTENSIONS)
         inspectorPageIdentifiers(),
         inspectorBackgroundPageIdentifiers(),
 #endif
-        popupPageIdentifiers(),
-        tabPageIdentifiers()
+        popupPageIdentifiers(destinationProcess),
+        tabPageIdentifiers(destinationProcess)
     };
 }
 

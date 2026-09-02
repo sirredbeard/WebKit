@@ -54,15 +54,6 @@ set(TESTWEBKITAPI_SWIFT_FLAGS
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${CMAKE_BINARY_DIR}>"
 )
 
-# Mirrors the EMB block in _WEBKIT_TARGET_SETUP, which these hand-rolled flags
-# bypass. The -Xcc flags are required: clang rejects the cached SwiftShims PCM
-# without them.
-list(APPEND TESTWEBKITAPI_SWIFT_FLAGS
-    "$<$<COMPILE_LANGUAGE:Swift>:-explicit-module-build>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -fexperimental-bounds-safety-attributes>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -fexperimental-late-parse-attributes>"
-)
-
 foreach (_f IN LISTS _test_swift_cc_flags)
     list(APPEND TESTWEBKITAPI_SWIFT_FLAGS "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc ${_f}>")
 endforeach ()
@@ -199,6 +190,7 @@ list(APPEND TestWebKit_SOURCES
     Tests/WebCore/TestPlatformStrategies.cpp
 
     Tests/WebCore/cocoa/ISOBMFFTrackInfoParserTests.cpp
+    Tests/WebCore/cocoa/PlatformScreenTests.mm
 
     Tests/WebKit/WKWebView/WKBackForwardListTests.mm
 )
@@ -258,6 +250,20 @@ WEBKIT_ADD_TARGET_CXX_FLAGS(TestWebKit -Wno-deprecated-declarations)
 
 # run-api-tests expects the binary to be named TestWebKitAPI.
 set_target_properties(TestWebKit PROPERTIES OUTPUT_NAME TestWebKitAPI)
+
+# Embed the Info.plist in the __TEXT,__info_plist section. PRODUCT_NAME and
+# PRODUCT_BUNDLE_IDENTIFIER only exist for the configure_file substitution.
+set(PRODUCT_NAME TestWebKitAPI)
+set(PRODUCT_BUNDLE_IDENTIFIER com.apple.WebKit.TestWebKitAPI)
+configure_file("${TESTWEBKITAPI_DIR}/Info.plist"
+               "${CMAKE_CURRENT_BINARY_DIR}/TestWebKitAPI-Info.plist")
+unset(PRODUCT_NAME)
+unset(PRODUCT_BUNDLE_IDENTIFIER)
+
+target_link_options(TestWebKit PRIVATE
+    "LINKER:-sectcreate,__TEXT,__info_plist,${CMAKE_CURRENT_BINARY_DIR}/TestWebKitAPI-Info.plist")
+set_property(TARGET TestWebKit APPEND PROPERTY LINK_DEPENDS
+    "${CMAKE_CURRENT_BINARY_DIR}/TestWebKitAPI-Info.plist")
 
 webkit_generate_entitlements(TestWebKit
     USING ${TESTWEBKITAPI_DIR}/Scripts/process-entitlements.sh
@@ -388,10 +394,20 @@ target_include_directories(TestWebKitAPIInjectedBundle PRIVATE
     ${TESTWEBKITAPI_DIR}/InjectedBundle
 )
 
+# InjectedBundleTestWebKitAPI should use its Info.plist rather than the CMake default.
+# EXECUTABLE_NAME and PRODUCT_BUNDLE_IDENTIFIER only exist for the configure_file substitution.
+set(EXECUTABLE_NAME InjectedBundleTestWebKitAPI)
+set(PRODUCT_BUNDLE_IDENTIFIER com.apple.InjectedBundleTestWebKitAPI)
+configure_file("${TESTWEBKITAPI_DIR}/InjectedBundle/InjectedBundle-Info.plist"
+               "${CMAKE_CURRENT_BINARY_DIR}/InjectedBundle-Info.plist")
+unset(EXECUTABLE_NAME)
+unset(PRODUCT_BUNDLE_IDENTIFIER)
+
 set_target_properties(TestWebKitAPIInjectedBundle PROPERTIES
     BUNDLE TRUE
     BUNDLE_EXTENSION bundle
     OUTPUT_NAME InjectedBundleTestWebKitAPI
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/InjectedBundle-Info.plist"
 )
 
 # The InjectedBundle is loaded into a WebKit process that already has WTF.
@@ -410,12 +426,17 @@ target_link_libraries(TestWebKitAPIInjectedBundle PRIVATE
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -framework Cocoa")
 set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -framework Cocoa")
 
-# TestWebKitAPI.wkbundle -- modern Cocoa WKWebProcessPlugIn bundle loaded via
-# [_WKProcessPoolConfiguration setInjectedBundleURL:] in
-# WKWebViewConfigurationExtras._test_configurationWithTestPlugInClassName:.
+# TestWebKitAPIPlugIn.wkbundle -- modern Cocoa WKWebProcessPlugIn bundle loaded via
+# [_WKProcessPoolConfiguration setInjectedBundleURL:] in Util::testPlugInBundleURL().
 # This is a separate product from InjectedBundleTestWebKitAPI.bundle above,
 # which implements the legacy C-API injected bundle.
 add_library(TestWebKitAPIWebProcessPlugIn MODULE
+    # Matches the Xcode WebProcessPlugIn target's Helpers membership. Without
+    # PlatformUtilitiesCocoa.mm's Util::TestPlugInClassNameParameter the bundle
+    # still links, but fails to dlopen outside the TestWebKitAPI binary. It is in
+    # SourcesCocoa.txt, hence the #include shim below.
+    ${CMAKE_CURRENT_BINARY_DIR}/WebProcessPlugIn-PlatformUtilitiesCocoa.mm
+    ${TESTWEBKITAPI_DIR}/Helpers/cocoa/UtilitiesCocoa.mm
     ${TESTWEBKITAPI_DIR}/InjectedBundle/cocoa/WebProcessPlugIn/WebProcessPlugIn.mm
     ${TESTWEBKITAPI_DIR}/InjectedBundle/cocoa/WebProcessPlugIn/WebProcessPlugInWithInternals.mm
     ${TESTWEBKITAPI_DIR}/Tests/WebKit/WKWebView/AccessibilityTestPlugin.mm
@@ -467,6 +488,11 @@ foreach (_dual_src
         @ONLY)
 endforeach ()
 
+file(CONFIGURE
+    OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/WebProcessPlugIn-PlatformUtilitiesCocoa.mm"
+    CONTENT "#include \"${TESTWEBKITAPI_DIR}/Helpers/cocoa/PlatformUtilitiesCocoa.mm\"\n"
+    @ONLY)
+
 target_include_directories(TestWebKitAPIWebProcessPlugIn PRIVATE
     ${CMAKE_BINARY_DIR}
     ${_testapi_framework_headers}
@@ -479,20 +505,27 @@ target_include_directories(TestWebKitAPIWebProcessPlugIn PRIVATE
 # Some pulgins still call -[WKWebProcessPlugInBrowserContextController mainFrame];
 target_compile_options(TestWebKitAPIWebProcessPlugIn PRIVATE -Wno-deprecated-declarations)
 
+# PlatformUtilitiesCocoa.mm uses the WebKit C API, which config.h only pulls in
+# under BUILDING_TestWebKit, as the sibling test targets also define.
+target_compile_definitions(TestWebKitAPIWebProcessPlugIn PRIVATE BUILDING_TestWebKit)
+
 # configure_file substitutes ${EXECUTABLE_NAME}/${PRODUCT_NAME}/
 # ${PRODUCT_BUNDLE_IDENTIFIER} in the Info.plist shared with the Xcode build.
-set(EXECUTABLE_NAME TestWebKitAPI)
-set(PRODUCT_NAME TestWebKitAPI)
-set(PRODUCT_BUNDLE_IDENTIFIER com.apple.TestWebKitAPI)
+set(EXECUTABLE_NAME TestWebKitAPIPlugIn)
+set(PRODUCT_NAME TestWebKitAPIPlugIn)
+set(PRODUCT_BUNDLE_IDENTIFIER com.apple.TestWebKitAPIPlugIn)
 configure_file(
     "${TESTWEBKITAPI_DIR}/InjectedBundle/cocoa/WebProcessPlugIn/Info.plist"
     "${CMAKE_CURRENT_BINARY_DIR}/WebProcessPlugIn-Info.plist"
 )
+unset(EXECUTABLE_NAME)
+unset(PRODUCT_NAME)
+unset(PRODUCT_BUNDLE_IDENTIFIER)
 
 set_target_properties(TestWebKitAPIWebProcessPlugIn PROPERTIES
     BUNDLE TRUE
     BUNDLE_EXTENSION wkbundle
-    OUTPUT_NAME TestWebKitAPI
+    OUTPUT_NAME TestWebKitAPIPlugIn
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_BINARY_DIR}/WebProcessPlugIn-Info.plist"
 )
 
@@ -601,9 +634,7 @@ list(APPEND TestWebKit_SOURCES
     Helpers/cocoa/UtilitiesCocoa.mm
 )
 
-list(APPEND TestWebKit_PRIVATE_LIBRARIES
-    "-Wl,-undefined,dynamic_lookup"
-)
+target_link_options(TestWebKit PRIVATE "LINKER:-undefined,dynamic_lookup")
 
 list(APPEND TestWebKit_LIBRARIES
     "-framework QuartzCore"
@@ -638,7 +669,7 @@ list(APPEND TestIPC_LIBRARIES
 )
 
 WEBKIT_ADD_TARGET_CXX_FLAGS(TestIPC -Wno-deprecated-declarations)
-target_link_options(TestIPC PRIVATE -Wl,-undefined,dynamic_lookup -Wl,-not_for_dyld_shared_cache)
+target_link_options(TestIPC PRIVATE "LINKER:-undefined,dynamic_lookup" "LINKER:-not_for_dyld_shared_cache")
 
 # InjectedBundle configuration.
 set_target_properties(TestWebKitAPIInjectedBundle PROPERTIES
@@ -667,17 +698,19 @@ set_target_properties(TestWebKit PROPERTIES
 
 set(_twkapi_bundle_id "org.webkit.TestWebKitAPI")
 
-add_dependencies(TestWebKit WebContentExtension NetworkingExtension)
-if (ENABLE_GPU_PROCESS)
-    add_dependencies(TestWebKit GPUExtension)
-endif ()
+if (WEBKIT_SDK_TARGET_OS STREQUAL "ios")
+    add_dependencies(TestWebKit WebContentExtension NetworkingExtension)
+    if (ENABLE_GPU_PROCESS)
+        add_dependencies(TestWebKit GPUExtension)
+    endif ()
 
-WEBKIT_EMBED_EXTENSION(TestWebKit WebContentExtension ${_twkapi_bundle_id}
-    CHANGE_EXTENSION_POINT ADD_ATS)
-WEBKIT_EMBED_EXTENSION(TestWebKit NetworkingExtension ${_twkapi_bundle_id}
-    ADD_ATS)
-if (ENABLE_GPU_PROCESS)
-    WEBKIT_EMBED_EXTENSION(TestWebKit GPUExtension ${_twkapi_bundle_id})
+    WEBKIT_EMBED_EXTENSION(TestWebKit WebContentExtension ${_twkapi_bundle_id}
+        CHANGE_EXTENSION_POINT ADD_ATS)
+    WEBKIT_EMBED_EXTENSION(TestWebKit NetworkingExtension ${_twkapi_bundle_id}
+        ADD_ATS)
+    if (ENABLE_GPU_PROCESS)
+        WEBKIT_EMBED_EXTENSION(TestWebKit GPUExtension ${_twkapi_bundle_id})
+    endif ()
 endif ()
 
 set_target_properties(TestWebKit PROPERTIES LINKER_LANGUAGE CXX)

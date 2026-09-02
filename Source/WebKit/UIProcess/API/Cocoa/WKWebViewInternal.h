@@ -236,6 +236,7 @@ std::optional<WebCore::JSHandleIdentifier> jsHandleIdentifierInFrame(const WebFr
 #endif
 
 @protocol _WKTextManipulationDelegate;
+@protocol _WKTranslationDelegate;
 @protocol _WKInputDelegate;
 @protocol _WKAppHighlightDelegate;
 
@@ -354,6 +355,7 @@ struct LiveResizeSnapshotState {
     const std::unique_ptr<WebKit::ResourceLoadDelegate> _resourceLoadDelegate;
 
     WeakObjCPtr<id <_WKTextManipulationDelegate>> _textManipulationDelegate;
+    WeakObjCPtr<id<_WKTranslationDelegate>> _translationDelegate;
     WeakObjCPtr<id <_WKInputDelegate>> _inputDelegate;
     WeakObjCPtr<id <_WKAppHighlightDelegate>> _appHighlightDelegate;
 
@@ -664,6 +666,10 @@ struct LiveResizeSnapshotState {
 
 - (void)_recalculateViewportSizesWithMinimumViewportInset:(CocoaEdgeInsets)minimumViewportInset maximumViewportInset:(CocoaEdgeInsets)maximumViewportInset throwOnInvalidInput:(BOOL)throwOnInvalidInput;
 
+// Asks the _WKTranslationDelegate to translate accessibility announcements. Replies with an empty
+// Vector if there is no delegate or the delegate does not implement the method.
+- (void)_translateAccessibilityAnnouncementStrings:(NSArray<NSString *> *)strings targetLocaleIdentifier:(NSString *)targetLocaleIdentifier completionHandler:(CompletionHandler<void(Vector<String>&&)>&&)completionHandler;
+
 - (void)_showWarningView:(const WebKit::BrowsingWarning&)warning completionHandler:(CompletionHandler<void(Variant<WebKit::ContinueUnsafeLoad, URL>&&)>&&)completionHandler;
 - (void)_showBrowsingWarning:(const WebKit::BrowsingWarning&)warning completionHandler:(CompletionHandler<void(Variant<WebKit::ContinueUnsafeLoad, URL>&&)>&&)completionHandler;
 - (void)_clearWarningView;
@@ -676,7 +682,7 @@ struct LiveResizeSnapshotState {
 - (void)_didAccessBackForwardList NS_DIRECT;
 
 #if ENABLE(WEB_AUTHN)
-- (void)_showDigitalCredentialsChooser:(const WebCore::DigitalCredentialsRequestData&)requestData completionHandler:(WTF::CompletionHandler<void(Expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&)completionHandler;
+- (void)_showDigitalCredentialsChooser:(const WebCore::DigitalCredentialsRequestData&)requestData completionHandler:(WTF::CompletionHandler<void(std::expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&)completionHandler;
 - (void)_dismissDigitalCredentialsChooser:(WTF::CompletionHandler<void(bool)>&&)completionHandler;
 #endif
 
@@ -801,7 +807,7 @@ struct LiveResizeSnapshotState {
 #endif
 - (void)_extractDebugTextWithConfigurationWithoutUpdatingFilterRules:(_WKTextExtractionConfiguration *)configuration assertionScope:(UniqueRef<WebKit::TextExtractionAssertionScope>&&)assertionScope completionHandler:(void(^)(_WKTextExtractionResult *))completionHandler;
 - (void)_filterExtractedStringWithoutUpdatingFilterRules:(NSString *)string options:(_WKTextExtractionFilterOptions)options completionHandler:(void(^)(NSString *))completionHandler;
-- (Expected<std::pair<RefPtr<WebKit::WebFrameProxy>, WebCore::TextExtraction::Interaction>, RetainPtr<NSString>>)_convertToWebCoreInteraction:(_WKTextExtractionInteraction *)wkInteraction nodeIdentifier:(const String&)nodeIdentifierString;
+- (std::expected<std::pair<RefPtr<WebKit::WebFrameProxy>, WebCore::TextExtraction::Interaction>, RetainPtr<NSString>>)_convertToWebCoreInteraction:(_WKTextExtractionInteraction *)wkInteraction nodeIdentifier:(const String&)nodeIdentifierString;
 - (void)_performInteraction:(WebCore::TextExtraction::Interaction)interaction inFrame:(RefPtr<WebKit::WebFrameProxy>)targetFrame actionType:(_WKTextExtractionAction)actionType nodeIdentifier:(const String&)nodeIdentifier staleNodeNote:(const String&)staleNodeNote shouldResolveStaleNodeIdentifier:(BOOL)shouldResolveStaleNodeIdentifier completionHandler:(void(^)(_WKTextExtractionInteractionResult *))completionHandler;
 
 #if ENABLE(TEXT_EXTRACTION_FILTER)

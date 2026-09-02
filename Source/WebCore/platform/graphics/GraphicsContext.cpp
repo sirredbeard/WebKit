@@ -122,9 +122,9 @@ FloatSize GraphicsContext::platformShadowOffset(const FloatSize& shadowOffset) c
     return shadowOffset;
 }
 
-void GraphicsContext::mergeLastChanges(const GraphicsContextState& state, const std::optional<GraphicsContextState>& lastDrawingState)
+void GraphicsContext::mergeLastChanges(const GraphicsContextState& state)
 {
-    m_state.mergeLastChanges(state, lastDrawingState);
+    m_state.mergeLastChanges(state);
     didUpdateState(m_state);
 }
 
@@ -263,6 +263,11 @@ RenderingMode GraphicsContext::renderingModeForCompatibleBuffer() const
 RefPtr<ImageBuffer> GraphicsContext::createImageBuffer(const FloatSize& size, float resolutionScale, const DestinationColorSpace& colorSpace, std::optional<RenderingMode> renderingMode, std::optional<RenderingMethod>, ImageBufferFormat pixelFormat) const
 {
     return ImageBuffer::create(size, renderingMode.value_or(this->renderingModeForCompatibleBuffer()), RenderingPurpose::Unspecified, resolutionScale, colorSpace, pixelFormat);
+}
+
+RefPtr<ImageBuffer> GraphicsContext::createImageBuffer(const FloatSize& size, const DestinationColorSpace& colorSpace, PixelFormat pixelFormat) const
+{
+    return createImageBuffer(size, 1, colorSpace, std::nullopt, std::nullopt, { pixelFormat });
 }
 
 RefPtr<ImageBuffer> GraphicsContext::createScaledImageBuffer(const FloatSize& size, const FloatSize& scale, const DestinationColorSpace& colorSpace, std::optional<RenderingMode> renderingMode, std::optional<RenderingMethod> renderingMethod) const

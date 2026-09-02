@@ -40,6 +40,7 @@
 #include <WebCore/StyleCounterReset.h>
 #include <WebCore/StyleCounterSet.h>
 #include <WebCore/StyleGapGutter.h>
+#include <WebCore/StyleLinkParameters.h>
 #include <WebCore/StyleMarginTrim.h>
 #include <WebCore/StyleMaskBorder.h>
 #include <WebCore/StyleMaximumLines.h>
@@ -173,6 +174,8 @@ public:
 
     ContainerNames containerNames;
 
+    LinkParameters linkParameters;
+
     ViewTransitionClasses viewTransitionClasses;
     ViewTransitionName viewTransitionName;
 
@@ -219,6 +222,7 @@ public:
     PREFERRED_TYPE(BlockStepInsert) unsigned blockStepInsert : 2;
     PREFERRED_TYPE(BlockStepRound) unsigned blockStepRound : 2;
     PREFERRED_TYPE(SpatialType) unsigned spatial : 1;
+    PREFERRED_TYPE(PortalActionType) unsigned portalAction : 1;
 
     PREFERRED_TYPE(OverscrollBehavior) unsigned overscrollBehaviorX : 2;
     PREFERRED_TYPE(OverscrollBehavior) unsigned overscrollBehaviorY : 2;
@@ -256,7 +260,7 @@ public:
     PREFERRED_TYPE(EnumSet<BoxAxis>) unsigned anchorFunctionScrollCompensatedAxes : 2;
     PREFERRED_TYPE(bool) unsigned isPopoverInvoker : 1;
     PREFERRED_TYPE(bool) unsigned useSVGZoomRulesForLength : 1;
-    PREFERRED_TYPE(MarginTrim) unsigned marginTrim : 4;
+    PREFERRED_TYPE(MarginTrim) unsigned marginTrim : 2;
     PREFERRED_TYPE(Contain) unsigned contain : 5;
     PREFERRED_TYPE(OverflowContinue) unsigned overflowContinue : 1;
     PREFERRED_TYPE(ScrollSnapStop) unsigned scrollSnapStop : 1;

@@ -32,6 +32,7 @@ messages -> GPUProcess : AuxiliaryProcess {
 
     CreateGPUConnectionToWebProcess(WebCore::ProcessIdentifier processIdentifier, PAL::SessionID sessionID, IPC::ConnectionHandle connectionHandle, struct WebKit::GPUProcessConnectionParameters parameters) -> () AllowedWhenWaitingForSyncReply
     SharedPreferencesForWebProcessDidChange(WebCore::ProcessIdentifier processIdentifier, struct WebKit::SharedPreferencesForWebProcess sharedPreferencesForWebProcess) -> ()
+    SecurityFlagsDidChange(struct WebKit::SecurityFlags securityFlags)
 
     UpdateGPUProcessPreferences(struct WebKit::GPUProcessPreferences preferences)
     UpdateSandboxAccess(Vector<WebKit::SandboxExtensionHandle> extensions);
@@ -74,10 +75,6 @@ messages -> GPUProcess : AuxiliaryProcess {
     CancelGetDisplayMediaPrompt()
 #endif
 
-#if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
-    TryToSetAudioSessionActiveForProcess(WebCore::ProcessIdentifier processID, bool active) -> (GenericPromise::Result result)
-#endif
-
 #if PLATFORM(MAC)
     OpenDirectoryCacheInvalidated(WebKit::SandboxExtensionHandle handle)
 #endif
@@ -117,6 +114,8 @@ messages -> GPUProcess : AuxiliaryProcess {
     PostWillTakeSnapshotNotification() -> ()
     RegisterFonts(Vector<WebKit::SandboxExtensionHandle> sandboxExtensions)
 #endif
+
+    SetNowPlayingFallbackSession(std::optional<WebCore::QualifiedMediaSessionIdentifier> session)
 }
 
 #endif // ENABLE(GPU_PROCESS)

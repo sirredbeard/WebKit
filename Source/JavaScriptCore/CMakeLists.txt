@@ -196,6 +196,17 @@ set(JavaScriptCore_SCRIPTS_SOURCES_PATHS
     ${JavaScriptCore_SCRIPTS_SOURCES_DIR}/wkbuiltins/wkbuiltins.py
 )
 
+# JavaScriptCore_SCRIPTS_DIR is the framework's PrivateHeaders here, which is where
+# clients above WebKit look for the inspector protocol generator.
+if (USE_FRAMEWORK_BUNDLES)
+    list(APPEND JavaScriptCore_SCRIPTS_SOURCES_PATHS
+        ${JAVASCRIPTCORE_DIR}/inspector/scripts/generate*.py
+        ${JAVASCRIPTCORE_DIR}/inspector/scripts/codegen/generate*.py
+        ${JAVASCRIPTCORE_DIR}/inspector/scripts/codegen/*generator*.py
+        ${JAVASCRIPTCORE_DIR}/inspector/scripts/codegen/models.py
+    )
+endif ()
+
 # The directory flattening performed below mirrors what the Mac port does with private headers.
 
 file(GLOB JavaScriptCore_SCRIPTS_SOURCES ${JavaScriptCore_SCRIPTS_SOURCES_PATHS})
@@ -382,7 +393,6 @@ set(JavaScriptCore_BUILTINS_SOURCES
     ${JAVASCRIPTCORE_DIR}/builtins/MapPrototype.js
     ${JAVASCRIPTCORE_DIR}/builtins/ObjectConstructor.js
     ${JAVASCRIPTCORE_DIR}/builtins/PromiseConstructor.js
-    ${JAVASCRIPTCORE_DIR}/builtins/PromiseOperations.js
     ${JAVASCRIPTCORE_DIR}/builtins/ProxyHelpers.js
     ${JAVASCRIPTCORE_DIR}/builtins/ReflectObject.js
     ${JAVASCRIPTCORE_DIR}/builtins/SetPrototype.js
@@ -818,6 +828,7 @@ set(JavaScriptCore_PRIVATE_FRAMEWORK_HEADERS
     heap/FullGCActivityCallback.h
     heap/GCActivityCallback.h
     heap/GCAssertions.h
+    heap/GCCompletionCallback.h
     heap/GCConductor.h
     heap/GCDeferralContext.h
     heap/GCIncomingRefCounted.h
@@ -837,7 +848,6 @@ set(JavaScriptCore_PRIVATE_FRAMEWORK_HEADERS
     heap/HeapCell.h
     heap/HeapCellInlines.h
     heap/HeapCellType.h
-    heap/HeapFinalizerCallback.h
     heap/HeapInlines.h
     heap/HeapIterationScope.h
     heap/HeapObserver.h
@@ -985,7 +995,6 @@ set(JavaScriptCore_PRIVATE_FRAMEWORK_HEADERS
     jit/ScratchRegisterAllocator.h
     jit/Snippet.h
     jit/SnippetParams.h
-    jit/SnippetReg.h
     jit/SnippetSlowPathCalls.h
     jit/SpillRegistersMode.h
     jit/TagRegistersMode.h
@@ -1618,6 +1627,26 @@ if (USE_INSPECTOR_SOCKET_SERVER)
     )
 endif ()
 
+# The corpse memory-analysis support is built on Mach task and corpse APIs, so
+# its headers have no content off Darwin and there is nothing to build or export.
+if (APPLE)
+    list(APPEND JavaScriptCore_PRIVATE_INCLUDE_DIRECTORIES
+        "${JAVASCRIPTCORE_DIR}/corpse"
+    )
+    list(APPEND JavaScriptCore_PRIVATE_FRAMEWORK_HEADERS
+        corpse/CorpseAddress.h
+        corpse/CorpseByteParser.h
+        corpse/CorpseClient.h
+        corpse/CorpseError.h
+        corpse/CorpseExportsTrie.h
+        corpse/CorpseProcess.h
+        corpse/CorpseRegion.h
+        corpse/CorpseSnapshot.h
+        corpse/CorpseSymbol.h
+        corpse/CorpseThread.h
+    )
+endif ()
+
 # GENERATOR 1-B: particular LUT creator (for 1 file only)
 GENERATE_HASH_LUT(${CMAKE_CURRENT_SOURCE_DIR}/parser/Keywords.table ${JavaScriptCore_DERIVED_SOURCES_DIR}/Lexer.lut.h)
 
@@ -1757,7 +1786,6 @@ endif ()
 
 WEBKIT_FRAMEWORK_DECLARE(JavaScriptCore)
 WEBKIT_INCLUDE_CONFIG_FILES_IF_EXISTS()
-WEBKIT_ADD_TARGET_THREAD_SAFETY_WARNINGS(JavaScriptCore)
 WEBKIT_ADD_TARGET_UNSAFE_BUFFER_WARNINGS(JavaScriptCore)
 
 if (COMPILER_IS_GCC_OR_CLANG)
@@ -1870,6 +1898,14 @@ endif ()
 add_custom_target(JavaScriptCoreSharedScripts DEPENDS ${JavaScriptCore_SCRIPTS})
 add_dependencies(JavaScriptCore JavaScriptCoreSharedScripts ${JavaScriptCore_EXTRA_DEPENDENCIES})
 add_dependencies(JavaScriptCoreSharedScripts JSCBuiltins)
+
+# The corpse code is part of JavaScriptCoreTools, which ships as a static library used
+# only by tools for assisting in the development of JavaScriptCore and WebKit. This code
+# is not needed for JavaScriptCore and WebKit functionality as a browser engine. The
+# corpse code rely on Mach APIs which are only available on Apple platforms.
+if (APPLE)
+  add_subdirectory(corpse)
+endif ()
 
 if (ENABLE_JAVASCRIPT_SHELL)
   add_subdirectory(shell)

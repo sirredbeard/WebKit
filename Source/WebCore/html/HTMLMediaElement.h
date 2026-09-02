@@ -243,7 +243,8 @@ public:
     using PlayPromiseVector = Vector<DOMPromiseDeferred<void>>;
     void rejectPendingPlayPromises(PlayPromiseVector&&, Ref<DOMException>&&);
     void resolvePendingPlayPromises(PlayPromiseVector&&);
-    void scheduleNotifyAboutPlaying(bool deferWhileSeeking = true);
+    enum class ShouldResolvePlayPromises : bool { No, Yes };
+    void scheduleNotifyAboutPlaying(bool deferWhileSeeking = true, ShouldResolvePlayPromises = ShouldResolvePlayPromises::Yes);
     void maybeFirePendingPlaying();
     void handlePlaybackPositionChanged();
     void notifyAboutPlaying(PlayPromiseVector&&);
@@ -985,7 +986,8 @@ private:
     void loadResource(const URL&, const ContentType&);
     void scheduleNextSourceChild();
     void loadNextSourceChild();
-    void userCancelledLoad();
+    enum class ShouldDestroyMediaPlayer : bool { No, Yes };
+    void userCancelledLoad(ShouldDestroyMediaPlayer = ShouldDestroyMediaPlayer::Yes);
     void clearMediaPlayer();
     bool havePotentialSourceChild();
     void noneSupported();
@@ -1022,7 +1024,7 @@ private:
 
     // These "internal" functions do not check user gesture restrictions.
     void playInternal();
-    void pauseInternal();
+    void pauseInternal(bool dispatchPauseEvent = true);
     void completePlayInternal();
 
     enum class IsExplicitLoad : bool { No, Yes };
@@ -1044,7 +1046,7 @@ private:
     bool pausedForUserInteraction() const;
     bool couldPlayIfEnoughData() const;
     void dispatchPlayPauseEventsIfNeedsQuirks();
-    Expected<void, MediaPlaybackDenialExplanation> canTransitionFromAutoplayToPlay() const;
+    std::expected<void, MediaPlaybackDenialExplanation> canTransitionFromAutoplayToPlay() const;
 
     void setAutoplayEventPlaybackState(AutoplayEventPlaybackState);
     void userDidInterfereWithAutoplay();
@@ -1116,7 +1118,6 @@ private:
     void hardwareMutedStateDidChange(const AudioSession&) final;
 #endif
     void routingContextUIDDidChange(const AudioSession&) final;
-    void categoryDidChange(const AudioSession&) final;
 #endif
 
     bool NODELETE hasMediaSource() const;
@@ -1245,7 +1246,7 @@ private:
     TaskCancellationGroup m_periodicTimeupdateCancellationGroup;
     TaskCancellationGroup m_volumeRevertTaskCancellationGroup;
 
-    const Ref<NativePromiseRequest> m_playRequest;
+    const Ref<NativePromiseRequest> m_beginPlaybackRequest;
     PlayPromiseVector m_pendingPlayPromises;
     bool m_playPromiseSettlementGuaranteed { false };
 

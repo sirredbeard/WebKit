@@ -58,14 +58,13 @@ public:
 
     const DestinationColorSpace& colorSpace() const final;
 
-    enum class RecordingMode : bool { Tile, Canvas };
+    enum class RecordingMode : uint8_t { Tile, Canvas, Scrollbar };
     void beginRecording(RecordingMode, const sk_sp<GrContextThreadSafeProxy>& = nullptr);
     SkiaRecordingData endRecording();
 
     void replayStateOnCanvas(SkCanvas&) const;
 
     void didUpdateState(GraphicsContextState&) final;
-    void didUpdateSingleState(GraphicsContextState&, GraphicsContextState::ChangeIndex) final;
 
     void setLineCap(LineCap) final;
     void setLineDash(const DashArray&, float) final;
@@ -128,12 +127,15 @@ private:
     enum class ContextMode : uint8_t {
         PaintingMode,
         TileRecordingMode,
-        CanvasRecordingMode
+        CanvasRecordingMode,
+        ScrollbarRecordingMode
     };
 
     bool makeGLContextCurrentIfNeeded() const;
+#if USE(TEXTURE_MAPPER)
     void trackAcceleratedRenderingFenceIfNeeded(const sk_sp<SkImage>&, GrDirectContext*);
     void trackAcceleratedRenderingFenceIfNeeded(Pattern&);
+#endif
     sk_sp<SkImage> imageForCurrentThread(const sk_sp<SkImage>&) const;
 
     void setupFillSource(SkPaint&);
@@ -200,7 +202,9 @@ private:
     SkiaState m_skiaState;
     Vector<SkiaState, 1> m_skiaStateStack;
     sk_sp<GrContextThreadSafeProxy> m_threadSafeGrContext;
+#if USE(TEXTURE_MAPPER)
     SkiaImageToFenceMap m_imageToFenceMap;
+#endif
     bool m_enableStateReplayTracking : 1 { false };
     std::unique_ptr<SkiaImageAtlasLayoutBuilder> m_atlasLayoutBuilder;
     const DestinationColorSpace m_colorSpace;

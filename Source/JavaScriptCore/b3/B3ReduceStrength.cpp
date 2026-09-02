@@ -3292,7 +3292,23 @@ private:
                         && (value->child(1)->isConstant() || value->child(2)->isConstant());
                 });
             
-            if (select) {
+            if (!select)
+                break;
+
+            // All values between Select and Check must be cloneable.
+            bool canClone = true;
+            for (unsigned i = m_index; ; --i) {
+                Value* value = m_block->at(i);
+                if (value->kind().isCloningForbidden()) {
+                    canClone = false;
+                    break;
+                }
+                if (value == select)
+                    break;
+                RELEASE_ASSERT(i); // Select should be found
+            }
+
+            if (canClone) {
                 specializeSelect(select);
                 m_didSpecializeSelect = true;
                 break;
@@ -4382,14 +4398,17 @@ private:
         // Now handle all values between the source and the check.
         for (unsigned i = startIndex + 1; i < predecessor->size(); ++i) {
             Value* value = predecessor->at(i);
+            ValueKey key = value->key(); // Compute before cloneValue mutates the Value
             value->owner = nullptr;
 
             cloneValue(value);
 
             if (value->type() != Void)
                 m_insertionSet.insertValue(m_index, value);
-            else
+            else {
+                m_pureCSE.remove(key, value);
                 m_proc.deleteValue(value);
+            }
         }
 
         // Finally, deal with the check.

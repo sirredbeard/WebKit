@@ -33,7 +33,10 @@
 #include "CoordinatedPlatformLayerBufferRGB.h"
 #include "CoordinatedPlatformLayerBufferYUV.h"
 #include "GraphicsTypesGL.h"
+
+#if USE(TEXTURE_MAPPER)
 #include "TextureMapper.h"
+#endif
 
 #if USE(GSTREAMER_GL)
 // Include the <epoxy/gl.h> header before <gst/gl/gl.h>.
@@ -51,17 +54,17 @@
 
 namespace WebCore {
 
-std::unique_ptr<CoordinatedPlatformLayerBufferVideo> CoordinatedPlatformLayerBufferVideo::create(Ref<VideoFrameGStreamer>&& frame, std::optional<GstVideoDecoderPlatform> videoDecoderPlatform, bool gstGLEnabled, OptionSet<TextureMapperFlags> flags)
+std::unique_ptr<CoordinatedPlatformLayerBufferVideo> CoordinatedPlatformLayerBufferVideo::create(Ref<VideoFrameGStreamer>&& frame, std::optional<GstVideoDecoderPlatform> videoDecoderPlatform, bool gstGLEnabled, OptionSet<TextureMapperFlags> flags, const sk_sp<GrContextThreadSafeProxy>& threadSafeGrContext)
 {
     auto size = frame->presentationSize();
-    return makeUnique<CoordinatedPlatformLayerBufferVideo>(WTF::move(frame), WTF::move(size), videoDecoderPlatform, gstGLEnabled, flags);
+    return makeUnique<CoordinatedPlatformLayerBufferVideo>(WTF::move(frame), WTF::move(size), videoDecoderPlatform, gstGLEnabled, flags, threadSafeGrContext);
 }
 
-CoordinatedPlatformLayerBufferVideo::CoordinatedPlatformLayerBufferVideo(Ref<VideoFrameGStreamer>&& frame, IntSize&& size, std::optional<GstVideoDecoderPlatform> videoDecoderPlatform, bool gstGLEnabled, OptionSet<TextureMapperFlags> flags)
+CoordinatedPlatformLayerBufferVideo::CoordinatedPlatformLayerBufferVideo(Ref<VideoFrameGStreamer>&& frame, IntSize&& size, std::optional<GstVideoDecoderPlatform> videoDecoderPlatform, bool gstGLEnabled, OptionSet<TextureMapperFlags> flags, const sk_sp<GrContextThreadSafeProxy>& threadSafeGrContext)
     : CoordinatedPlatformLayerBuffer(Type::Video, WTF::move(size), flags, nullptr)
     , m_videoFrame(WTF::move(frame))
     , m_videoDecoderPlatform(videoDecoderPlatform)
-    , m_buffer(createBufferIfNeeded(gstGLEnabled))
+    , m_buffer(createBufferIfNeeded(gstGLEnabled, threadSafeGrContext))
 {
 }
 
@@ -83,7 +86,27 @@ std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVi
     return CoordinatedPlatformLayerBufferRGB::create(WTF::move(texture), m_flags, nullptr);
 }
 
-std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVideo::createBufferIfNeeded(bool gstGLEnabled)
+#if USE(GBM) || USE(GSTREAMER_GL)
+static std::pair<CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace, CoordinatedPlatformLayerBufferYUV::TransferFunction> yuvColorSpaceFromVideoInfo(const GstVideoInfo& info)
+{
+    // Default to bt601. This is the same behaviour as GStreamer's glcolorconvert element.
+    auto yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Bt601;
+    auto transferFunction = CoordinatedPlatformLayerBufferYUV::TransferFunction::Bt709;
+    const auto& colorimetry = GST_VIDEO_INFO_COLORIMETRY(&info);
+    if (gst_video_colorimetry_matches(&colorimetry, GST_VIDEO_COLORIMETRY_BT709))
+        yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Bt709;
+    else if (gst_video_colorimetry_matches(&colorimetry, GST_VIDEO_COLORIMETRY_BT2020))
+        yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Bt2020;
+    else if (gst_video_colorimetry_matches(&colorimetry, GST_VIDEO_COLORIMETRY_BT2100_PQ)) {
+        yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Bt2020;
+        transferFunction = CoordinatedPlatformLayerBufferYUV::TransferFunction::Pq;
+    } else if (gst_video_colorimetry_matches(&colorimetry, GST_VIDEO_COLORIMETRY_SMPTE240M))
+        yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Smpte240M;
+    return { yuvToRgbColorSpace, transferFunction };
+}
+#endif
+
+std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVideo::createBufferIfNeeded(bool gstGLEnabled, const sk_sp<GrContextThreadSafeProxy>& threadSafeGrContext)
 {
     const auto& sample = m_videoFrame->sample();
     auto buffer = gst_sample_get_buffer(sample.get());
@@ -98,12 +121,18 @@ std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVi
         // rendering.
         auto dmabufFormat = m_videoFrame->dmaBufFormat();
         RELEASE_ASSERT(dmabufFormat);
-        return CoordinatedPlatformLayerBufferExternalOES::create(GRefPtr(buffer), dmabufFormat->first, m_size, m_flags);
+        // The driver converts YUV to RGB while sampling, so it needs the frame colorimetry.
+        const auto& info = m_videoFrame->info();
+        auto yuvColorSpace = yuvColorSpaceFromVideoInfo(info).first;
+        auto sampleRange = GST_VIDEO_INFO_COLORIMETRY(&info).range == GST_VIDEO_COLOR_RANGE_0_255
+            ? CoordinatedPlatformLayerBufferExternalOES::SampleRange::Full
+            : CoordinatedPlatformLayerBufferExternalOES::SampleRange::Narrow;
+        return CoordinatedPlatformLayerBufferExternalOES::create(GRefPtr(buffer), dmabufFormat->first, yuvColorSpace, sampleRange, m_size, m_flags);
     }
 
 #if GST_CHECK_VERSION(1, 24, 0)
     if (gst_is_dmabuf_memory(memory))
-        return createBufferFromDMABufMemory();
+        return createBufferFromDMABufMemory(threadSafeGrContext);
 #endif // GST_CHECK_VERSION(1, 24, 0)
 #endif // USE(GBM)
 
@@ -131,7 +160,7 @@ std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVi
 }
 
 #if USE(GBM) && GST_CHECK_VERSION(1, 24, 0)
-std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVideo::createBufferFromDMABufMemory()
+std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVideo::createBufferFromDMABufMemory(const sk_sp<GrContextThreadSafeProxy>& threadSafeGrContext)
 {
     auto videoInfo = m_videoFrame->info();
     if (GST_VIDEO_INFO_HAS_ALPHA(&videoInfo))
@@ -139,7 +168,12 @@ std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVi
 
     auto dmabuf = m_videoFrame->getDMABuf();
     RELEASE_ASSERT(dmabuf);
+#if USE(TEXTURE_MAPPER)
+    UNUSED_PARAM(threadSafeGrContext);
     return CoordinatedPlatformLayerBufferDMABuf::create(dmabuf.releaseNonNull(), m_flags, nullptr);
+#else
+    return CoordinatedPlatformLayerBufferDMABuf::create(dmabuf.releaseNonNull(), m_flags, nullptr, threadSafeGrContext);
+#endif
 }
 #endif // USE(GBM) && GST_CHECK_VERSION(1, 24, 0)
 
@@ -225,19 +259,7 @@ std::unique_ptr<CoordinatedPlatformLayerBuffer> CoordinatedPlatformLayerBufferVi
             yuvPlaneOffset[i] = m_mappedVideoFrame->componentPlaneOffset(i);
         }
 
-        // Default to bt601. This is the same behaviour as GStreamer's glcolorconvert element.
-        CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Bt601;
-        CoordinatedPlatformLayerBufferYUV::TransferFunction transferFunction = CoordinatedPlatformLayerBufferYUV::TransferFunction::Bt709;
-        if (gst_video_colorimetry_matches(&GST_VIDEO_INFO_COLORIMETRY(m_mappedVideoFrame->info()), GST_VIDEO_COLORIMETRY_BT709))
-            yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Bt709;
-        else if (gst_video_colorimetry_matches(&GST_VIDEO_INFO_COLORIMETRY(m_mappedVideoFrame->info()), GST_VIDEO_COLORIMETRY_BT2020))
-            yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Bt2020;
-        else if (gst_video_colorimetry_matches(&GST_VIDEO_INFO_COLORIMETRY(m_mappedVideoFrame->info()), GST_VIDEO_COLORIMETRY_BT2100_PQ)) {
-            yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Bt2020;
-            transferFunction = CoordinatedPlatformLayerBufferYUV::TransferFunction::Pq;
-        } else if (gst_video_colorimetry_matches(&GST_VIDEO_INFO_COLORIMETRY(m_mappedVideoFrame->info()), GST_VIDEO_COLORIMETRY_SMPTE240M))
-            yuvToRgbColorSpace = CoordinatedPlatformLayerBufferYUV::YuvToRgbColorSpace::Smpte240M;
-
+        auto [yuvToRgbColorSpace, transferFunction] = yuvColorSpaceFromVideoInfo(*m_mappedVideoFrame->info());
         return CoordinatedPlatformLayerBufferYUV::create(*format, numberOfPlanes, WTF::move(planes), WTF::move(yuvPlane), WTF::move(yuvPlaneOffset), yuvToRgbColorSpace, transferFunction, m_size, m_flags, nullptr);
     }
 
@@ -264,7 +286,7 @@ void CoordinatedPlatformLayerBufferVideo::createBufferFromMappedFrameIfNeeded()
     if (m_buffer)
         return;
 
-    OptionSet<BitmapTexture::Flags> textureFlags;
+    OptionSet<BitmapTexture::Flags> textureFlags = { BitmapTexture::Flags::UseBGRALayout };
     if (GST_VIDEO_INFO_HAS_ALPHA(m_mappedVideoFrame->info()))
         textureFlags.add(BitmapTexture::Flags::SupportsAlpha);
     auto texture = BitmapTexturePool::singleton().acquireTexture(m_size, textureFlags);
@@ -286,6 +308,7 @@ void CoordinatedPlatformLayerBufferVideo::createBufferFromMappedFrameIfNeeded()
     m_mappedVideoFrame = std::nullopt;
 }
 
+#if USE(TEXTURE_MAPPER)
 void CoordinatedPlatformLayerBufferVideo::paintToTextureMapper(TextureMapper& textureMapper, const FloatRect& targetRect, const TransformationMatrix& modelViewMatrix, float opacity)
 {
     createBufferFromMappedFrameIfNeeded();
@@ -294,7 +317,8 @@ void CoordinatedPlatformLayerBufferVideo::paintToTextureMapper(TextureMapper& te
         m_buffer->paintToTextureMapper(textureMapper, targetRect, modelViewMatrix, opacity);
 }
 
-#if USE(SKIA)
+#else
+
 sk_sp<SkImage> CoordinatedPlatformLayerBufferVideo::skiaImage()
 {
     createBufferFromMappedFrameIfNeeded();

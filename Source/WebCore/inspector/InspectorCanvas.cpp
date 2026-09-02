@@ -290,7 +290,7 @@ JSC::JSValue InspectorCanvas::resolveContext(JSC::JSGlobalObject* exec)
     );
 }
 
-HashSet<Element*> InspectorCanvas::cssCanvasClientNodes() const
+HashSet<Ref<Element>> InspectorCanvas::cssCanvasClientNodes() const
 {
     return WTF::switchOn(m_context,
         [](const WeakRef<CanvasRenderingContext>& weakContext) {
@@ -299,14 +299,14 @@ HashSet<Element*> InspectorCanvas::cssCanvasClientNodes() const
         },
         [](const WeakRef<GPUDevice, WeakPtrImplWithEventTargetData>& weakDevice) {
             Ref device = weakDevice;
-            HashSet<Element*> cssCanvasClientNodes;
+            HashSet<Ref<Element>> cssCanvasClientNodes;
             Locker locker { CanvasRenderingContext::instancesLock() };
             for (SUPPRESS_UNCOUNTED_ARG auto* context : CanvasRenderingContext::instances()) {
                 if (!context->isContextThread() || !canvasContextMatchesDevice(*context, device))
                     continue;
 
-                for (auto& cssCanvasClientNode : context->canvasBase().cssCanvasClients())
-                    cssCanvasClientNodes.add(cssCanvasClientNode);
+                for (Ref cssCanvasClientNode : context->canvasBase().cssCanvasClients())
+                    cssCanvasClientNodes.add(WTF::move(cssCanvasClientNode));
             }
             return cssCanvasClientNodes;
         }
@@ -324,7 +324,7 @@ size_t InspectorCanvas::memoryCost() const
         [](const WeakRef<GPUDevice, WeakPtrImplWithEventTargetData>& weakDevice) -> size_t {
             Ref device = weakDevice;
 
-            CheckedSize memoryCost;
+            CheckedSize memoryCost = device->memoryCost();
             Locker locker { CanvasRenderingContext::instancesLock() };
             for (SUPPRESS_UNCOUNTED_ARG auto* context : CanvasRenderingContext::instances()) {
                 if (!context->isContextThread() || !canvasContextMatchesDevice(*context, device))
@@ -336,7 +336,7 @@ size_t InspectorCanvas::memoryCost() const
     );
 }
 
-void InspectorCanvas::canvasChanged()
+void InspectorCanvas::canvasContentsWillChange()
 {
     Ref context = std::get<WeakRef<CanvasRenderingContext>>(m_context);
     if (!context->hasActiveInspectorCanvasCallTracer())
@@ -424,7 +424,8 @@ static bool shouldSnapshotWebGPUAction(RecordingSwizzleType receiverSwizzleType,
     if (receiverSwizzleType == RecordingSwizzleType::GPUQueue) {
         return name == "submit"_s
             || name == "writeTexture"_s
-            || name == "copyExternalImageToTexture"_s;
+            || name == "copyExternalImageToTexture"_s
+            || name == "copyElementImageToTexture"_s;
     }
     return false;
 }
@@ -474,18 +475,20 @@ void InspectorCanvas::recordAction(String&& name, InspectorCanvasProcessedArgume
     }
 
     m_lastRecordedAction = buildAction(WTF::move(name), WTF::move(arguments));
-    if (receiver)
+    if (receiver) {
+        protect(m_lastRecordedAction)->addItem(-1); // Add the result placeholder.
         protect(m_lastRecordedAction)->addItem(receiver.releaseNonNull());
+    }
     m_bufferUsed += protect(m_lastRecordedAction)->memoryCost();
     protect(m_currentActions)->addItem(*m_lastRecordedAction);
 }
 
-static Ref<JSON::ArrayOf<int>> buildActionReceiver(int identifier, RecordingSwizzleType swizzleType)
+static Ref<JSON::ArrayOf<int>> buildActionObject(int identifier, RecordingSwizzleType swizzleType)
 {
-    auto receiver = JSON::ArrayOf<int>::create();
-    receiver->addItem(identifier);
-    receiver->addItem(static_cast<int>(swizzleType));
-    return receiver;
+    auto object = JSON::ArrayOf<int>::create();
+    object->addItem(identifier);
+    object->addItem(static_cast<int>(swizzleType));
+    return object;
 }
 
 void InspectorCanvas::recordAction(String&& name, InspectorCanvasProcessedArgument&& receiver, InspectorCanvasProcessedArguments&& arguments)
@@ -495,10 +498,28 @@ void InspectorCanvas::recordAction(String&& name, InspectorCanvasProcessedArgume
 
     bool shouldSnapshot = shouldSnapshotWebGPUAction(receiver.swizzleType, name);
 
-    recordAction(WTF::move(name), WTF::move(arguments), buildActionReceiver(*identifier, receiver.swizzleType));
+    recordAction(WTF::move(name), WTF::move(arguments), buildActionObject(*identifier, receiver.swizzleType));
 
     if (shouldSnapshot)
         m_contentChanged = true;
+}
+
+void InspectorCanvas::recordActionResult(InspectorCanvasProcessedArgument&& result)
+{
+    if (!m_lastRecordedAction)
+        return;
+
+    auto identifier = result.value->asInteger();
+    RELEASE_ASSERT(identifier);
+
+    Ref lastRecordedAction = *m_lastRecordedAction;
+    m_bufferUsed -= lastRecordedAction->memoryCost();
+    auto resultObject = buildActionObject(*identifier, result.swizzleType);
+    if (lastRecordedAction->length() == 4)
+        lastRecordedAction->addItem(WTF::move(resultObject));
+    else
+        lastRecordedAction->setItem(4, WTF::move(resultObject));
+    m_bufferUsed += lastRecordedAction->memoryCost();
 }
 
 void InspectorCanvas::finalizeFrame()
@@ -815,6 +836,8 @@ void InspectorCanvas::appendActionSnapshotIfNeeded()
             Ref lastRecordedAction = *m_lastRecordedAction;
             m_bufferUsed -= lastRecordedAction->memoryCost();
             if (lastRecordedAction->length() == 4)
+                lastRecordedAction->addItem(-1); // Add the result if needed.
+            if (lastRecordedAction->length() == 5)
                 lastRecordedAction->addItem(-1); // Add the receiver if needed.
             lastRecordedAction->addItem(indexForData(*content));
             m_bufferUsed += lastRecordedAction->memoryCost();

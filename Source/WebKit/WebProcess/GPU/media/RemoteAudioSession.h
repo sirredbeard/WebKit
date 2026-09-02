@@ -98,6 +98,8 @@ private:
 
     void beginInterruptionForTesting() final;
     void endInterruptionForTesting() final;
+    Ref<CategoryPromise> systemCategoryForTesting() final;
+    Ref<ActivationCountPromise> systemActivationCountForTesting() final;
     void clearInterruptionFlagForTesting() final { m_isInterruptedForTesting = false; }
 
     void setSceneIdentifier(const String&) final;

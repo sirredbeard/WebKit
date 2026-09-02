@@ -139,7 +139,6 @@ constexpr angle::PackedEnumMap<QueueSubmitReason, const char *> kQueueSubmitReas
      "Queue submission imminent due to exceeding buffer-to-image update size limit"},
     {QueueSubmitReason::ForceSubmitStagedTexture,
      "Queue submission imminent due to staged texture updates"},
-    {QueueSubmitReason::DrawOverlay, "Queue submission imminent due to drawing overlay"},
     {QueueSubmitReason::InitializeMemory, "Queue submission imminent due to initializing memory"},
 }};
 }  // namespace
@@ -423,12 +422,6 @@ constexpr const char *kExposeNonConformantSkippedMessages[] = {
     "VUID-VkSwapchainCreateInfoKHR-presentMode-01427",
 };
 
-// VVL appears has a bug tracking stageMask on VkEvent with secondary command buffer.
-// https://github.com/KhronosGroup/Vulkan-ValidationLayers/issues/7849
-constexpr const char *kSkippedMessagesWithVulkanSecondaryCommandBuffer[] = {
-    "VUID-vkCmdWaitEvents-srcStageMask-parameter",
-};
-
 // When using Vulkan secondary command buffers, the command buffer is begun with the current
 // framebuffer specified in pInheritanceInfo::framebuffer.  If the framebuffer is multisampled
 // and is resolved, an optimization would change the framebuffer to add the resolve target and
@@ -439,6 +432,14 @@ constexpr const char *kSkippedMessagesWithVulkanSecondaryCommandBuffer[] = {
 // http://anglebug.com/42265307
 constexpr const char *kSkippedMessagesWithRenderPassObjectsAndVulkanSCB[] = {
     "VUID-vkCmdExecuteCommands-pCommandBuffers-00099",
+};
+
+// When MSRTSS-rendering to a cubemap, ANGLE queries support without using the CUBE_COMPATIBLE
+// create flag because otherwise Vulkan requires that the driver returns VK_SAMPLE_COUNT_1_BIT.  VVL
+// doesn't do this however, so it complains that multisampling is not supported.
+constexpr const char *kSkippedMessagesWithMSRTSSWithoutDynamicRendering[] = {
+    "VUID-VkFramebufferCreateInfo-samples-07009",
+    "VUID-VkRenderPassAttachmentBeginInfo-pAttachments-07010",
 };
 
 // VVL bugs with dynamic rendering
@@ -793,6 +794,22 @@ constexpr vk::SkippedSyncvalMessage kSkippedSyncvalMessagesWithMSRTTEmulation[] 
          "command = vkCmdClearDepthStencilImage",
          "prior_command = vkCmdNextSubpass",
      }},
+    // When one aspect of depth/stencil is LOAD and the other is DONT_CARE and the image is
+    // previously initialized, the transfer->depth_stencil barrier's dst access does not include
+    // DEPTH_STENCIL_WRITE correctly.  See
+    // MSRTTES3Test.RenderToTextureDepthOnly/ES3_1_Vulkan_SwiftShader_EnableMultisampledRenderToTexture_RobustResourceInit
+    // for example.
+    {"SYNC-HAZARD-WRITE-AFTER-WRITE",
+     false,
+     {
+         "message_type = RenderPassLoadOpError",
+         "access = "
+         "VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT(VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_"
+         "BIT)",
+         "prior_access = VK_PIPELINE_STAGE_2_CLEAR_BIT(VK_ACCESS_2_TRANSFER_WRITE_BIT)",
+         "command = vkCmdBeginRenderPass",
+         "prior_command = vkCmdClearDepthStencilImage",
+     }},
 };
 
 enum class DebugMessageReport
@@ -1064,8 +1081,6 @@ DebugUtilsMessenger(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
 
     bool isError    = (messageSeverity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) != 0;
     std::string msg = log.str();
-
-    renderer->onNewValidationMessage(msg);
 
     if (isError)
     {
@@ -2049,7 +2064,7 @@ angle::Result OneOffCommandPool::getCommandBuffer(vk::ErrorContext *context,
             VkCommandPoolCreateInfo createInfo = {};
             createInfo.sType                   = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
             createInfo.flags                   = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT |
-                               VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
+                                                 VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
             ASSERT(mProtectionType == vk::ProtectionType::Unprotected ||
                    mProtectionType == vk::ProtectionType::Protected);
             if (mProtectionType == vk::ProtectionType::Protected)
@@ -2118,7 +2133,6 @@ Renderer::Renderer()
       mPipelineCacheVkUpdateTimeout(kPipelineCacheVkUpdatePeriod),
       mPipelineCacheSizeAtLastSync(0),
       mPipelineCacheInitialized(false),
-      mValidationMessageCount(0),
       mIsColorFramebufferFetchCoherent(false),
       mIsColorFramebufferFetchUsed(false),
       mCleanUpThread(this, &mCommandQueue),
@@ -2615,9 +2629,9 @@ angle::Result Renderer::initialize(vk::ErrorContext *context,
         {name, "thread_safety", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_thread_safety},
         {name, "check_shaders", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1, &setting_check_shaders},
         {name, "syncval_submit_time_validation", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1,
-                         &setting_syncval_submit_time_validation},
+         &setting_syncval_submit_time_validation},
         {name, "syncval_message_extra_properties", VK_LAYER_SETTING_TYPE_BOOL32_EXT, 1,
-                         &setting_syncval_message_extra_properties},
+         &setting_syncval_message_extra_properties},
     };
     VkLayerSettingsCreateInfoEXT layerSettingsCreateInfo = {
         VK_STRUCTURE_TYPE_LAYER_SETTINGS_CREATE_INFO_EXT, nullptr,
@@ -4708,21 +4722,73 @@ angle::Result Renderer::createDeviceAndQueue(vk::ErrorContext *context,
     uint32_t queueCount = std::min(queueFamily.getDeviceQueueCount(),
                                    static_cast<uint32_t>(egl::ContextPriority::EnumCount));
 
-    uint32_t queueCreateInfoCount              = 1;
-    VkDeviceQueueCreateInfo queueCreateInfo[1] = {};
-    queueCreateInfo[0].sType                   = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo[0].flags = enableProtectedContent ? VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT : 0;
-    queueCreateInfo[0].queueFamilyIndex = queueFamilyIndex;
-    queueCreateInfo[0].queueCount       = queueCount;
-    queueCreateInfo[0].pQueuePriorities = vk::QueueFamily::kQueuePriorities;
-
-    VkDeviceQueueGlobalPriorityCreateInfo queueGlobalPriorityCreateInfo = {};
-    queueGlobalPriorityCreateInfo.sType =
-        VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO;
-    if (mFeatures.supportsGlobalPriorityQuery.enabled)
+    // We use VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT only if queueCount >=3
+    if (globalPriority == VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT && queueCount < 3)
     {
-        queueGlobalPriorityCreateInfo.globalPriority = globalPriority;
-        vk::AddToPNextChain(&queueCreateInfo, &queueGlobalPriorityCreateInfo);
+        globalPriority = VK_QUEUE_GLOBAL_PRIORITY_MEDIUM;
+    }
+
+    uint32_t queueCreateInfoCount                                          = 1;
+    VkDeviceQueueCreateInfo queueCreateInfo[3]                             = {};
+    VkDeviceQueueGlobalPriorityCreateInfo queueGlobalPriorityCreateInfo[3] = {};
+
+    // If global priority is supported, we split queueCreateInfo into three groups so that the
+    // middle group uses VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT.
+    if (globalPriority == VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT)
+    {
+        ASSERT(mFeatures.supportsGlobalPriorityQuery.enabled);
+        ASSERT(queueCount >= 3);
+
+        // queueCreateInfo[0] is for Medium and High
+        queueCreateInfo[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo[0].flags =
+            enableProtectedContent ? VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT : 0;
+        queueCreateInfo[0].queueFamilyIndex = queueFamilyIndex;
+        queueCreateInfo[0].queueCount       = 2;
+        queueCreateInfo[0].pQueuePriorities = &vk::QueueFamily::kQueuePriorities[0];
+        queueGlobalPriorityCreateInfo[0].sType =
+            VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO;
+        queueGlobalPriorityCreateInfo[0].globalPriority = VK_QUEUE_GLOBAL_PRIORITY_MEDIUM;
+        vk::AddToPNextChain(&queueCreateInfo[0], &queueGlobalPriorityCreateInfo[0]);
+
+        ASSERT(vk::QueueFamily::kQueuePriorities[2] == QueueFamily::kQueuePriorityRealtime);
+        // queueCreateInfo[1] is for Realtime
+        queueCreateInfo[1].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo[1].flags =
+            enableProtectedContent ? VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT : 0;
+        queueCreateInfo[1].queueFamilyIndex = queueFamilyIndex;
+        queueCreateInfo[1].queueCount       = 1;
+        queueCreateInfo[1].pQueuePriorities = &vk::QueueFamily::kQueuePriorities[2];
+        queueGlobalPriorityCreateInfo[1].sType =
+            VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO;
+        queueGlobalPriorityCreateInfo[1].globalPriority = VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT;
+        vk::AddToPNextChain(&queueCreateInfo[1], &queueGlobalPriorityCreateInfo[1]);
+        queueCreateInfoCount++;
+
+        if (queueCount == 4)
+        {
+            // queueCreateInfo[2] is for Low
+            queueCreateInfo[2].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+            queueCreateInfo[2].flags =
+                enableProtectedContent ? VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT : 0;
+            queueCreateInfo[2].queueFamilyIndex = queueFamilyIndex;
+            queueCreateInfo[2].queueCount       = 1;
+            queueCreateInfo[2].pQueuePriorities = &vk::QueueFamily::kQueuePriorities[3];
+            queueGlobalPriorityCreateInfo[2].sType =
+                VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO;
+            queueGlobalPriorityCreateInfo[2].globalPriority = VK_QUEUE_GLOBAL_PRIORITY_MEDIUM;
+            vk::AddToPNextChain(&queueCreateInfo[2], &queueGlobalPriorityCreateInfo[2]);
+            queueCreateInfoCount++;
+        }
+    }
+    else
+    {
+        queueCreateInfo[0].sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+        queueCreateInfo[0].flags =
+            enableProtectedContent ? VK_DEVICE_QUEUE_CREATE_PROTECTED_BIT : 0;
+        queueCreateInfo[0].queueFamilyIndex = queueFamilyIndex;
+        queueCreateInfo[0].queueCount       = queueCount;
+        queueCreateInfo[0].pQueuePriorities = vk::QueueFamily::kQueuePriorities.data();
     }
 
     // Setup device initialization struct
@@ -4913,16 +4979,6 @@ void Renderer::initializeValidationMessageSuppressions()
             kPreferBGR565SkippedMessages + ArraySize(kPreferBGR565SkippedMessages));
     }
 
-    if (getFeatures().useVkEventForImageBarrier.enabled &&
-        (!vk::OutsideRenderPassCommandBuffer::ExecutesInline() ||
-         !vk::RenderPassCommandBuffer::ExecutesInline()))
-    {
-        mSkippedValidationMessages.insert(
-            mSkippedValidationMessages.end(), kSkippedMessagesWithVulkanSecondaryCommandBuffer,
-            kSkippedMessagesWithVulkanSecondaryCommandBuffer +
-                ArraySize(kSkippedMessagesWithVulkanSecondaryCommandBuffer));
-    }
-
     if (!getFeatures().preferDynamicRendering.enabled &&
         !vk::RenderPassCommandBuffer::ExecutesInline())
     {
@@ -4930,6 +4986,15 @@ void Renderer::initializeValidationMessageSuppressions()
             mSkippedValidationMessages.end(), kSkippedMessagesWithRenderPassObjectsAndVulkanSCB,
             kSkippedMessagesWithRenderPassObjectsAndVulkanSCB +
                 ArraySize(kSkippedMessagesWithRenderPassObjectsAndVulkanSCB));
+    }
+
+    if (!getFeatures().preferDynamicRendering.enabled &&
+        getFeatures().supportsMultisampledRenderToSingleSampled.enabled)
+    {
+        mSkippedValidationMessages.insert(
+            mSkippedValidationMessages.end(), kSkippedMessagesWithMSRTSSWithoutDynamicRendering,
+            kSkippedMessagesWithMSRTSSWithoutDynamicRendering +
+                ArraySize(kSkippedMessagesWithMSRTSSWithoutDynamicRendering));
     }
 
     if (getFeatures().preferDynamicRendering.enabled)
@@ -6601,7 +6666,7 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
     // query back to back, this should only introduce one extra flush per frame.
     // https://issuetracker.google.com/250706693
     ANGLE_FEATURE_CONDITION(&mFeatures, preferSubmitOnAnySamplesPassedQueryEnd,
-                            isTileBasedRenderer);
+                            isTileBasedRenderer && !isQualcommProprietary);
 
     // ARM proprietary driver appears having a bug that if we did not wait for submission to
     // complete, but call vkGetQueryPoolResults(VK_QUERY_RESULT_WAIT_BIT), it may result
@@ -6665,9 +6730,8 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
     // VkEvent instead of GPU overhead associated with vkCmdResetEvent.
     ANGLE_FEATURE_CONDITION(&mFeatures, recycleVkEvent, isSwiftShader);
 
-    // Disable for Samsung, details here -> http://anglebug.com/386749841#comment21
     ANGLE_FEATURE_CONDITION(&mFeatures, supportsDynamicRendering,
-                            mDynamicRenderingFeatures.dynamicRendering == VK_TRUE && !isSamsung);
+                            mDynamicRenderingFeatures.dynamicRendering == VK_TRUE);
 
     // Don't enable VK_KHR_maintenance5 without VK_KHR_dynamic_rendering
     ANGLE_FEATURE_CONDITION(&mFeatures, supportsMaintenance5,
@@ -6676,13 +6740,10 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
 
     // Disabled on Nvidia driver due to a bug with attachment location mapping, resulting in
     // incorrect rendering in the presence of gaps in locations.  http://anglebug.com/372883691.
-    //
-    // Disable for Samsung, details here -> http://anglebug.com/386749841#comment21
     ANGLE_FEATURE_CONDITION(
         &mFeatures, supportsDynamicRenderingLocalRead,
         mFeatures.supportsDynamicRendering.enabled &&
-            mDynamicRenderingLocalReadFeatures.dynamicRenderingLocalRead == VK_TRUE &&
-            !(isNvidia || isSamsung));
+            mDynamicRenderingLocalReadFeatures.dynamicRenderingLocalRead == VK_TRUE && !isNvidia);
 
     // Using dynamic rendering when VK_KHR_dynamic_rendering_local_read is available, because that's
     // needed for framebuffer fetch, MSRTT and advanced blend emulation.
@@ -6691,8 +6752,9 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
     // dynamic rendering.  If only version 1 is exposed, it's not sacrificied for dynamic rendering
     // and render pass objects are continued to be used.
     //
-    // Emulation of GL_EXT_multisampled_render_to_texture is not possible with dynamic rendering.
-    // That support is also not sacrificed for dynamic rendering.
+    // Using dynamic rendering when emulating GL_EXT_multisampled_render_to_texture is
+    // supported. Except for SwiftShader, which crashes when binding non-attachment textures as
+    // input attachments.
     //
     // Use of dynamic rendering is disabled on older ARM proprietary drivers due to driver bugs
     // (http://issuetracker.google.com/356051947).
@@ -6705,14 +6767,11 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
     const bool hasLegacyDitheringV1 =
         mFeatures.supportsLegacyDithering.enabled &&
         (mLegacyDitheringVersion < 2 || !mFeatures.supportsMaintenance5.enabled);
-    const bool emulatesMultisampledRenderToTexture =
-        mFeatures.enableMultisampledRenderToTexture.enabled &&
-        !mFeatures.supportsMultisampledRenderToSingleSampled.enabled;
     ANGLE_FEATURE_CONDITION(
         &mFeatures, preferDynamicRendering,
         mFeatures.supportsDynamicRendering.enabled &&
             mFeatures.supportsDynamicRenderingLocalRead.enabled && !hasLegacyDitheringV1 &&
-            !emulatesMultisampledRenderToTexture &&
+            !isSwiftShader &&
             !(isARMProprietary && driverVersion < angle::VersionTriple(52, 0, 0)) &&
             !(isQualcommProprietary && driverVersion < angle::VersionTriple(512, 801, 0)) &&
             !isPowerVR);
@@ -6845,11 +6904,9 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
     ANGLE_FEATURE_CONDITION(&mFeatures, supportsUnifiedImageLayouts,
                             mUnifiedImageLayoutsFeatures.unifiedImageLayouts == VK_TRUE);
 
-    // This feature is forcing all queue created with VK_QUEUE_GLOBAL_PRIORITY_REALTIME_EXT. Disable
-    // for everybody for now. Disable the feature on Samsung devices - http://anglebug.com/467875813
     ANGLE_FEATURE_CONDITION(
         &mFeatures, supportsGlobalPriority,
-        ExtensionFound(VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME, deviceExtensionNames) && false);
+        ExtensionFound(VK_EXT_GLOBAL_PRIORITY_EXTENSION_NAME, deviceExtensionNames));
 
     // REALTIME priority is not permitted on most operating systems.  This feature is limited to
     // Android for now.
@@ -6897,7 +6954,7 @@ void Renderer::initFeatures(const vk::ExtensionNameList &deviceExtensionNames,
 
     // Enable this feature to avoid image allocation overhead when repeatedly uploading the same
     // texture that has already been uploaded, outside a render pass.
-    ANGLE_FEATURE_CONDITION(&mFeatures, avoidImageGhostOutsideRenderPass, true);
+    ANGLE_FEATURE_CONDITION(&mFeatures, avoidImageGhostOutsideRenderPass, !isARM);
 }
 
 // !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -7187,6 +7244,10 @@ void Renderer::initializeFrontendFeatures(angle::FrontendFeatures *features) con
     // Always run the link's warm up job in a thread.  It's an optimization only, and does not block
     // the link resolution.
     ANGLE_FEATURE_CONDITION(features, alwaysRunLinkSubJobsThreaded, true);
+
+    // Enable the program binary blob compression for glGetProgramBinary and glGetProgramiv.  It
+    // will be decompressed when loading the program binary by glProgramBinary.
+    ANGLE_FEATURE_CONDITION(features, compressProgramBinaryBlob, isSamsung);
 }
 
 angle::Result Renderer::getLockedPipelineCacheDataIfNew(vk::ErrorContext *context,
@@ -7441,6 +7502,16 @@ VkFormatFeatureFlags Renderer::getFormatFeatureBits(angle::FormatID formatID,
             VkFormat vkFormat = vk::GetVkFormatFromFormatID(this, formatID);
             ASSERT(vkFormat != VK_FORMAT_UNDEFINED);
 
+            if (vkFormat == VK_FORMAT_A8_UNORM &&
+                (!mFeatures.supportsMaintenance5.enabled ||
+                 mGlobalOps->getFrontendApi() != GlobalOps::Api::OpenCL))
+            {
+                // TODO: VK_FORMAT_A8_UNORM currently only available in (VK_KHR_maintenance5 +
+                // OpenCL) usage - GLES should go to fallback format (R8_UNORM)
+                // http://anglebug.com/42266715
+                return 0;
+            }
+
             // Otherwise query the format features and cache it.
             vkGetPhysicalDeviceFormatProperties(mPhysicalDevice, vkFormat, &deviceProperties);
             // Workaround for some Android devices that don't indicate filtering
@@ -7510,20 +7581,6 @@ void Renderer::cleanupPendingSubmissionGarbage()
     // Check if pending garbage is still pending. If not, move them to the garbage list.
     mSharedGarbageList.cleanupUnsubmittedGarbage(this);
     mSuballocationGarbageList.cleanupUnsubmittedGarbage(this);
-}
-
-void Renderer::onNewValidationMessage(const std::string &message)
-{
-    mLastValidationMessage = message;
-    ++mValidationMessageCount;
-}
-
-std::string Renderer::getAndClearLastValidationMessage(uint32_t *countSinceLastClear)
-{
-    *countSinceLastClear    = mValidationMessageCount;
-    mValidationMessageCount = 0;
-
-    return std::move(mLastValidationMessage);
 }
 
 uint64_t Renderer::getMaxFenceWaitTimeNs() const

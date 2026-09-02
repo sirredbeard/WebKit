@@ -116,6 +116,7 @@ typedef NSVisualEffectView _WKPlatformVisualEffectView;
 
 @property (nonatomic, setter=_setScrollingUpdatesDisabledForTesting:) BOOL _scrollingUpdatesDisabledForTesting;
 @property (nonatomic, readonly) NSString *_scrollingTreeAsText;
+@property (nonatomic, readonly) NSString *_scrollingTreeIncludingNodeIDsAsText;
 @property (nonatomic, readonly) double _rubberbandHyperbolicCoefficientForTesting;
 
 @property (nonatomic, readonly) pid_t _networkProcessIdentifier;
@@ -128,6 +129,8 @@ typedef NSVisualEffectView _WKPlatformVisualEffectView;
 @property (nonatomic, readonly) BOOL _hasServiceWorkerBackgroundActivityForTesting;
 @property (nonatomic, readonly) BOOL _hasServiceWorkerForegroundActivityForTesting;
 - (void)_setThrottleStateForTesting:(int)type;
+@property (nonatomic, readonly, copy) NSString *_processAssertionTypeForTesting;
+- (void)_setJetsamBoostEnabledForTesting:(BOOL)enabled;
 
 - (void)_doAfterProcessingAllPendingMouseEvents:(dispatch_block_t)action;
 - (void)_doAfterProcessingAllPendingKeyEvents:(dispatch_block_t)action;
@@ -161,7 +164,11 @@ typedef NSVisualEffectView _WKPlatformVisualEffectView;
 
 - (void)_numberOfLiveDocumentsForTesting:(void (^)(NSUInteger count))completionHandler;
 
+- (void)_setDisplayForTesting:(uint32_t)displayID nominalFramesPerSecond:(unsigned)nominalFramesPerSecond;
+- (void)_preferredRenderingUpdateIntervalsForTesting:(void (^)(NSArray<NSNumber *> *intervalsInMillisecondsForEachWebProcess))completionHandler;
+
 - (void)_computePagesForPrinting:(_WKFrameHandle *)handle completionHandler:(void(^)(void))completionHandler WK_API_AVAILABLE(macos(13.0), ios(16.0));
+- (void)_endPrintingForTesting:(void(^)(void))completionHandler;
 
 - (void)_setConnectedToHardwareConsoleForTesting:(BOOL)connected;
 

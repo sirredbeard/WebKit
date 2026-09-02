@@ -114,7 +114,7 @@ RefPtr<CSSValue> Extractor::getFontSizeCSSValuePreferringKeyword() const
     if (auto sizeIdentifier = style->fontDescription().keywordSizeAsIdentifier())
         return CSSKeywordValue::create(sizeIdentifier);
 
-    return CSSPrimitiveValue::create(adjustFloatForAbsoluteZoom(style->fontDescription().computedSize(), *style), CSSUnitType::Px);
+    return CSSPrimitiveValue::create(unapplyingZoom<float>(style->fontDescription().usedSize(), *style), CSSUnitType::Px);
 }
 
 bool Extractor::useFixedFontDefaultSize() const
@@ -333,6 +333,7 @@ static bool isLayoutDependent(CSSPropertyID propertyID, const Style::ComputedSty
     case CSSPropertyHeight:
     case CSSPropertyInlineSize:
     case CSSPropertyBlockSize:
+    case CSSPropertySize:
         if (!renderer)
             return false;
         if (renderer->isSVGRenderer()) {

@@ -725,7 +725,7 @@ void PluginView::handleEvent(Event& event)
     if (!shouldForwardToPlugin(event))
         return;
 
-    const CheckedPtr currentEvent = WebPage::currentEvent();
+    const RefPtr currentEvent = WebPage::currentEvent();
     if (!currentEvent)
         return;
 
@@ -1046,7 +1046,7 @@ FetchOptions::Destination PluginView::fetchDestination() const
 
 void PluginView::loadMainResource()
 {
-    auto referrer = SecurityPolicy::generateReferrerHeader(frame()->document()->referrerPolicy(), m_mainResourceURL, frame()->loader().outgoingReferrerURL(), OriginAccessPatternsForWebProcess::singleton());
+    auto referrer = SecurityPolicy::generateReferrerHeader(frame()->document()->referrerPolicy(), m_mainResourceURL, protect(frame()->loader())->outgoingReferrerURL(), OriginAccessPatternsForWebProcess::singleton());
     if (referrer.isEmpty())
         referrer = { };
 
@@ -1174,10 +1174,12 @@ void PluginView::setPDFDisplayMode(PDFPluginDisplayMode mode)
     m_plugin->setDisplayModeAndUpdateLayout(mode);
 }
 
+#if ENABLE(PDF_HUD)
 void PluginView::openWithPreview(CompletionHandler<void(const String&, std::optional<FrameInfoData>&&, std::span<const uint8_t>)>&& completionHandler)
 {
     m_plugin->openWithPreview(WTF::move(completionHandler));
 }
+#endif
 
 #if ENABLE(TWO_PHASE_CLICKS)
 

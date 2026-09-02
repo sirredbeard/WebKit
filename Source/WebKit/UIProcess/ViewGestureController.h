@@ -28,6 +28,7 @@
 #include "MessageReceiver.h"
 #include "NativeWebWheelEvent.h"
 #include "SameDocumentNavigationType.h"
+#include "WebEvent.h"
 #include "WebPageProxyIdentifier.h"
 #include <WebCore/BoxExtents.h>
 #include <WebCore/Color.h>
@@ -82,7 +83,9 @@ class Navigation;
 }
 
 #if PLATFORM(MAC)
-typedef WebKit::NativeWebWheelEvent PlatformScrollEvent;
+// A reference rather than a value: events are refcounted now, and this is only ever passed through,
+// never stored.
+typedef const WebKit::NativeWebWheelEvent& PlatformScrollEvent;
 #elif PLATFORM(GTK)
 typedef struct {
     WebCore::FloatSize delta;
@@ -165,7 +168,7 @@ public:
 #endif
 
 #if PLATFORM(MAC)
-    void handleMagnificationGesture(double scale, WebEventPhase, WebCore::FloatPoint originInViewCoordinates);
+    void handleMagnificationGesture(double scale, WebEventPhase, WebCore::FloatPoint originInViewCoordinates, WebEventInputSource = WebEventInputSource::UserDriven);
     void handleSmartMagnificationGesture(WebCore::FloatPoint gestureLocationInViewCoordinates);
 
     void setCustomSwipeViews(Vector<RetainPtr<NSView>> views) { m_customSwipeViews = WTF::move(views); }
@@ -423,6 +426,7 @@ private:
 
     double m_initialMagnification { 1 };
     WebCore::FloatPoint m_initialMagnificationOrigin;
+    std::optional<WebEventInputSource> m_magnificationGestureInputSource;
 #endif
 
 #if PLATFORM(MAC)

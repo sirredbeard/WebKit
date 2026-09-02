@@ -134,7 +134,7 @@ public:
     DECLARE_VISIT_AGGREGATE;
 
     // If this returns false then we are requesting a reset of the owning PropertyInlineCache.
-    bool visitWeak(VM&);
+    bool isStillLive(VM&);
 
     // This returns true if it has marked everything it will ever marked. This can be used as an
     // optimization to then avoid calling this method again during the fixpoint.
@@ -168,6 +168,18 @@ inline bool canUseMegamorphicInById(VM& vm, UniquedStringImpl* uid)
 inline bool canUseMegamorphicPutById(VM& vm, UniquedStringImpl* uid)
 {
     return !parseIndex(*uid) && uid != vm.propertyNames->underscoreProto;
+}
+
+inline bool NODELETE canUseMegamorphicPutFastPath(Structure* structure)
+{
+    while (true) {
+        if (structure->typeInfo().overridesGetPrototype() || structure->typeInfo().overridesPut() || structure->hasPolyProto())
+            return false;
+        JSValue prototype = structure->storedPrototype();
+        if (prototype.isNull())
+            return true;
+        structure = asObject(prototype)->structure();
+    }
 }
 
 bool NODELETE canBeViaGlobalProxy(AccessCase::AccessType);
@@ -276,7 +288,7 @@ public:
     static void emitDataICPrepareForCall(CCallHelpers&);
     static void emitDataICRestoreAfterCall(CCallHelpers&);
     static CCallHelpers::Jump emitDataICCheckStructure(CCallHelpers&, GPRReg baseGPR, GPRReg scratchGPR);
-    static CCallHelpers::JumpList emitDataICCheckUid(CCallHelpers&, bool isSymbol, JSValueRegs, GPRReg scratchGPR);
+    static CCallHelpers::JumpList emitDataICCheckUid(CCallHelpers&, bool isSymbol, GPRReg, GPRReg scratchGPR);
     static void emitDataICJumpNextHandler(CCallHelpers&);
 
     bool NODELETE useHandlerIC() const;

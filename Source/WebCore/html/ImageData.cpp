@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2023 Apple Inc. All rights reserved.
+ * Copyright (C) 2008-2026 Apple Inc. All rights reserved.
  * Copyright (C) 2014 Adobe Systems Incorporated. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -156,6 +156,7 @@ ImageData::ImageData(const IntSize& size, ImageDataArray&& data, PredefinedColor
     : m_size(size)
     , m_data(WTF::move(data))
     , m_colorSpace(colorSpace)
+    , m_memoryCost(m_data.byteLength())
 {
 }
 
@@ -163,6 +164,7 @@ ImageData::ImageData(const IntSize& size, ImageDataArray&& data, PredefinedColor
     : m_size(size)
     , m_data(WTF::move(data), overridingPixelFormat)
     , m_colorSpace(colorSpace)
+    , m_memoryCost(m_data.byteLength())
 {
 }
 
@@ -179,7 +181,7 @@ Ref<ByteArrayPixelBuffer> ImageData::byteArrayPixelBuffer() const
 Ref<Float16ArrayPixelBuffer> ImageData::float16ArrayPixelBuffer() const
 {
     Ref float16Data = m_data.asFloat16Array();
-    PixelBufferFormat format { AlphaPremultiplication::Unpremultiplied, PixelFormat::RGBA16F, toDestinationColorSpace(m_colorSpace) };
+    PixelBufferFormat format { AlphaPremultiplication::Unpremultiplied, PixelFormat::RGBA16F, toExtendedDestinationColorSpace(m_colorSpace) };
     return Float16ArrayPixelBuffer::create(format, m_size, float16Data.get());
 }
 #endif // ENABLE(PIXEL_FORMAT_RGBA16F)

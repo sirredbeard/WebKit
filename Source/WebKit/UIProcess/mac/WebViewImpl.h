@@ -188,6 +188,7 @@ using FrameIdentifier = ObjectIdentifier<FrameIdentifierType>;
 - (void)_web_editorStateDidChange;
 
 - (void)_web_gestureEventWasNotHandledByWebCore:(NSEvent *)event;
+- (void)_web_magnificationGestureEventWasNotHandledByWebCoreWithPhase:(NSEventPhase)phase magnification:(CGFloat)magnification locationInWindow:(NSPoint)locationInWindow;
 
 - (void)_web_didChangeContentSize:(NSSize)newSize;
 
@@ -251,8 +252,13 @@ struct WebHitTestResultData;
 
 enum class ContinueUnsafeLoad : bool;
 enum class ForceSoftwareCapturingViewportSnapshot : bool;
+enum class PDFAccessibilityDisplayModeState : uint8_t;
 enum class UndoOrRedo : bool;
 enum class WebEventPhase : uint8_t;
+
+#if HAVE(NSREFRESHCONTROLLER)
+enum class RefreshControllerEligibility : bool { Ineligible, Eligible };
+#endif
 
 typedef id <NSValidatedUserInterfaceItem> ValidationItem;
 typedef Vector<RetainPtr<ValidationItem>> ValidationVector;
@@ -298,6 +304,7 @@ public:
 
     void createPDFHUD(PDFPluginIdentifier, WebCore::FrameIdentifier, const WebCore::IntRect&);
     void updatePDFHUDLocation(PDFPluginIdentifier, const WebCore::IntRect&);
+    void updatePDFHUDAccessibilityDisplayMode(PDFPluginIdentifier, PDFAccessibilityDisplayModeState);
     void convertPDFHUDBoundingBoxToWebViewCoordinates(WebCore::FrameIdentifier, WebCore::IntRect boundingBoxInFrameRootView, CompletionHandler<void(WebCore::IntRect)>&&);
     void removePDFHUD(PDFPluginIdentifier);
     void removeAllPDFHUDs();
@@ -605,7 +612,7 @@ public:
     void shareSheetDidDismiss(WKShareSheet *);
 
 #if ENABLE(WEB_AUTHN)
-    void showDigitalCredentialsChooser(const WebCore::DigitalCredentialsRequestData&, WTF::CompletionHandler<void(Expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&, WKWebView*);
+    void showDigitalCredentialsChooser(const WebCore::DigitalCredentialsRequestData&, WTF::CompletionHandler<void(std::expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&, WKWebView*);
     void dismissDigitalCredentialsChooser(WTF::CompletionHandler<void(bool)>&&, WKWebView*);
 #endif
 
@@ -686,6 +693,7 @@ public:
     void gestureEventWasNotHandledByWebCore(const NativeWebGestureEvent&);
 #endif
     void gestureEventWasNotHandledByWebCoreFromViewOnly(NSEvent *);
+    void magnificationGestureEventWasNotHandledByWebCoreFromViewOnly(NSEventPhase, CGFloat magnification, NSPoint locationInWindow);
 
     void didRestoreScrollPosition();
     
@@ -883,7 +891,7 @@ public:
     NSScrollPocket *topScrollPocket() const LIFETIME_BOUND { return m_topScrollPocket.get(); }
     void registerViewAboveScrollPocket(NSView *);
     void unregisterViewAboveScrollPocket(NSView *);
-    void updateScrollPocketVisibilityWhenScrolledToTop();
+    void updateScrollPocketVisibilityWhenScrolledToTopAndNonEditable();
     void updateTopScrollPocketCaptureColor();
     void updateTopScrollPocketStyle();
     void updatePrefersSolidColorHardPocket();
@@ -907,13 +915,13 @@ public:
     bool refreshControllerIsTracking() const { return m_refreshControllerIsTracking; }
     void clearRefreshControllerTracking() { m_refreshControllerIsTracking = false; }
     void updateRefreshControllerForWheelEvent(NSEvent *);
-    void updateRefreshControllerForPanGesture(NSGestureRecognizerState);
+    void updateRefreshControllerForPanGesture(NSGestureRecognizerState, RefreshControllerEligibility);
     void updateRefreshControllerFrame();
     void topScrollStretchDidChange(CGFloat topScrollStretch);
 #endif
 
 #if ENABLE(VIDEO)
-    void showCaptionDisplaySettings(WebCore::HTMLMediaElementIdentifier, const WebCore::ResolvedCaptionDisplaySettingsOptions&, CompletionHandler<void(Expected<void, WebCore::ExceptionData>&&)>&&);
+    void showCaptionDisplaySettings(WebCore::HTMLMediaElementIdentifier, const WebCore::ResolvedCaptionDisplaySettingsOptions&, CompletionHandler<void(std::expected<void, WebCore::ExceptionData>&&)>&&);
 #endif
 
 #if HAVE(APPKIT_GESTURES_SUPPORT)
@@ -1033,7 +1041,7 @@ private:
     std::optional<EditorState::PostLayoutData> postLayoutDataForContentEditable();
     bool inputMethodUsesCorrectKeyEventOrder();
 
-    void magnificationGestureWasNotHandledByWebCoreFromViewOnly(float magnification, WebEventPhase, WebCore::FloatPoint originInViewCoordinates);
+    void applyNativeMagnification(float magnification, WebEventPhase, WebCore::FloatPoint originInViewCoordinates, WebEventInputSource = WebEventInputSource::UserDriven);
 
     WeakObjCPtr<WKWebView> m_view;
     const UniqueRef<PageClient> m_pageClient;
@@ -1074,8 +1082,13 @@ private:
 #endif
 
     HashMap<WebKit::PDFPluginIdentifier, RetainPtr<NSView<WKPDFHUDView>>> _pdfHUDViews;
-    // PDF HUDs awaiting their initial async coordinate conversion, mapped to the latest location update.
-    HashMap<WebKit::PDFPluginIdentifier, WebCore::IntRect> m_pdfHUDsPendingCreation;
+    // PDF HUDs awaiting their initial async coordinate conversion, mapped to the latest location
+    // update and accessibility display mode state.
+    struct PendingHUDData {
+        WebCore::IntRect frameRootViewBox;
+        PDFAccessibilityDisplayModeState displayModeState;
+    };
+    HashMap<WebKit::PDFPluginIdentifier, PendingHUDData> m_pdfHUDsPendingCreation;
 
     RetainPtr<WKShareSheet> _shareSheet;
 

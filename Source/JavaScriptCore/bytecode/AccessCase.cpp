@@ -225,7 +225,7 @@ RefPtr<AccessCase> AccessCase::createTransition(
     // enough registers to make it happen.
     if (oldStructure->outOfLineCapacity() != newStructure->outOfLineCapacity()) {
         // 1 register for value.
-        size_t requiredRegisters = 1; // propertyCache.valueRegs()
+        size_t requiredRegisters = 1; // propertyCache.valueGPR()
 
         // 1 register for the property.
         ++requiredRegisters;
@@ -233,9 +233,9 @@ RefPtr<AccessCase> AccessCase::createTransition(
         // 1 register for the base.
         ++requiredRegisters;
 
-        if (propertyCache.m_propertyCacheGPR != InvalidGPRReg)
+        if (propertyCache.propertyCacheGPR() != InvalidGPRReg)
             ++requiredRegisters;
-        if (propertyCache.m_arrayProfileGPR != InvalidGPRReg)
+        if (propertyCache.arrayProfileGPR() != InvalidGPRReg)
             ++requiredRegisters;
 
         // One extra register for scratchGPR
@@ -1399,7 +1399,7 @@ void AccessCase::dump(PrintStream& out) const
     out.print("}"_s);
 }
 
-bool AccessCase::visitWeak(VM& vm) const
+bool AccessCase::isStillLive(VM& vm) const
 {
     bool isValid = true;
     forEachDependentCell(vm, [&](JSCell* cell) {

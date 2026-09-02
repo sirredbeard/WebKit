@@ -93,7 +93,7 @@ struct Result;
 }
 
 using FrameIdentifier = ObjectIdentifier<FrameIdentifierType>;
-using NavigationIdentifier = ObjectIdentifier<NavigationIdentifierType, uint64_t>;
+using NavigationIdentifier = ObjectIdentifier<NavigationIdentifierType>;
 using NodeIdentifier = ObjectIdentifier<NodeIdentifierType>;
 using SandboxFlags = OptionSet<SandboxFlag>;
 using WebProcessJSHandleIdentifier = ObjectIdentifier<JSHandleIdentifierType>;
@@ -183,10 +183,11 @@ public:
     WebCore::SecurityOriginData documentSecurityOriginData() const;
 
     const WebCore::CertificateInfo& certificateInfo() const LIFETIME_BOUND { return m_certificateInfo; }
+    WebCore::CertificateInfo provisionalCertificateInfoFromNetworkProcess(const URL&) const;
 
-    void commitCertificateInfo(const URL&);
+    void commitCertificateInfo(const URL&, bool hasCertificateInfo);
     void receivedMainResourceResponseWithCertificateInfo(String&&, WebCore::CertificateInfo&&);
-    void copyCertificateInfoForProcessSwapOnNavigationResponse(const URL&, const WebFrameProxy&);
+    void setCertificateInfoForProcessSwapOnNavigationResponse(const URL&, WebCore::CertificateInfo&&);
 
     bool canProvideSource() const;
 
@@ -211,7 +212,12 @@ public:
     void didSameDocumentNavigation(URL&&); // eg. anchor navigation, session state change.
     void didChangeTitle(String&&);
 
-    WebFramePolicyListenerProxy& setUpPolicyListenerProxy(CompletionHandler<void(WebCore::PolicyAction, API::WebsitePolicies*, ProcessSwapRequestedByClient, std::optional<NavigatingToAppBoundDomain>, WasNavigationIntercepted)>&&, ShouldExpectSafeBrowsingResult, ShouldExpectAppBoundDomainResult, ShouldWaitForInitialLinkDecorationFilteringData, ShouldWaitForSiteHasStorageCheck, ShouldWaitForEnhancedSecurityLinkCheck);
+    // Only one navigation policy check can be outstanding per frame, so a new one displaces the
+    // previous. A download is not a navigation, so it neither displaces nor is displaced. The check
+    // for a server redirect in a load the client let continue is a navigation check even though its
+    // action still carries the download attribute: it belongs to that load, and dies with it.
+    enum class IsDownloadPolicyCheck : bool { No, Yes };
+    WebFramePolicyListenerProxy& setUpPolicyListenerProxy(CompletionHandler<void(WebCore::PolicyAction, API::WebsitePolicies*, ProcessSwapRequestedByClient, std::optional<NavigatingToAppBoundDomain>, WasNavigationIntercepted)>&&, ShouldExpectSafeBrowsingResult, ShouldExpectAppBoundDomainResult, ShouldWaitForInitialLinkDecorationFilteringData, ShouldWaitForSiteHasStorageCheck, ShouldWaitForEnhancedSecurityLinkCheck, IsDownloadPolicyCheck);
 
 #if ENABLE(CONTENT_FILTERING)
     void contentFilterDidBlockLoad(WebCore::ContentFilterUnblockHandler contentFilterUnblockHandler) { m_contentFilterUnblockHandler = WTF::move(contentFilterUnblockHandler); }
@@ -234,7 +240,7 @@ public:
     ProcessID NODELETE processID() const;
     void prepareForProvisionalLoadInProcess(WebProcessProxy&, API::Navigation&, BrowsingContextGroup&, std::optional<WebCore::SecurityOriginData>, CompletionHandler<void(std::optional<WebCore::PageIdentifier>)>&&);
 
-    void commitProvisionalFrame(IPC::Connection&, WebCore::FrameIdentifier, FrameInfoData&&, WebCore::ResourceRequest&&, std::optional<WebCore::NavigationIdentifier>, String&& mimeType, bool frameHasCustomContentProvider, WebCore::FrameLoadType, bool usedLegacyTLS, bool privateRelayed, String&& proxyName, WebCore::ResourceResponseSource, bool containsPluginDocument, WebCore::HasInsecureContent, WebCore::MouseEventPolicy, WebCore::DocumentSecurityPolicy&&, HashSet<WebCore::SecurityOriginData>&& cspOriginsThatUpgradeInsecureNavigations, const UserData&, WebCore::RestoredFromBackForwardCache, RefPtr<FrameState>&& redirectReplaceFrameState);
+    void commitProvisionalFrame(IPC::Connection&, WebCore::FrameIdentifier, FrameInfoData&&, WebCore::ResourceRequest&&, std::optional<WebCore::NavigationIdentifier>, String&& mimeType, bool frameHasCustomContentProvider, WebCore::FrameLoadType, bool hasCertificateInfo, bool usedLegacyTLS, bool privateRelayed, String&& proxyName, WebCore::ResourceResponseSource, bool containsPluginDocument, WebCore::HasInsecureContent, WebCore::MouseEventPolicy, WebCore::DocumentSecurityPolicy&&, HashSet<WebCore::SecurityOriginData>&& cspOriginsThatUpgradeInsecureNavigations, const UserData&, WebCore::RestoredFromBackForwardCache, RefPtr<FrameState>&& redirectReplaceFrameState);
 
     void getFrameTree(CompletionHandler<void(std::optional<FrameTreeNodeData>&&)>&&);
     void getFrameInfo(CompletionHandler<void(std::optional<FrameInfoData>&&)>&&);
@@ -323,7 +329,7 @@ public:
     void sendMessageToInspectorFrontend(const String& targetId, const String& message);
 
     void requestTextExtraction(WebCore::TextExtraction::Request&&, CompletionHandler<void(WebCore::TextExtraction::Result&&)>&&);
-    void handleTextExtractionInteraction(WebCore::TextExtraction::Interaction&&, CompletionHandler<void(bool, String&&, WebCore::FloatRect)>&&);
+    void handleTextExtractionInteraction(WebCore::TextExtraction::Interaction&&, CompletionHandler<void(bool, String&&, Vector<String>&&, WebCore::FloatRect)>&&);
     void describeTextExtractionInteraction(WebCore::TextExtraction::Interaction&&, CompletionHandler<void(WebCore::TextExtraction::InteractionDescription&&)>&&);
     void takeSnapshotOfExtractedText(WebCore::TextExtraction::ExtractedText&&, CompletionHandler<void(RefPtr<WebCore::TextIndicator>&&)>&&);
     void requestJSHandleForExtractedText(WebCore::TextExtraction::ExtractedText&&, CompletionHandler<void(std::optional<JSHandleInfo>&&)>&&);
@@ -342,8 +348,6 @@ private:
     WebFrameProxy(WebPageProxy&, FrameProcess&, WebCore::FrameIdentifier, WebCore::SandboxFlags, WebCore::ReferrerPolicy, WebCore::ScrollbarMode, WebFrameProxy*, WebFrameProxy*, IsMainFrame, std::optional<URL>&&);
 
     std::optional<SharedPreferencesForWebProcess> NODELETE sharedPreferencesForWebProcess() const;
-    WebCore::CertificateInfo certificateInfoFromNetworkProcess(const URL&) const;
-
     std::optional<WebCore::PageIdentifier> NODELETE pageIdentifier() const;
 
     enum class ForInitialization : bool { No, Yes };
@@ -369,6 +373,8 @@ private:
     WebCore::CertificateInfo m_certificateInfo;
     HashMap<String, WebCore::CertificateInfo> m_hostAndPortToCertificateInfo;
     RefPtr<WebFramePolicyListenerProxy> m_activeListener;
+    HashMap<uint64_t, Ref<WebFramePolicyListenerProxy>> m_activeDownloadListeners;
+    uint64_t m_nextDownloadListenerID { 0 };
     WebCore::FrameIdentifier m_frameID;
     ListHashSet<Ref<WebFrameProxy>> m_childFrames;
     WeakPtr<WebFrameProxy> m_parentFrame;

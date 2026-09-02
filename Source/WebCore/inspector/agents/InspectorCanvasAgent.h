@@ -95,7 +95,7 @@ public:
     void setShaderProgramHighlighted(const Inspector::Protocol::Canvas::ProgramId&, bool highlighted, Ref<SetShaderProgramHighlightedCallback>&&);
 
     // CanvasObserver
-    void canvasChanged(CanvasBase&, const FloatRect&) final;
+    void canvasContentsWillChange(CanvasBase&, const FloatRect&) final;
     void canvasResized(CanvasBase&) final { }
     void canvasDestroyed(CanvasBase&) final;
 
@@ -118,6 +118,7 @@ public:
     void didCreateWebGPUDevice(GPUDevice&);
     void willDestroyWebGPUDevice(GPUDevice&);
     virtual void didChangeGPUDeviceClientNodes(GPUDevice&);
+    void didChangeWebGPUMemory(GPUDevice&);
     void didCreateWebGPUComputePipeline(GPUDevice&, GPUComputePipeline&);
     void willDestroyWebGPUComputePipeline(GPUComputePipeline&);
     void didCreateWebGPURenderPipeline(GPUDevice&, GPURenderPipeline&);
@@ -130,6 +131,8 @@ public:
     void recordAction(CanvasRenderingContext&, InspectorCanvasProcessedArgument&& receiver, String&&, InspectorCanvasProcessedArguments&& = { });
     void recordAction(GPUDevice&, String&&, InspectorCanvasProcessedArguments&& = { });
     void recordAction(GPUDevice&, InspectorCanvasProcessedArgument&& receiver, String&&, InspectorCanvasProcessedArguments&& = { });
+    void recordActionResult(CanvasRenderingContext&, InspectorCanvasProcessedArgument&&);
+    void recordActionResult(GPUDevice&, InspectorCanvasProcessedArgument&&);
 
     RefPtr<InspectorCanvas> assertInspectorCanvas(Inspector::Protocol::ErrorString&, const String& canvasId);
     RefPtr<InspectorCanvas> findInspectorCanvas(const CanvasRenderingContext&);

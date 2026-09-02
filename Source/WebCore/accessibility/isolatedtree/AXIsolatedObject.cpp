@@ -874,7 +874,7 @@ RefPtr<AXIsolatedObject> AXIsolatedObject::approximateHitTest(const IntPoint& po
             // RemoteFrames don't have this problem since they have a wrapper that points to the remote accessibility
             // object, and the frameworks recursively hit test in the bridged process.
             // This also helps guard against potential frame wrapper issues, like the one noted in
-            // AXIsolatedTree::applyPendingChangesLocked.
+            // AXIsolatedTree::applyCommittedChanges.
             if (RefPtr crossFrameChild = child->crossFrameChildObject()) {
                 if (RefPtr hitChild = crossFrameChild->approximateHitTest(point))
                     return hitChild;
@@ -1910,12 +1910,17 @@ int AXIsolatedObject::insertionPointLineNumber() const
         return 0;
 
     auto selectedMarkerRange = selectedTextMarkerRange();
-    if (selectedMarkerRange.start().isNull() || !selectedMarkerRange.isCollapsed()) {
+    if (!selectedMarkerRange.isCollapsed()) {
         // If the selection is not collapsed, we don't know whether the insertion point is at the start or the end, so return -1.
         return -1;
     }
 
     if (isTextControl()) {
+        if (selectedMarkerRange.start().isNull()) {
+            // A control with no text has nothing for a marker to point at, and a single line for the
+            // caret to be on.
+            return AXTextMarker { *this, 0 }.toTextRunMarker(idOfNextSiblingIncludingIgnoredOrParent()).isValid() ? -1 : 0;
+        }
         RefPtr selectionObject = selectedMarkerRange.start().isolatedObject();
         if (selectionObject && isAncestorOfObject(*selectionObject))
             return selectedMarkerRange.start().lineIndex();

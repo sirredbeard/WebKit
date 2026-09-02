@@ -61,13 +61,6 @@ public:
     };
     using ChangeFlags = OptionSet<Change>;
 
-    struct ChangeIndex {
-        Change toChange() { return static_cast<Change>(1 << value); }
-
-        uint32_t value;
-    };
-    static constexpr ChangeIndex toIndex(GraphicsContextState::Change change) { return { WTF::ctz(std::to_underlying(change)) }; }
-
     static constexpr ChangeFlags basicChangeFlags { Change::StrokeThickness, Change::StrokeBrush, Change::FillBrush };
     static constexpr ChangeFlags strokeChangeFlags { Change::StrokeThickness, Change::StrokeBrush };
 
@@ -141,9 +134,18 @@ public:
     bool drawLuminanceMask() const { return m_drawLuminanceMask; }
     void setDrawLuminanceMask(bool drawLuminanceMask) { setProperty(Change::DrawLuminanceMask, &GraphicsContextState::m_drawLuminanceMask, drawLuminanceMask); }
 
-    void mergeLastChanges(const GraphicsContextState&, const std::optional<GraphicsContextState>& lastDrawingState = std::nullopt);
-    void mergeSingleChange(const GraphicsContextState&, ChangeIndex, const std::optional<GraphicsContextState>& lastDrawingState = std::nullopt);
+    void mergeLastChanges(const GraphicsContextState&);
     void mergeAllChanges(const GraphicsContextState&);
+
+    // Removes change bit for each property that matches another state property.
+    WEBCORE_EXPORT void filterLastChangesForMatching(const GraphicsContextState&);
+
+    // Copies the given properties from another state, without marking them changed here. Used to
+    // track what the underlying context has been given.
+    WEBCORE_EXPORT void copyPropertiesFrom(const GraphicsContextState&, ChangeFlags);
+
+    // Whether every property holds the same value, ignoring changes() and purpose(). For assertions.
+    WEBCORE_EXPORT bool propertiesEqual(const GraphicsContextState&) const;
 
     Purpose purpose() const { return m_purpose; }
 
@@ -151,6 +153,8 @@ public:
 
 private:
     friend struct IPC::ArgumentCoder<GraphicsContextState>;
+
+    template<typename Functor> static constexpr void forEachProperty(NOESCAPE const Functor&);
 
     template<typename T>
     void setProperty(Change change, T GraphicsContextState::*property, const T& value)

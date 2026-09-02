@@ -145,6 +145,7 @@ public:
 
     bool NODELETE needsGMailOverflowScrollQuirk() const;
     bool NODELETE needsYouTubeOverflowScrollQuirk() const;
+    bool NODELETE needsWebExScrollabilityQuirk() const;
     bool NODELETE needsFullscreenDisplayNoneQuirk() const;
     bool NODELETE needsFullscreenObjectFitQuirk() const;
     bool needsZomatoEmailLoginLabelQuirk() const;
@@ -154,9 +155,6 @@ public:
     bool needsGeforcenowWarningDisplayNoneQuirk() const;
 
     bool needsYahooVolumeSliderQuirk() const;
-    bool needsZillowFloorplanMarginQuirk() const;
-
-    bool needsPrimeVideoUserSelectNoneQuirk() const;
 
     bool needsFacebookRemoveNotSupportedQuirk() const;
 
@@ -168,7 +166,7 @@ public:
 
     bool NODELETE needsPreloadAutoQuirk() const;
 
-    bool NODELETE needsPauseBeforeFullscreenExitQuirk() const;
+    bool NODELETE needsSuppressedPauseEventOnFullscreenExitQuirk() const;
 
     bool shouldBypassBackForwardCache() const;
     bool shouldBypassAsyncScriptDeferring() const;
@@ -207,8 +205,6 @@ public:
     void setSubFrameDomainsForStorageAccessQuirk(Vector<RegistrableDomain>&& domains) { m_subFrameDomainsForStorageAccessQuirk = WTF::move(domains); }
     const Vector<RegistrableDomain>& subFrameDomainsForStorageAccessQuirk() const LIFETIME_BOUND { return m_subFrameDomainsForStorageAccessQuirk; }
 
-    bool needsVP9FullRangeFlagQuirk() const;
-
     bool requiresUserGestureToPauseInPictureInPicture() const;
     bool requiresUserGestureToLoadInPictureInPicture() const;
     bool requiresUserGestureToPlayInFullscreen() const;
@@ -229,6 +225,8 @@ public:
     WEBCORE_EXPORT void setTopDocumentURLForTesting(URL&&);
 
     static bool shouldOmitHTMLDocumentSupportedPropertyNames();
+
+    WEBCORE_EXPORT Vector<String> activeQuirks() const;
 
 #if PLATFORM(IOS) || PLATFORM(VISION)
     WEBCORE_EXPORT bool allowLayeredFullscreenVideos() const;
@@ -263,7 +261,6 @@ public:
     bool needsToCopyUserSelectNoneQuirk() const { return m_needsToCopyUserSelectNoneQuirk; }
     void setNeedsToCopyUserSelectNoneQuirk() { m_needsToCopyUserSelectNoneQuirk = true; }
 
-    bool shouldEnableCanvas2DAdvancedPrivacyProtectionQuirk() const;
     String advancedPrivacyProtectionSubstituteDataURLForScriptWithFeatures(const String& lastDrawnText, int canvasWidth, int canvasHeight) const;
 
     bool NODELETE needsResettingTransitionCancelsRunningTransitionQuirk() const;
@@ -276,7 +273,7 @@ public:
     bool NODELETE shouldIgnorePlaysInlineRequirementQuirk() const;
 
 #if PLATFORM(IOS_FAMILY)
-    bool shouldAllowPopupFromMicrosoftOfficeToOneDrive() const { return m_quirksData.quirkIsEnabled(QuirksData::SiteSpecificQuirk::ShouldAllowPopupFromMicrosoftOfficeToOneDrive); }
+    bool shouldAllowPopupFromMicrosoftOfficeToOneDrive() const { return m_quirksData.quirkIsEnabled(SiteSpecificQuirk::ShouldAllowPopupFromMicrosoftOfficeToOneDrive); }
     bool needsPopupFromMicrosoftOfficeToOneDrive(const URL& targetURL) const;
 #endif
 
@@ -371,6 +368,7 @@ public:
     void clearLogoutSurvivingIdentityCookiesIfNeeded(const URL& fetchURL, int httpStatusCode);
 
     void determineRelevantQuirks();
+    void logQuirksToConsoleIfNecessary() const;
 
 #if PLATFORM(IOS_FAMILY) && ENABLE(IOS_TOUCH_EVENTS)
     WEBCORE_EXPORT bool shouldAllowNativeTapsOnMediaElements(const Node*) const;
@@ -380,25 +378,31 @@ public:
     bool NODELETE shouldSendFakeTouchForceChangeEvent() const;
 #endif
 
-private:
-    bool needsQuirks() const;
-    bool isDomain(const String&) const;
-    bool domainStartsWith(const String&) const;
-    bool isEmbedDomain(const String&) const;
-    bool isYoutubeEmbedDomain() const;
-
-    static bool domainNeedsAvoidResizingWhenInputViewBoundsChangeQuirk(const URL&, QuirksData&);
-    static bool domainNeedsScrollbarWidthThinDisabledQuirk(const URL&, QuirksData&);
-#if ENABLE(VIDEO_PRESENTATION_MODE)
-    static bool domainShouldDisableEndFullscreenEventWhenEnteringPictureInPictureFromFullscreenQuirk(const URL&, QuirksData&);
+#if PLATFORM(COCOA)
+    bool needsWebKitMediaKeysTransportStreamIsTypeSupportedQuirk() const;
 #endif
 
+private:
+    bool needsQuirks() const;
     URL topDocumentURL() const;
 
     WeakPtr<Document, WeakPtrImplWithEventTargetData> m_document;
     mutable WeakPtr<const Element, WeakPtrImplWithEventTargetData> m_facebookStoriesCreationFormContainer;
 
     mutable QuirksData m_quirksData;
+
+    mutable QuirkBitSet m_probedQuirks;
+
+    template<typename Probe>
+    bool quirkIsEnabledAfterProbing(SiteSpecificQuirk quirk, NOESCAPE Probe&& probe) const
+    {
+        auto index = static_cast<size_t>(quirk);
+        if (!m_probedQuirks.get(index)) {
+            m_probedQuirks.set(index);
+            m_quirksData.setQuirkState(quirk, probe());
+        }
+        return m_quirksData.quirkIsEnabled(quirk);
+    }
 
     bool m_needsConfigurableIndexedPropertiesQuirk { false };
     bool m_needsToCopyUserSelectNoneQuirk { false };

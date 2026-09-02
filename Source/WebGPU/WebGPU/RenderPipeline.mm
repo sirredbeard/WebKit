@@ -338,6 +338,8 @@ static MTLVertexFormat NODELETE vertexFormat(WGPUVertexFormat vertexFormat)
         return MTLVertexFormatInt3;
     case WGPUVertexFormat_Sint32x4:
         return MTLVertexFormatInt4;
+    case WGPUVertexFormat_Snorm1010102:
+        return MTLVertexFormatInt1010102Normalized;
     case WGPUVertexFormat_Unorm1010102:
         return MTLVertexFormatUInt1010102Normalized;
     case WGPUVertexFormat_Unorm8x4Bgra:
@@ -430,6 +432,7 @@ static size_t NODELETE vertexFormatSize(WGPUVertexFormat vertexFormat)
         return 12;
     case WGPUVertexFormat_Sint32x4:
         return 16;
+    case WGPUVertexFormat_Snorm1010102:
     case WGPUVertexFormat_Unorm1010102:
         return 4;
     case WGPUVertexFormat_Unorm8x4Bgra:
@@ -540,6 +543,8 @@ static ASCIILiteral name(WGPUVertexFormat format)
         return "Int3"_s;
     case WGPUVertexFormat_Sint32x4:
         return "Int4"_s;
+    case WGPUVertexFormat_Snorm1010102:
+        return "SInt1010102Normalized"_s;
     case WGPUVertexFormat_Unorm1010102:
         return "UInt1010102Normalized"_s;
     case WGPUVertexFormat_Unorm8x4Bgra:
@@ -604,6 +609,7 @@ static constexpr WGPUVertexFormatType NODELETE formatType(WGPUVertexFormat forma
     case WGPUVertexFormat_Float32x2:
     case WGPUVertexFormat_Float32x3:
     case WGPUVertexFormat_Float32x4:
+    case WGPUVertexFormat_Snorm1010102:
     case WGPUVertexFormat_Unorm1010102:
     case WGPUVertexFormat_Unorm8x4Bgra:
         return WGPUVertexFormatType::Float;
@@ -982,6 +988,13 @@ NSString* Device::addPipelineLayouts(Vector<Vector<WGPUBindGroupLayoutEntry>>& p
     for (auto& bindGroupLayout : pipelineLayout.bindGroupLayouts) {
         auto& entries = pipelineEntries[bindGroupLayout.group];
         HashMap<String, uint64_t> entryMap;
+        // Wrapping the bump would let the array-length entry alias a user binding and defeat the bounds check.
+        auto bumpForArrayLength = [&](uint32_t webBinding) -> std::optional<uint32_t> {
+            auto checked = checkedSum<uint32_t>(webBinding, limits().maxBindingsPerBindGroup);
+            if (checked.hasOverflowed())
+                return std::nullopt;
+            return checked.value();
+        };
         for (auto& entry : bindGroupLayout.entries) {
             auto visibility = convertVisibility(entry.visibility);
             auto stage = visibility / 2;
@@ -991,7 +1004,10 @@ NSString* Device::addPipelineLayouts(Vector<Vector<WGPUBindGroupLayoutEntry>>& p
             uint32_t webBinding = entry.webBinding;
             if (auto& entryName = entry.name; entryName.length()) {
                 if (entryName.endsWith("_ArrayLength"_s)) {
-                    webBinding += limits().maxBindingsPerBindGroup;
+                    auto bumped = bumpForArrayLength(webBinding);
+                    if (!bumped)
+                        return @"Binding index overflow in auto-generated layouts";
+                    webBinding = *bumped;
                     isArrayLength = true;
                 }
             }
@@ -1010,7 +1026,10 @@ NSString* Device::addPipelineLayouts(Vector<Vector<WGPUBindGroupLayoutEntry>>& p
             WGPUBufferBindingType bufferTypeOverride = WGPUBufferBindingType_Undefined;
             if (auto& entryName = entry.name; entryName.length()) {
                 if (isArrayLength) {
-                    webBinding += limits().maxBindingsPerBindGroup;
+                    auto bumped = bumpForArrayLength(webBinding);
+                    if (!bumped)
+                        return @"Binding index overflow in auto-generated layouts";
+                    webBinding = *bumped;
                     bufferTypeOverride = static_cast<WGPUBufferBindingType>(WGPUBufferBindingType_ArrayLength);
                     auto shortName = entryName.substring(2, entryName.length() - (sizeof("_ArrayLength") + 1));
                     if (auto it = entryMap.find(shortName); it != entryMap.end())

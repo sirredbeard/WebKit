@@ -1727,8 +1727,8 @@ void NetworkSessionCocoa::removeWebSocketTask(SessionSet& sessionSet, WebSocketT
 void NetworkSessionCocoa::addWebPageNetworkParameters(WebPageProxyIdentifier pageID, WebPageNetworkParameters&& parameters)
 {
     auto addResult1 = m_perParametersSessionSets.add(parameters, nullptr);
-    if (auto set = addResult1.iterator->value) {
-        m_perPageSessionSets.add(pageID, *set);
+    if (RefPtr set = addResult1.iterator->value) {
+        m_perPageSessionSets.add(pageID, set.releaseNonNull());
         return;
     }
 
@@ -1738,7 +1738,7 @@ void NetworkSessionCocoa::addWebPageNetworkParameters(WebPageProxyIdentifier pag
 #if USE(APPLE_INTERNAL_SDK)
     configuration.get()._attributedBundleIdentifier = parameters.attributedBundleIdentifier().createNSString().get();
 #endif
-    initializeNSURLSessionsInSet(addResult2.iterator->value.get(), configuration.get());
+    initializeNSURLSessionsInSet(protect(addResult2.iterator->value), configuration.get());
     addResult1.iterator->value = addResult2.iterator->value.get();
 
     m_attributedBundleIdentifierFromPageIdentifiers.add(pageID, parameters.attributedBundleIdentifier());
@@ -1814,14 +1814,14 @@ private:
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(NetworkSessionCocoa::BlobDataTaskClient);
 
-void NetworkSessionCocoa::loadImageForDecoding(WebCore::ResourceRequest&& request, WebPageProxyIdentifier pageID, size_t maximumBytesFromNetwork, CompletionHandler<void(Expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&& completionHandler)
+void NetworkSessionCocoa::loadImageForDecoding(WebCore::ResourceRequest&& request, WebPageProxyIdentifier pageID, size_t maximumBytesFromNetwork, CompletionHandler<void(std::expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&& completionHandler)
 {
     class Client : public RefCounted<Client>, public NetworkDataTaskClient {
     public:
         void ref() const final { RefCounted::ref(); }
         void deref() const final { RefCounted::deref(); }
 
-        static void create(NetworkSession& networkSession, Ref<NetworkProcess>&& networkProcess, WebPageProxyIdentifier pageID, const NetworkLoadParameters& loadParameters, size_t maximumBytesFromNetwork, CompletionHandler<void(Expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&& completionHandler)
+        static void create(NetworkSession& networkSession, Ref<NetworkProcess>&& networkProcess, WebPageProxyIdentifier pageID, const NetworkLoadParameters& loadParameters, size_t maximumBytesFromNetwork, CompletionHandler<void(std::expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&& completionHandler)
         {
             Ref client = adoptRef(*new Client(networkSession, WTF::move(networkProcess), pageID, loadParameters, maximumBytesFromNetwork, WTF::move(completionHandler)));
 
@@ -1830,7 +1830,7 @@ void NetworkSessionCocoa::loadImageForDecoding(WebCore::ResourceRequest&& reques
         }
 
     private:
-        Client(NetworkSession& networkSession, Ref<NetworkProcess>&& networkProcess, WebPageProxyIdentifier pageID, const NetworkLoadParameters& loadParameters, size_t maximumBytesFromNetwork, CompletionHandler<void(Expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&& completionHandler)
+        Client(NetworkSession& networkSession, Ref<NetworkProcess>&& networkProcess, WebPageProxyIdentifier pageID, const NetworkLoadParameters& loadParameters, size_t maximumBytesFromNetwork, CompletionHandler<void(std::expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&& completionHandler)
             : m_networkProcess(WTF::move(networkProcess))
             , m_url(loadParameters.request.url())
             , m_sessionID(networkSession.sessionID())
@@ -1882,7 +1882,7 @@ void NetworkSessionCocoa::loadImageForDecoding(WebCore::ResourceRequest&& reques
         const WebPageProxyIdentifier m_pageID;
         const size_t m_maximumBytesFromNetwork;
         const Ref<NetworkDataTask> m_dataTask;
-        CompletionHandler<void(Expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)> m_completionHandler;
+        CompletionHandler<void(std::expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)> m_completionHandler;
         WebCore::SharedBufferBuilder m_buffer;
     };
 
@@ -2051,8 +2051,8 @@ void NetworkSessionCocoa::forEachSessionWrapper(NOESCAPE const Function<void(Ses
     for (auto& set : m_perPageSessionSets.values())
         sessionSetFunction(set);
 
-    for (auto& set : m_perParametersSessionSets.values()) {
-        if (set)
+    for (auto& weakSet : m_perParametersSessionSets.values()) {
+        if (RefPtr set = weakSet)
             sessionSetFunction(*set);
     }
 }

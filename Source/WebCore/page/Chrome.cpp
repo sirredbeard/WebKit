@@ -452,6 +452,11 @@ void Chrome::runOpenPanel(LocalFrame& frame, FileChooser& fileChooser)
     m_client->runOpenPanel(frame, fileChooser);
 }
 
+void Chrome::transcodeChosenFiles(Vector<String>&& transcodingPaths, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&& completion)
+{
+    m_client->transcodeChosenFiles(WTF::move(transcodingPaths), WTF::move(destinationUTI), WTF::move(destinationExtension), WTF::move(completion));
+}
+
 void Chrome::showShareSheet(ShareDataWithParsedURL&& shareData, CompletionHandler<void(bool)>&& callback)
 {
     m_client->showShareSheet(WTF::move(shareData), WTF::move(callback));
@@ -463,7 +468,7 @@ void Chrome::showContactPicker(ContactsRequestData&& requestData, CompletionHand
 }
 
 #if ENABLE(WEB_AUTHN)
-void Chrome::showDigitalCredentialsChooser(const DigitalCredentialsRequestData& requestData, WTF::CompletionHandler<void(Expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&& callback)
+void Chrome::showDigitalCredentialsChooser(const DigitalCredentialsRequestData& requestData, WTF::CompletionHandler<void(std::expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&& callback)
 {
     m_client->showDigitalCredentialsChooser(requestData, WTF::move(callback));
 }

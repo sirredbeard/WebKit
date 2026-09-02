@@ -49,14 +49,14 @@ if (EXISTS "${TOOLS_DIR}/glib/apply-build-revision-to-files.py")
     )
 endif ()
 
-add_definitions(-DLIBDIR="${LIB_INSTALL_DIR}")
-add_definitions(-DPKGLIBDIR="${LIB_INSTALL_DIR}/wpe-webkit-${WPE_API_VERSION}")
-add_definitions(-DPKGLIBEXECDIR="${LIBEXEC_INSTALL_DIR}")
-add_definitions(-DDATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
-add_definitions(-DLOCALEDIR="${CMAKE_INSTALL_FULL_LOCALEDIR}")
+webkit_add_compile_definitions(LIBDIR="${LIB_INSTALL_DIR}")
+webkit_add_compile_definitions(PKGLIBDIR="${LIB_INSTALL_DIR}/wpe-webkit-${WPE_API_VERSION}")
+webkit_add_compile_definitions(PKGLIBEXECDIR="${LIBEXEC_INSTALL_DIR}")
+webkit_add_compile_definitions(DATADIR="${CMAKE_INSTALL_FULL_DATADIR}")
+webkit_add_compile_definitions(LOCALEDIR="${CMAKE_INSTALL_FULL_LOCALEDIR}")
 
 if (NOT DEVELOPER_MODE AND NOT CMAKE_SYSTEM_NAME MATCHES "Darwin")
-    WEBKIT_ADD_TARGET_PROPERTIES(WebKit LINK_FLAGS "-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/webkitglib-symbols.map")
+    target_link_options(WebKit PRIVATE "LINKER:--version-script,${CMAKE_CURRENT_SOURCE_DIR}/webkitglib-symbols.map")
     set_property(TARGET WebKit APPEND PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/webkitglib-symbols.map")
 endif ()
 
@@ -116,6 +116,10 @@ endif ()
 
 list(APPEND WebKit_SERIALIZATION_IN_FILES
     Shared/glib/AvailableInputDevices.serialization.in
+    Shared/glib/CoreIPCGByteArray.serialization.in
+    Shared/glib/CoreIPCGTlsCertificate.serialization.in
+    Shared/glib/CoreIPCGUnixFDList.serialization.in
+    Shared/glib/CoreIPCGVariant.serialization.in
     Shared/glib/DMABufBufferAttributes.serialization.in
     Shared/glib/InputMethodState.serialization.in
     Shared/glib/RenderProcessInfo.serialization.in
@@ -241,10 +245,12 @@ endif ()
 if (ENABLE_2022_GLIB_API)
     list(APPEND WPE_API_HEADER_TEMPLATES
         ${WEBKIT_DIR}/UIProcess/API/glib/WebKitWebExtension.h.in
+        ${WEBKIT_DIR}/UIProcess/API/glib/WebKitWebExtensionContext.h.in
         ${WEBKIT_DIR}/UIProcess/API/glib/WebKitWebExtensionMatchPattern.h.in
     )
     list(APPEND WebKit_SOURCES
         ${WEBKIT_DIR}/UIProcess/API/glib/WebKitWebExtension.cpp
+        ${WEBKIT_DIR}/UIProcess/API/glib/WebKitWebExtensionContext.cpp
     )
 endif ()
 

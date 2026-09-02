@@ -125,14 +125,14 @@ struct CombinedPrintToStringParamName
     ES1_D3D11(), ES1_METAL(), ES1_OPENGL(), ES1_OPENGLES(), ES1_VULKAN(), \
         ES1_VULKAN_SWIFTSHADER(), ES1_VULKAN().enable(Feature::EnableParallelCompileAndLink)
 
-#define ANGLE_ALL_TEST_PLATFORMS_ES2                                                               \
-    ES2_D3D9(), ES2_D3D11(), ES2_OPENGL(), ES2_OPENGLES(), ES2_VULKAN(), ES2_VULKAN_SWIFTSHADER(), \
-        ES2_METAL(), ES2_WEBGPU(),                                                                 \
-        ES2_VULKAN()                                                                               \
-            .enable(Feature::EnableParallelCompileAndLink)                                         \
-            .enable(Feature::VaryingsRequireMatchingPrecisionInSpirv),                             \
-        ES2_VULKAN_SWIFTSHADER()                                                                   \
-            .enable(Feature::EnableParallelCompileAndLink)                                         \
+#define ANGLE_ALL_TEST_PLATFORMS_ES2                                                   \
+    ES2_D3D11(), ES2_OPENGL(), ES2_OPENGLES(), ES2_VULKAN(), ES2_VULKAN_SWIFTSHADER(), \
+        ES2_METAL(), ES2_WEBGPU(),                                                     \
+        ES2_VULKAN()                                                                   \
+            .enable(Feature::EnableParallelCompileAndLink)                             \
+            .enable(Feature::VaryingsRequireMatchingPrecisionInSpirv),                 \
+        ES2_VULKAN_SWIFTSHADER()                                                       \
+            .enable(Feature::EnableParallelCompileAndLink)                             \
             .disable(Feature::SupportsGraphicsPipelineLibrary)
 
 #define ANGLE_ALL_TEST_PLATFORMS_ES3                                                   \
@@ -168,6 +168,11 @@ struct CombinedPrintToStringParamName
 #define ANGLE_INSTANTIATE_TEST_ES1(testName)                                         \
     const PlatformParameters testName##params[] = {ANGLE_ALL_TEST_PLATFORMS_ES1};    \
     INSTANTIATE_TEST_SUITE_P(, testName, ANGLE_INSTANTIATE_TEST_PLATFORMS(testName), \
+                             testing::PrintToStringParamName())
+
+#define ANGLE_INSTANTIATE_TEST_ES1_AND(testName, ...)                                          \
+    const PlatformParameters testName##params[] = {ANGLE_ALL_TEST_PLATFORMS_ES1, __VA_ARGS__}; \
+    INSTANTIATE_TEST_SUITE_P(, testName, ANGLE_INSTANTIATE_TEST_PLATFORMS(testName),           \
                              testing::PrintToStringParamName())
 
 // Instantiate the test once for each GLES2 platform

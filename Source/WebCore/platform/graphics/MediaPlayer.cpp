@@ -74,6 +74,7 @@
 #endif
 
 #if USE(GSTREAMER)
+#include "CoordinatedPlatformLayerBufferProxy.h"
 #include "MediaPlayerPrivateGStreamer.h"
 #if ENABLE(MEDIA_SOURCE)
 #include "MediaPlayerPrivateGStreamerMSE.h"
@@ -246,7 +247,7 @@ public:
     ThreadSafeWeakPtrControlBlock& controlBlock() const final { return ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::controlBlock(); }
     uint32_t weakRefCount() const final { return ThreadSafeRefCountedAndCanMakeThreadSafeWeakPtr::weakRefCount(); }
 private:
-    void sendH2Ping(const URL&, CompletionHandler<void(Expected<Seconds, ResourceError>&&)>&& completionHandler) final
+    void sendH2Ping(const URL&, CompletionHandler<void(std::expected<Seconds, ResourceError>&&)>&& completionHandler) final
     {
         completionHandler(makeUnexpected(ResourceError { }));
     }
@@ -1821,6 +1822,19 @@ bool MediaPlayer::isGStreamerHolePunchingEnabled()
 {
     return protect(client())->isGStreamerHolePunchingEnabled();
 }
+
+#if USE(COORDINATED_GRAPHICS)
+void MediaPlayer::setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&& proxy)
+{
+    if (m_private)
+        protect(m_private)->setPlatformLayerBufferProxy(WTF::move(proxy));
+}
+
+RefPtr<CoordinatedPlatformLayerBufferProxy> MediaPlayer::platformLayerBufferProxy() const
+{
+    return m_private ? protect(m_private)->platformLayerBufferProxy() : nullptr;
+}
+#endif
 #endif
 
 String MediaPlayer::languageOfPrimaryAudioTrack() const

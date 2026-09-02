@@ -13,6 +13,7 @@ http/tests/security/referrer-policy-header-same-origin.html [ Crash ]
 http/tests/security/referrer-policy-header-strict-origin-when-cross-origin.html [ Crash ]
 http/tests/security/referrer-policy-header-strict-origin.html [ Crash ]
 http/tests/security/referrer-policy-header-unsafe-url.html [ Crash ]
+imported/w3c/web-platform-tests/content-security-policy/inheritance/about-blank-from-javascript-url-inherits-csp-from-initiator.sub.html [ Crash ]
 
 #######################
 # Tests that time out #
@@ -25,7 +26,6 @@ fast/history/page-cache-element-state-focused.html [ Timeout ]
 fast/scrolling/overflow-scrollable-after-back.html [ Timeout ]
 fullscreen/exit-full-screen-video-crash.html [ Timeout ]
 http/tests/inspector/dom/cross-domain-inspected-node-access.html [ Timeout ]
-http/tests/local/blob/download-blob-from-iframe.html [ Timeout ]
 http/tests/media/media-stream/enumerate-devices-source-id.html [ Timeout ]
 http/tests/workers/service/resultingClientId.https.html [ Timeout ]
 imported/w3c/web-platform-tests/content-security-policy/inheritance/history-iframe.sub.html [ Skip ]
@@ -41,13 +41,12 @@ inspector/dom-debugger/url-breakpoints-dom-text-and-regex.html [ Skip ]
 ########################
 # Tests that Text fail #
 ########################
-fast/files/file-reader-back-forward-cache.html [ Failure ]
+http/tests/inspector/network/resource-sizes-network.html [ Failure ]
 http/tests/inspector/network/fetch-response-body-304.html [ Failure ]
 http/tests/inspector/network/resource-certificate-subject-format.html [ Failure ]
 webkit.org/b/318430 http/tests/inspector/network/clear-non-buffered-resource-data-on-navigate.html [ Failure ]
 http/tests/inspector/target/pause-on-inline-debugger-statement.html [ Failure ]
 http/tests/loading/main-resource-delegates-on-back-navigation.html [ Failure ]
-http/tests/local/blob/download-blob-from-iframe.html [ Failure ]
 http/tests/media/media-stream/speech-recognition-iframe-allow-attribute.html [ Failure ]
 http/tests/misc/will-send-request-returns-null-on-redirect.html [ Failure ]
 http/tests/navigation/cross-origin-navigation-fires-onload.html [ Failure ]
@@ -59,7 +58,6 @@ http/tests/site-isolation/inspector/page/override-setting-cross-origin-iframe.ht
 webkit.org/b/311836 http/tests/site-isolation/inspector/page/set-emulated-media-cross-origin-iframe.html [ Pass Failure ]
 http/tests/site-isolation/inspector/worker/worker-in-cross-origin-iframe.html [ Pass ]
 http/tests/site-isolation/inspector/storage/storage-get-cookies-cross-origin-iframe.html [ Pass ]
-http/tests/site-isolation/inspector/storage/storage-frontend-gate.html [ Pass ]
 http/tests/storageAccess/grant-storage-access-under-opener-at-popup-user-gesture-ephemeral.https.html [ Failure ]
 http/tests/storageAccess/grant-storage-access-under-opener-at-popup-user-gesture.https.html [ Failure ]
 http/wpt/webrtc/third-party-frame-ice-candidate-filtering.html [ Failure ]

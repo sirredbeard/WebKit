@@ -72,7 +72,8 @@ public:
     virtual bool hasNoSession() const;
 
     virtual bool activeAudioSessionRequired() const;
-    virtual bool hasActiveAudioSession() const;
+    bool audioSessionActivationRequired() const;
+    virtual bool hasActiveAudioSession(PlatformMediaSessionInterface&) const;
     virtual bool canProduceAudio() const;
 
     virtual void setShouldDeactivateAudioSession(bool should) { m_shouldDeactivateAudioSession = should; };
@@ -96,6 +97,7 @@ public:
     virtual bool registeredAsNowPlayingApplication() const { return false; }
     virtual bool haveEverRegisteredAsNowPlayingApplication() const { return false; }
     virtual void resetHaveEverRegisteredAsNowPlayingApplicationForTesting() { };
+    virtual void resetToConsistentStateForTesting();
 
     virtual bool willIgnoreSystemInterruptions() const { return m_willIgnoreSystemInterruptions; }
     virtual void setWillIgnoreSystemInterruptions(bool ignore) { m_willIgnoreSystemInterruptions = ignore; }
@@ -123,7 +125,11 @@ public:
     virtual MediaSessionRestrictions restrictions(PlatformMediaSessionMediaType);
     virtual void resetRestrictions();
 
-    virtual void sessionWillBeginPlayback(PlatformMediaSessionInterface&, CompletionHandler<void(bool)>&&);
+    Ref<GenericPromise> sessionWillBeginPlayback(PlatformMediaSessionInterface&);
+    // Called after a session's admission commits to Playing, still inside the serialized admission region.
+    // Override for work that depends on that outcome (Now Playing/audio-session updates, wireless playback
+    // target assignment, cross-process notification) instead of overriding sessionWillBeginPlayback() itself.
+    virtual void sessionDidCompleteAdmission(PlatformMediaSessionInterface&);
     virtual void sessionWillEndPlayback(PlatformMediaSessionInterface&, DelayCallingUpdateNowPlaying);
     virtual void sessionStateChanged(PlatformMediaSessionInterface&);
     virtual void sessionDidEndRemoteScrubbing(PlatformMediaSessionInterface&) { }
@@ -159,7 +165,7 @@ public:
     virtual Ref<GenericPromise> audioCaptureSourceStateChanged(IsCaptureStarting);
     virtual size_t audioCaptureSourceCount() const { return m_audioCaptureSources.computeSize(); }
 
-    virtual void processDidReceiveRemoteControlCommand(PlatformMediaSessionRemoteControlCommandType, const PlatformMediaSessionRemoteCommandArgument&);
+    bool processDidReceiveRemoteControlCommand(PlatformMediaSessionRemoteControlCommandType, const PlatformMediaSessionRemoteCommandArgument&, std::optional<MediaSessionIdentifier> targetSession = std::nullopt);
     virtual bool processIsSuspended() const { return m_processIsSuspended; };
     virtual void processSystemWillSleep();
     virtual void processSystemDidWake();
@@ -207,12 +213,7 @@ protected:
     bool computeSupportsSeeking() const;
 
     void scheduleUpdateSessionState();
-    // Applies the computed audio session category for the current set of sessions/capture sources.
-    // The returned promise settles once the category has been applied to AudioSession::singleton() in
-    // this process — synchronously for in-process managers (already-resolved promise), asynchronously
-    // for RemoteMediaSessionManager which applies it from an IPC reply. Callers that don't need to
-    // observe completion may ignore the result.
-    virtual Ref<GenericPromise> updateSessionState();
+    virtual void updateSessionState() { }
 
     std::optional<PageIdentifier> pageIdentifier() const { return m_pageIdentifier; }
 
@@ -229,10 +230,17 @@ protected:
 
 private:
     bool has(PlatformMediaSessionMediaType) const;
+    Ref<GenericPromise> startSessionAdmission(PlatformMediaSessionInterface&, PlatformMediaSessionState stateAtStart);
 
     std::array<MediaSessionRestrictions, static_cast<unsigned>(PlatformMediaSessionMediaType::DOMMediaSession) + 1> m_restrictions;
 
     std::optional<PlatformMediaSessionInterruptionType> m_currentInterruption;
+
+    // Used to serialize admissions; gets resolved when the current round completes. An admission whose
+    // AudioSession activation never replies stalls every later admission for this manager instance —
+    // page-wide, across every WebContent process, on the UI-process aggregator — and keeps this manager
+    // alive (each in-flight round holds a Ref to it). There is no watchdog for this today.
+    Ref<GenericPromise> m_currentPlaybackAdmission { GenericPromise::createAndResolve() };
 
     WeakHashSet<AudioCaptureSource> m_audioCaptureSources;
 
@@ -253,7 +261,9 @@ private:
     bool m_alreadyScheduledSessionStatedUpdate { false };
     bool m_hasScheduledSessionStateUpdate { false };
     mutable bool m_isApplicationInBackground { false };
+#if USE(AUDIO_SESSION)
     bool m_becameActive { false };
+#endif
 };
 
 #if !RELEASE_LOG_DISABLED

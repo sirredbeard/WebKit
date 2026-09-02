@@ -29,6 +29,7 @@
 #if USE(CA)
 
 #include "ComplexTextController.h"
+#include "ContentsFormat.h"
 #include "FontCascade.h"
 #include "FontCascadeDescription.h"
 #include "FontSelector.h"
@@ -116,7 +117,7 @@ FontCascade FrameProcessIndicators::makeFont()
     FontCascadeDescription fontDescription;
     fontDescription.setOneFamily("Helvetica"_s);
     fontDescription.setSpecifiedSize(fontSize);
-    fontDescription.setComputedSize(fontSize);
+    fontDescription.setUsedSize(fontSize);
 
     FontCascade font(WTF::move(fontDescription));
     font.update(nullptr);
@@ -151,6 +152,11 @@ void FrameProcessIndicators::platformCALayerPaintContents(PlatformCALayer* layer
 float FrameProcessIndicators::platformCALayerDeviceScaleFactor() const
 {
     return m_graphicsLayer ? m_graphicsLayer->deviceScaleFactor() : 1;
+}
+
+OptionSet<ContentsFormat> FrameProcessIndicators::screenContentsFormats() const
+{
+    return { ContentsFormat::RGBA8 };
 }
 
 } // namespace WebCore

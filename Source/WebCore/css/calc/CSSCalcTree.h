@@ -25,7 +25,7 @@
 
 #pragma once
 
-#include <WebCore/CSSCalcRandomSharingOptions.h>
+#include <WebCore/CSSCalcRandomSharing.h>
 #include <WebCore/CSSCalcType.h>
 #include <WebCore/CSSCustomIdent.h>
 #include <WebCore/CSSPrimitiveNumeric.h>
@@ -303,7 +303,7 @@ struct Tree {
     Type type;
     Stage stage;
 
-    // `requiresConversionData` is used both to both indicate whether eager evaluation of the tree (at parse time) is possible or not and to trigger a warning in `CSSCalcValue::doubleValueDeprecated` that the evaluation results will be incorrect.
+    // `requiresConversionData` is used both to both indicate whether eager evaluation of the tree (at parse time) is possible or not and to trigger a warning in `UnevaluatedCalcBase::evaluateDeprecated` that the evaluation results will be incorrect.
     bool requiresConversionData = false;
 
     bool operator==(const Tree&) const = default;
@@ -765,16 +765,19 @@ struct Random {
     WTF_MAKE_STRUCT_TZONE_ALLOCATED(Random);
     static constexpr auto id = CSSValueRandom;
 
-    // <random-value-sharing> = [ [ auto | <dashed-ident> ] || element-scoped ] | fixed <number [0,1]>
-    using SharingOptions = RandomSharingOptions;
+    // <random-key> = auto | <random-cache-key> | fixed <number [0,1]>
+    // <random-cache-key> = <dashed-ident> || element-scoped || [ property-scoped | property-index-scoped ]
+    // NOTE: <random-ua-ident> is intentionally not yet supported (follow-up).
+    using SharingAuto = RandomSharingAuto;
+    using Key = RandomSharingKey;
     struct SharingFixed {
         CSS::Number<CSS::ClosedUnitRange> value;
 
         bool operator==(const SharingFixed&) const = default;
     };
-    using Sharing = Variant<SharingOptions, SharingFixed>;
+    using Sharing = Variant<SharingAuto, Key, SharingFixed>;
 
-    // <random()> = random( <random-value-sharing>? , <calc-sum>, <calc-sum>, <calc-sum>? )
+    // <random()> = random( <random-key>? , <calc-sum>, <calc-sum>, <calc-sum>? )
     //     - INPUT: "same" <number>, <dimension>, or <percentage>
     //     - OUTPUT: same type
     static constexpr auto input = AllowedTypes::Any;

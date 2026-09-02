@@ -81,7 +81,10 @@ ISO8601::PlainDate addDaysToISODate(const ISO8601::PlainDate& date, int64_t days
     // 2. Let ms be EpochDaysToEpochMs(epochDays, 0).
     double ms = makeDate(epochDays, 0);
     double daysToUse = msToDays(ms);
-    if (!isInBounds<int32_t>(daysToUse)) [[unlikely]]
+    // yearMonthDayFromDays adds a ~1.47e8 day offset internally, so its domain is narrower than its
+    // int32_t parameter. Real dates are within 1e8 days of the epoch, so this excludes nothing.
+    static constexpr double maxSafeEpochDays = 1e9;
+    if (std::abs(daysToUse) > maxSafeEpochDays) [[unlikely]]
         return ISO8601::PlainDate::sentinel();
     // 3. Return CreateISODateRecord(EpochTimeToEpochYear(ms), EpochTimeToMonthInYear(ms) + 1, EpochTimeToDate(ms)).
     auto [y, m, d] = WTF::yearMonthDayFromDays(static_cast<int32_t>(daysToUse));
@@ -194,7 +197,7 @@ static bool isoDateSurpasses(int32_t sign, int32_t y1, int32_t m1, int32_t d1, c
 }
 
 // DiffISODate — temporal_rs: IsoDate::diff_iso_date
-// https://tc39.es/proposal-temporal/#sec-temporal-calendardateuntil (ISO8601 path)
+// https://tc39.es/proposal-temporal/#sec-temporal-calendardateuntil step 3, the iso8601 branch.
 ISO8601::Duration diffISODate(const ISO8601::PlainDate& one, const ISO8601::PlainDate& two, TemporalUnit largestUnit)
 {
     // 1. Let sign be CompareISODate(one, two).

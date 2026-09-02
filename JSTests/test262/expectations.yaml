@@ -52,15 +52,6 @@ test/built-ins/Proxy/construct/arguments-realm.js:
 test/built-ins/Proxy/construct/trap-is-not-callable-realm.js:
   default: 3
   strict mode: 3
-test/built-ins/TypedArray/prototype/slice/speciesctor-return-same-buffer-with-offset.js:
-  default: 3
-  strict mode: 3
-test/built-ins/TypedArrayConstructors/ctors/object-arg/iterated-array-changed-by-tonumber.js:
-  default: 3
-  strict mode: 3
-test/built-ins/Uint8Array/prototype/setFromBase64/trailing-garbage-empty.js:
-  default: 3
-  strict mode: 3
 test/built-ins/Uint8Array/prototype/setFromBase64/trailing-garbage.js:
   default: 3
   strict mode: 3
@@ -102,9 +93,6 @@ test/language/expressions/call/tco-non-eval-with.js:
 test/language/expressions/delete/super-property-uninitialized-this.js:
   default: 3
   strict mode: 3
-test/language/expressions/dynamic-import/import-attributes/2nd-param-with-type-text.js:
-  default: 3
-  strict mode: 3
 test/language/expressions/new/non-ctor-err-realm.js:
   default: 3
   strict mode: 3
@@ -134,18 +122,6 @@ test/language/expressions/yield/star-rhs-iter-thrw-res-done-no-value.js:
   strict mode: 3
 test/language/identifier-resolution/assign-to-global-undefined.js:
   strict mode: 3
-test/language/import/import-attributes/text-empty.js:
-  module: 3
-test/language/import/import-attributes/text-javascript.js:
-  module: 3
-test/language/import/import-attributes/text-self.js:
-  module: 3
-test/language/import/import-attributes/text-string.js:
-  module: 3
-test/language/import/import-attributes/text-via-namespace.js:
-  module: 3
-test/language/import/import-defer/evaluation-top-level-await/async-cycle-dependency-of-deferred-module/main.js:
-  module: 3
 test/language/statements/class/elements/private-class-field-on-nonextensible-objects.js:
   strict mode: 3
 test/language/statements/class/subclass/private-class-field-on-nonextensible-return-override.js:
@@ -195,9 +171,6 @@ test/staging/sm/RegExp/unicode-braced.js:
   default: 3
   strict mode: 3
 test/staging/sm/RegExp/unicode-class-braced.js:
-  default: 3
-  strict mode: 3
-test/staging/sm/TypedArray/slice-memcpy.js:
   default: 3
   strict mode: 3
 test/staging/sm/class/superPropOrdering.js:

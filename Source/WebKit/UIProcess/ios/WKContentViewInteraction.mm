@@ -2268,8 +2268,8 @@ typedef NS_ENUM(NSInteger, EndEditingReason) {
     }
 
 #if ENABLE(TOUCH_EVENTS)
-    WebKit::NativeWebTouchEvent nativeWebTouchEvent { lastTouchEvent, [_touchEventGestureRecognizer modifierFlags] };
-    nativeWebTouchEvent.setCanPreventNativeGestures(_touchEventsCanPreventNativeGestures || [_touchEventGestureRecognizer isDefaultPrevented]);
+    Ref nativeWebTouchEvent = WebKit::NativeWebTouchEvent::create(lastTouchEvent, [_touchEventGestureRecognizer modifierFlags]);
+    nativeWebTouchEvent->setCanPreventNativeGestures(_touchEventsCanPreventNativeGestures || [_touchEventGestureRecognizer isDefaultPrevented]);
 
     [self _handleTouchActionsForTouchEvent:nativeWebTouchEvent];
 
@@ -2281,14 +2281,14 @@ typedef NS_ENUM(NSInteger, EndEditingReason) {
     else
         _page->handleUnpreventableTouchEvent(nativeWebTouchEvent);
 
-    if (nativeWebTouchEvent.allTouchPointsAreReleased()) {
+    if (nativeWebTouchEvent->allTouchPointsAreReleased()) {
         _touchEventsCanPreventNativeGestures = YES;
         _touchStartedNearSelectionHandle = NO;
 
         if (!_page->isScrollingOrZooming())
             [self _resetPanningPreventionFlags];
 
-        if (nativeWebTouchEvent.isPotentialTap() && self.hasHiddenContentEditable && self._hasFocusedElement && !self.window.keyWindow)
+        if (nativeWebTouchEvent->isPotentialTap() && self.hasHiddenContentEditable && self._hasFocusedElement && !self.window.keyWindow)
             [self.window makeKeyWindow];
 
         auto stopDeferringNativeGesturesIfNeeded = [] (WKDeferringGestureRecognizer *gestureRecognizer) {
@@ -5559,8 +5559,8 @@ static void selectionChangedWithTouch(WKTextInteractionWrapper *interaction, con
 
     _autocorrectionContextNeedsUpdate = YES;
     _usingGestureForSelection = YES;
-    protect(_page)->selectWithGesture(std::nullopt, WebCore::IntPoint(point), toGestureType(gestureType), toGestureRecognizerState(state), self._hasFocusedElement, [self, strongSelf = retainPtr(self), state, flags](const WebCore::IntPoint& point, WebKit::GestureType gestureType, WebKit::GestureRecognizerState gestureState, OptionSet<WebKit::SelectionFlags> innerFlags) {
-        selectionChangedWithGesture(_textInteractionWrapper.get(), point, gestureType, gestureState, toSelectionFlags(flags) | innerFlags);
+    protect(_page)->selectWithGesture(std::nullopt, WebCore::IntPoint(point), toGestureType(gestureType), toGestureRecognizerState(state), self._hasFocusedElement, [self, strongSelf = retainPtr(self), state, flags](WebKit::SelectWithGestureResult result) {
+        selectionChangedWithGesture(_textInteractionWrapper.get(), result.point, result.gestureType, result.gestureState, toSelectionFlags(flags) | result.flags);
         if (state == UIGestureRecognizerStateEnded || state == UIGestureRecognizerStateCancelled)
             _usingGestureForSelection = NO;
     });
@@ -7782,7 +7782,7 @@ static UITextAutocapitalizationType toUITextAutocapitalize(WebCore::Autocapitali
 
 - (void)_internalHandleKeyWebEvent:(::WebEvent *)theEvent
 {
-    protect(_page)->handleKeyboardEvent(WebKit::NativeWebKeyboardEvent(theEvent, WebKit::NativeWebKeyboardEvent::HandledByInputMethod::No));
+    protect(_page)->handleKeyboardEvent(WebKit::NativeWebKeyboardEvent::create(theEvent, WebKit::NativeWebKeyboardEvent::HandledByInputMethod::No));
 }
 
 - (void)handleKeyWebEvent:(::WebEvent *)event withCompletionHandler:(void (^)(::WebEvent *theEvent, BOOL wasHandled))completionHandler
@@ -7851,11 +7851,11 @@ static UITextAutocapitalizationType toUITextAutocapitalize(WebCore::Autocapitali
     if ([self _deferKeyEventToInputMethodEditing:event]) {
         completionHandler(event, YES);
         _isDeferringKeyEventsToInputMethod = YES;
-        protect(_page)->handleKeyboardEvent(WebKit::NativeWebKeyboardEvent(event, HandledByInputMethod::Yes));
+        protect(_page)->handleKeyboardEvent(WebKit::NativeWebKeyboardEvent::create(event, HandledByInputMethod::Yes));
         return;
     }
 
-    if (protect(_page)->handleKeyboardEvent(WebKit::NativeWebKeyboardEvent(event, HandledByInputMethod::No)))
+    if (protect(_page)->handleKeyboardEvent(WebKit::NativeWebKeyboardEvent::create(event, HandledByInputMethod::No)))
         _keyWebEventHandlers.append({ event, makeBlockPtr(completionHandler) });
     else
         completionHandler(event, NO);
@@ -9943,7 +9943,7 @@ static bool canUseQuickboardControllerFor(UITextContentType type)
 #endif // HAVE(SHARE_SHEET_UI)
 
 #if ENABLE(WEB_AUTHN)
-- (void)_showDigitalCredentialsChooser:(const WebCore::DigitalCredentialsRequestData&)requestData completionHandler:(WTF::CompletionHandler<void(Expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&)completionHandler
+- (void)_showDigitalCredentialsChooser:(const WebCore::DigitalCredentialsRequestData&)requestData completionHandler:(WTF::CompletionHandler<void(std::expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&)completionHandler
 {
     _digitalCredentialsPicker = adoptNS([[WKDigitalCredentialsPicker alloc] initWithView:self.webView page:_page.get()]);
     [_digitalCredentialsPicker presentWithRequestData:requestData completionHandler:WTF::move(completionHandler)];
@@ -12433,8 +12433,9 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
     [self _configureMouseGestureRecognizer];
 }
 
-- (void)mouseInteraction:(WKMouseInteraction *)interaction changedWithEvent:(const WebKit::NativeWebMouseEvent&)event
+- (void)mouseInteraction:(WKMouseInteraction *)interaction changedWithEvent:(Ref<WebKit::NativeWebMouseEvent>&&)eventRef
 {
+    const auto& event = eventRef.get();
     Ref page = *_page;
     if (!page->hasRunningProcess())
         return;
@@ -12451,7 +12452,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
             [self.window makeKeyWindow];
     }
 
-    page->handleMouseEvent(event);
+    page->handleMouseEvent(WTF::move(eventRef));
 }
 
 #if ENABLE(POINTER_LOCK)
@@ -12502,7 +12503,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 #endif // ENABLE(MEDIA_CONTROLS_CONTEXT_MENUS) && USE(UICONTEXTMENU)
 
 #if ENABLE(VIDEO) && USE(UICONTEXTMENU)
-- (void)showCaptionDisplaySettingsMenu:(WebCore::HTMLMediaElementIdentifier)identifier withOptions:(const WebCore::ResolvedCaptionDisplaySettingsOptions&)options completionHandler:(CompletionHandler<void(Expected<void, WebCore::ExceptionData>)>&&)completionHandler
+- (void)showCaptionDisplaySettingsMenu:(WebCore::HTMLMediaElementIdentifier)identifier withOptions:(const WebCore::ResolvedCaptionDisplaySettingsOptions&)options completionHandler:(CompletionHandler<void(std::expected<void, WebCore::ExceptionData>)>&&)completionHandler
 {
     [protect(_actionSheetAssistant) showCaptionDisplaySettingsMenu:identifier withOptions:options completionHandler:WTF::move(completionHandler)];
 }
@@ -16110,10 +16111,11 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
 - (UIImage *)_presentationSnapshotForPreviewItemController:(UIPreviewItemController *)controller
 {
-    if (!_positionInformation.textIndicator->contentImage())
+    RefPtr textIndicator = _positionInformation.textIndicator;
+    if (!textIndicator || !textIndicator->contentImage())
         return nullptr;
 
-    auto nativeImage = protect(_positionInformation.textIndicator->contentImage())->nativeImage();
+    auto nativeImage = protect(textIndicator->contentImage())->nativeImage();
     if (!nativeImage)
         return nullptr;
 
@@ -16122,9 +16124,10 @@ ALLOW_DEPRECATED_DECLARATIONS_END
 
 - (NSArray *)_presentationRectsForPreviewItemController:(UIPreviewItemController *)controller
 {
-    if (_positionInformation.textIndicator->contentImage()) {
-        auto origin = _positionInformation.textIndicator->textBoundingRectInRootViewCoordinates().location();
-        return createNSArray(_positionInformation.textIndicator->textRectsInBoundingRectCoordinates(), [&] (CGRect rect) {
+    RefPtr textIndicator = _positionInformation.textIndicator;
+    if (textIndicator && textIndicator->contentImage()) {
+        auto origin = textIndicator->textBoundingRectInRootViewCoordinates().location();
+        return createNSArray(textIndicator->textRectsInBoundingRectCoordinates(), [&] (CGRect rect) {
             return [NSValue valueWithCGRect:CGRectOffset(rect, origin.x(), origin.y())];
         }).autorelease();
     } else {
@@ -16301,7 +16304,7 @@ ALLOW_DEPRECATED_DECLARATIONS_END
         },
         [] (const WebKit::WebFoundTextRange::CueData& cueData) -> RetainPtr<WKFoundTextRange> {
             RetainPtr foundCueTextRange = adoptNS([[WKFoundCueTextRange alloc] init]);
-            [foundCueTextRange setMediaElementIdentifier:cueData.mediaElementIdentifier.toRawValue()];
+            [foundCueTextRange setMediaElementIdentifier:cueData.mediaElementIdentifier.toUInt64()];
             [foundCueTextRange setDocumentOffset:cueData.documentOffset];
             [foundCueTextRange setSeekTimeMilliseconds:cueData.seekTimeMilliseconds];
             return foundCueTextRange;

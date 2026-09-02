@@ -432,9 +432,13 @@ String AccessibilityRenderObject::textUnderElement(TextUnderElementMode mode) co
     if (CheckedPtr fileUpload = dynamicDowncast<RenderFileUploadControl>(*m_renderer))
         return fileUpload->buttonValue();
 
-    if (mode.includeListMarkers == IncludeListMarkerText::Yes) {
-        if (auto* listMarker = dynamicDowncast<RenderListMarker>(*m_renderer))
-            return listMarker->textWithSuffix();
+    if (auto* listMarker = dynamicDowncast<RenderListMarker>(*m_renderer)) {
+        // A `content` marker has no text of its own; the child walk below reads the renderers holding it.
+        if (!listMarker->hasContentProperty()) {
+            if (mode.includeListMarkers == IncludeListMarkerText::Yes)
+                return listMarker->textContent();
+            return { };
+        }
     }
 
     // Reflect when a content author has explicitly marked a line break.
@@ -583,9 +587,9 @@ String AccessibilityRenderObject::stringValue() const
 
     if (CheckedPtr renderListMarker = dynamicDowncast<RenderListMarker>(m_renderer.get())) {
 #if USE(ATSPI)
-        return renderListMarker->textWithSuffix();
+        return renderListMarker->textContent();
 #else
-        return renderListMarker->textWithoutSuffix();
+        return renderListMarker->textContent(RenderListMarker::IncludeSuffix::No);
 #endif
     }
 
@@ -786,8 +790,8 @@ Path AccessibilityRenderObject::elementPath() const
         if (!rectsSpanMultipleLines(rects, style->writingMode().isHorizontal()))
             return { };
 
-        auto outlineOffset = Style::evaluate<float>(style->usedOutlineOffset(), style->usedZoomForLength());
         float deviceScaleFactor = protect(renderText->document())->deviceScaleFactor();
+        auto outlineOffset = Style::evaluate<float>(style->usedOutlineOffset(), style->usedZoomForLength(), deviceScaleFactor);
         Vector<FloatRect> pixelSnappedRects;
         for (auto rect : rects) {
             rect.inflate(outlineOffset);
@@ -1737,7 +1741,7 @@ AXTextRunLineID AccessibilityRenderObject::listMarkerLineID() const
 String AccessibilityRenderObject::listMarkerText() const
 {
     CheckedPtr marker = dynamicDowncast<RenderListMarker>(renderer());
-    return marker ? marker->textWithSuffix() : String();
+    return marker ? marker->textContent() : String();
 }
 #endif // ENABLE(ACCESSIBILITY_ISOLATED_TREE)
 
@@ -2049,13 +2053,8 @@ void AccessibilityRenderObject::setSelectedVisiblePositionRange(const VisiblePos
     // else branch below would fail because contains<ComposedTree> returns
     // false for cross-document positions, clamping the selection to the web
     // area start.
-    RefPtr<HTMLTextFormControlElement> textControl;
-    if (isNativeTextControl()) {
-        // isNativeTextControl returns true only for HTMLTextAreaElement or HTMLInputElement,
-        // both of which derive from HTMLTextFormControlElement.
-        ASSERT(is<HTMLTextFormControlElement>(node()));
-        textControl = downcast<HTMLTextFormControlElement>(node());
-    } else
+    RefPtr textControl = nativeTextControl();
+    if (!textControl)
         textControl = enclosingTextFormControl(range.start.deepEquivalent());
 
     if (textControl) {

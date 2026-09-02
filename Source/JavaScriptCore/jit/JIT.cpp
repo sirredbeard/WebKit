@@ -103,10 +103,10 @@ BaselineUnlinkedCallLinkInfo* JIT::addUnlinkedCallLinkInfo()
     return &m_unlinkedCalls.alloc();
 }
 
-void JIT::emitNotifyWriteWatchpoint(GPRReg pointerToSet)
+void JIT::emitNotifyWriteWatchpoint(GPRReg pointerToSetAndScratch)
 {
-    auto ok = branchTestPtr(Zero, pointerToSet);
-    addSlowCase(branch8(NotEqual, Address(pointerToSet, WatchpointSet::offsetOfState()), TrustedImm32(IsInvalidated)));
+    auto ok = branchTestPtr(Zero, pointerToSetAndScratch);
+    addSlowCase(branchIfInlineWatchpointSetIsStillValid(pointerToSetAndScratch));
     ok.link(this);
 }
 
@@ -190,14 +190,15 @@ void JIT::privateCompileMainPass()
             breakpoint();
         }
 
+        Label bytecodeStart = label();
         if (m_disassembler)
-            m_disassembler->setForBytecodeMainPath(m_bytecodeIndex.offset(), label());
+            m_disassembler->setForBytecodeMainPath(m_bytecodeIndex.offset(), bytecodeStart);
         const auto* currentInstruction = instructions.at(m_bytecodeIndex).ptr();
         ASSERT(currentInstruction->size());
 
-        m_pcToCodeOriginMapBuilder.appendItem(label(), CodeOrigin(m_bytecodeIndex));
+        m_pcToCodeOriginMapBuilder.appendItem(bytecodeStart, CodeOrigin(m_bytecodeIndex));
 
-        m_labels[m_bytecodeIndex.offset()] = label();
+        m_labels[m_bytecodeIndex.offset()] = bytecodeStart;
 
         if (JITInternal::verbose)
             dataLogLn("Baseline JIT emitting code for ", m_bytecodeIndex, " at offset ", (long)debugOffset());
@@ -490,7 +491,8 @@ void JIT::privateCompileSlowCases()
     for (Vector<SlowCaseEntry>::iterator iter = m_slowCases.begin(); iter != m_slowCases.end();) {
         m_bytecodeIndex = iter->to;
 
-        m_pcToCodeOriginMapBuilder.appendItem(label(), CodeOrigin(m_bytecodeIndex));
+        Label slowPathStart = label();
+        m_pcToCodeOriginMapBuilder.appendItem(slowPathStart, CodeOrigin(m_bytecodeIndex));
 
         BytecodeIndex firstTo = m_bytecodeIndex;
 
@@ -500,7 +502,7 @@ void JIT::privateCompileSlowCases()
             dataLogLn("Baseline JIT emitting slow code for ", m_bytecodeIndex, " at offset ", (long)debugOffset());
 
         if (m_disassembler)
-            m_disassembler->setForBytecodeSlowPath(m_bytecodeIndex.offset(), label());
+            m_disassembler->setForBytecodeSlowPath(m_bytecodeIndex.offset(), slowPathStart);
 
         OpcodeID opcodeID = currentInstruction->opcodeID();
 
@@ -795,8 +797,8 @@ RefPtr<BaselineJITCode> JIT::compileAndLinkWithoutFinalizing(JITCompilationEffor
                 if (m_unlinkedCodeBlock->isConstructor() && !argument)
                     continue;
                 int offset = CallFrame::argumentOffsetIncludingThis(argument) * static_cast<int>(sizeof(Register));
-                loadValue(Address(callFrameRegister, offset), jsRegT10);
-                storeValue(jsRegT10, Address(regT2, FixedVector<ArgumentValueProfile>::Storage::offsetOfData() + argument * sizeof(ArgumentValueProfile) + ArgumentValueProfile::offsetOfFirstBucket()));
+                loadValue(Address(callFrameRegister, offset), regT0);
+                storeValue(regT0, Address(regT2, FixedVector<ArgumentValueProfile>::Storage::offsetOfData() + argument * sizeof(ArgumentValueProfile) + ArgumentValueProfile::offsetOfFirstBucket()));
             }
         }
     }
@@ -923,10 +925,8 @@ RefPtr<BaselineJITCode> JIT::link(LinkBuffer& patchBuffer)
 #endif
 
     auto finalizeICs = [&] (auto& generators) {
-        for (auto& gen : generators) {
+        for (auto& gen : generators)
             gen.m_unlinkedPropertyCache->doneLocation = patchBuffer.locationOf<JSInternalPtrTag>(gen.m_done);
-            gen.m_unlinkedPropertyCache->slowPathStartLocation = patchBuffer.locationOf<JITStubRoutinePtrTag>(gen.m_slowPathBegin);
-        }
     };
 
     finalizeICs(m_getByIds);

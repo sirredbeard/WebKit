@@ -55,7 +55,7 @@ class Table : public ThreadSafeRefCounted<Table> {
     WTF_MAKE_NONCOPYABLE(Table);
     WTF_MAKE_TZONE_ALLOCATED(Table);
 public:
-    static RefPtr<Table> tryCreate(VM&, uint32_t initial, std::optional<uint64_t> maximum, TableElementType, Type, Wasm::AddressType);
+    static RefPtr<Table> tryCreate(VM&, uint64_t initial, std::optional<uint64_t> maximum, TableElementType, Type, Wasm::AddressType);
 
     JS_EXPORT_PRIVATE ~Table() = default;
 
@@ -81,7 +81,7 @@ public:
     Wasm::AddressType addressType() const { return m_addressType; }
     FuncRefTable* NODELETE asFuncrefTable();
 
-    static bool isValidLength(uint64_t length) { return length < maxTableEntries; }
+    static bool isValidLength(uint64_t length) { return length <= maxTableEntries; }
 
     void clear(uint32_t);
     void set(uint32_t, JSValue);
@@ -126,6 +126,8 @@ public:
     void set(uint32_t, JSValue);
     void fill(VM&, JSValue);
     JSValue get(uint32_t index) const { return m_jsValues.get()[index].get(); }
+
+    static constexpr ptrdiff_t offsetOfJSValues() { return OBJECT_OFFSETOF(ExternOrAnyRefTable, m_jsValues); }
 
 private:
     ExternOrAnyRefTable(uint32_t initial, std::optional<uint64_t> maximum, Type wasmType, Wasm::AddressType);

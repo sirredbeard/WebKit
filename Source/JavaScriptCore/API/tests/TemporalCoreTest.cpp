@@ -444,19 +444,19 @@ static void testCalendarDateUntil()
 {
     // ISO8601 path only — mirrors temporal_rs: Calendar::date_until + date_until_largest_year
     // 1969-07-24 until 1996-03-03 in days = 9719
-    auto r1 = calendarDateUntil({ 1969, 7, 24 }, { 1996, 3, 3 }, TemporalUnit::Day);
+    auto r1 = diffISODate({ 1969, 7, 24 }, { 1996, 3, 3 }, TemporalUnit::Day);
     TCHECK_EQ(static_cast<int64_t>(r1.days()), 9719LL, "calendarDateUntil: 9719 days");
 
     // Same date -> zero
-    auto r2 = calendarDateUntil({ 2020, 6, 15 }, { 2020, 6, 15 }, TemporalUnit::Day);
+    auto r2 = diffISODate({ 2020, 6, 15 }, { 2020, 6, 15 }, TemporalUnit::Day);
     TCHECK_EQ(static_cast<int64_t>(r2.days()), 0LL, "calendarDateUntil: same date");
 
     // 1969-07-24 until 1969-10-05 in months = 2m11d
-    auto r3 = calendarDateUntil({ 1969, 7, 24 }, { 1969, 10, 5 }, TemporalUnit::Month);
+    auto r3 = diffISODate({ 1969, 7, 24 }, { 1969, 10, 5 }, TemporalUnit::Month);
     TCHECK_EQ(static_cast<int64_t>(r3.months()), 2LL, "calendarDateUntil: 2 months");
 
     // Negative: later until earlier
-    auto r4 = calendarDateUntil({ 1996, 3, 3 }, { 1969, 7, 24 }, TemporalUnit::Day);
+    auto r4 = diffISODate({ 1996, 3, 3 }, { 1969, 7, 24 }, TemporalUnit::Day);
     TCHECK_EQ(static_cast<int64_t>(r4.days()), -9719LL, "calendarDateUntil: -9719 days");
 
     // temporal_rs: date_until_largest_year — full ISO8601 table
@@ -507,7 +507,7 @@ static void testCalendarDateUntil()
         { { 2021, 8, 17 }, { 2021, 7, 16 }, 0, -1, -1 },
     };
     for (auto& c : cases) {
-        auto r = calendarDateUntil(c.one, c.two, TemporalUnit::Year);
+        auto r = diffISODate(c.one, c.two, TemporalUnit::Year);
         TCHECK_EQ(static_cast<int64_t>(r.years()),  c.years,  "dateUntilLargestYear: years");
         TCHECK_EQ(static_cast<int64_t>(r.months()), c.months, "dateUntilLargestYear: months");
         TCHECK_EQ(static_cast<int64_t>(r.days()),   c.days,   "dateUntilLargestYear: days");
@@ -731,16 +731,16 @@ static void testISOTimeCompare()
 static void testApplyUnsignedRoundingMode()
 {
     // x between r1 and r2 — direction modes
-    TCHECK_EQ(applyUnsignedRoundingMode(1.3, 1.0, 2.0, UnsignedRoundingMode::Zero), 1.0, "applyURM: 1.3 Zero");
-    TCHECK_EQ(applyUnsignedRoundingMode(1.3, 1.0, 2.0, UnsignedRoundingMode::Infinity), 2.0, "applyURM: 1.3 Inf");
+    TCHECK_EQ(applyUnsignedRoundingMode(Int128(13), Int128(10), Int128(1), Int128(2), UnsignedRoundingMode::Zero), Int128(1), "applyURM: 13/10 Zero");
+    TCHECK_EQ(applyUnsignedRoundingMode(Int128(13), Int128(10), Int128(1), Int128(2), UnsignedRoundingMode::Infinity), Int128(2), "applyURM: 13/10 Inf");
     // x == r1 (exact lower bound)
-    TCHECK_EQ(applyUnsignedRoundingMode(1.0, 1.0, 2.0, UnsignedRoundingMode::Zero), 1.0, "applyURM: exact=r1");
+    TCHECK_EQ(applyUnsignedRoundingMode(Int128(10), Int128(10), Int128(1), Int128(2), UnsignedRoundingMode::Zero), Int128(1), "applyURM: exact=r1");
     // HalfZero at midpoint
-    TCHECK_EQ(applyUnsignedRoundingMode(1.5, 1.0, 2.0, UnsignedRoundingMode::HalfZero), 1.0, "applyURM: 1.5 HalfZero");
-    TCHECK_EQ(applyUnsignedRoundingMode(1.5, 1.0, 2.0, UnsignedRoundingMode::HalfInfinity), 2.0, "applyURM: 1.5 HalfInf");
+    TCHECK_EQ(applyUnsignedRoundingMode(Int128(3), Int128(2), Int128(1), Int128(2), UnsignedRoundingMode::HalfZero), Int128(1), "applyURM: 3/2 HalfZero");
+    TCHECK_EQ(applyUnsignedRoundingMode(Int128(3), Int128(2), Int128(1), Int128(2), UnsignedRoundingMode::HalfInfinity), Int128(2), "applyURM: 3/2 HalfInf");
     // HalfEven: 2.5 -> 2 (even lower), 3.5 -> 4 (even upper)
-    TCHECK_EQ(applyUnsignedRoundingMode(2.5, 2.0, 3.0, UnsignedRoundingMode::HalfEven), 2.0, "applyURM: 2.5 HalfEven->2");
-    TCHECK_EQ(applyUnsignedRoundingMode(3.5, 3.0, 4.0, UnsignedRoundingMode::HalfEven), 4.0, "applyURM: 3.5 HalfEven->4");
+    TCHECK_EQ(applyUnsignedRoundingMode(Int128(5), Int128(2), Int128(2), Int128(3), UnsignedRoundingMode::HalfEven), Int128(2), "applyURM: 5/2 HalfEven->2");
+    TCHECK_EQ(applyUnsignedRoundingMode(Int128(7), Int128(2), Int128(3), Int128(4), UnsignedRoundingMode::HalfEven), Int128(4), "applyURM: 7/2 HalfEven->4");
 }
 
 static void testNegateDuration()
@@ -906,36 +906,6 @@ static void testToDateDurationRecordWithoutTime()
     TCHECK_EQ(static_cast<int64_t>(r->hours()), 0LL, "stripTime: hours=0");
     TCHECK_EQ(static_cast<int64_t>(r->minutes()), 0LL, "stripTime: minutes=0");
 }
-
-// ---------------------------------------------------------------------------
-// totalSeconds / totalSubseconds — internal balance helpers
-// ---------------------------------------------------------------------------
-
-static void testTotalSecondsAndSubseconds()
-{
-    // temporal_rs: internal balance helpers
-    // 1h30m = 5400s
-    ISO8601::Duration d1(0, 0, 0, 0, 1, 30, 0, 0, 0, 0);
-    TCHECK_EQ(totalSeconds(d1), 5400LL, "totalSec: 1h30m=5400s");
-
-    // 1d2h = 26*3600 = 93600s
-    ISO8601::Duration d2(0, 0, 0, 1, 2, 0, 0, 0, 0, 0);
-    TCHECK_EQ(totalSeconds(d2), 93600LL, "totalSec: 1d2h=93600s");
-
-    // 0 duration -> 0s
-    ISO8601::Duration z;
-    TCHECK_EQ(totalSeconds(z), 0LL, "totalSec: zero");
-
-    // 999ms + 999999µs + 999999999ns = 999*1e6 + 999999*1e3 + 999999999 = 2998998999 ns
-    ISO8601::Duration d3(0, 0, 0, 0, 0, 0, 0, 999, 999999, 999999999);
-    Int128 expected = Int128(2998998999LL);
-    TCHECK_EQ(totalSubseconds(d3), expected, "totalSub: max subseconds");
-
-    // 1s = 0 subseconds (only ms/µs/ns contribute)
-    ISO8601::Duration d4(0, 0, 0, 0, 0, 0, 1, 0, 0, 0);
-    TCHECK_EQ(totalSubseconds(d4), Int128(0LL), "totalSub: 1s=0 subseconds");
-}
-
 // ---------------------------------------------------------------------------
 // totalTimeDuration — fractional unit conversion
 // ---------------------------------------------------------------------------
@@ -954,38 +924,6 @@ static void testTotalTimeDuration()
     // 1000000 ns = 1 ms
     TCHECK_EQ(totalTimeDuration(Int128(1000000LL), TemporalUnit::Millisecond), 1.0, "totalTD: 1ms");
 }
-
-// ---------------------------------------------------------------------------
-// balanceDuration — redistribute time fields
-// ---------------------------------------------------------------------------
-
-static void testBalanceDuration()
-{
-    // temporal_rs: Duration::balance — redistributes seconds/minutes/hours
-    // 90min -> 1h30m when largestUnit=Hour
-    ISO8601::Duration d1(0, 0, 0, 0, 0, 90, 0, 0, 0, 0);
-    balanceDuration(d1, TemporalUnit::Hour);
-    TCHECK_EQ(static_cast<int64_t>(d1.hours()), 1LL, "balance: 90m -> 1h");
-    TCHECK_EQ(static_cast<int64_t>(d1.minutes()), 30LL, "balance: 90m -> 30m");
-
-    // 3600s -> 1h when largestUnit=Hour
-    ISO8601::Duration d2(0, 0, 0, 0, 0, 0, 3600, 0, 0, 0);
-    balanceDuration(d2, TemporalUnit::Hour);
-    TCHECK_EQ(static_cast<int64_t>(d2.hours()), 1LL, "balance: 3600s -> 1h");
-    TCHECK_EQ(static_cast<int64_t>(d2.seconds()), 0LL, "balance: 3600s -> 0s");
-
-    // 2000ms -> 2s when largestUnit=Second (ms overflow folds into seconds)
-    ISO8601::Duration d3(0, 0, 0, 0, 0, 0, 0, 2000, 0, 0);
-    balanceDuration(d3, TemporalUnit::Second);
-    TCHECK_EQ(static_cast<int64_t>(d3.seconds()), 2LL, "balance: 2000ms -> 2s");
-    TCHECK_EQ(static_cast<int64_t>(d3.milliseconds()), 0LL, "balance: 2000ms -> 0ms");
-
-    // 500ms with largestUnit=Millisecond -> unchanged
-    ISO8601::Duration d4(0, 0, 0, 0, 0, 0, 0, 500, 0, 0);
-    balanceDuration(d4, TemporalUnit::Millisecond);
-    TCHECK_EQ(static_cast<int64_t>(d4.milliseconds()), 500LL, "balance: 500ms unchanged");
-}
-
 // ---------------------------------------------------------------------------
 // toInternalDuration / toInternalDurationRecordWith24HourDays
 // ---------------------------------------------------------------------------
@@ -3920,9 +3858,7 @@ static void runStressTests()
     testTemporalDurationFromInternal(); // InternalDuration -> Duration
     testToInternalDuration(); // Duration -> InternalDuration
     testToDateDurationRecordWithoutTime(); // time field stripping
-    testTotalSecondsAndSubseconds(); // totalSeconds/totalSubseconds helpers
     testTotalTimeDuration(); // fractional unit conversion
-    testBalanceDuration(); // duration field redistribution
 
     // Rounding helpers
     testCalendarDateAdd(); // ISO calendarDateAdd

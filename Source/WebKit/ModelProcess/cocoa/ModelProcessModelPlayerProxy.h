@@ -82,6 +82,7 @@ public:
 #include <wtf/RefPtr.h>
 #include <wtf/RunLoop.h>
 #include <wtf/TZoneMalloc.h>
+#include <wtf/UniqueRef.h>
 #include <wtf/Vector.h>
 #include <wtf/WeakPtr.h>
 
@@ -121,7 +122,7 @@ public:
     void unloadModelTimerFired();
     void updateTransformAfterLayout();
     void updateOpacity();
-    void animationPlaybackStateDidUpdate();
+    void animationPlaybackStateDidUpdate(WKRKEntity *);
 
     // Messages
     void createLayer();
@@ -169,6 +170,7 @@ public:
     void setHasPortal(bool) final;
 #if ENABLE(SPATIAL_PORTAL)
     void setPortalTransform(WebCore::PortalTransformKind) final;
+    void setPortalAction(WebCore::PortalActionKind) final;
 #endif
     void setStageMode(WebCore::StageModeOperation) final;
     void beginStageModeTransform(const WebCore::TransformationMatrix&) final;
@@ -191,14 +193,26 @@ public:
 private:
     ModelProcessModelPlayerProxy(ModelProcessModelPlayerManagerProxy&, WebCore::ModelPlayerIdentifier, Ref<IPC::Connection>&&, const std::optional<String>&, std::optional<int>, std::optional<int>);
 
-    struct HostedModelEntity {
+    struct TrackedModel {
+        WTF_MAKE_STRUCT_TZONE_ALLOCATED(TrackedModel);
+
         RefPtr<WebCore::REModelLoader> loader;
         RetainPtr<WKRKEntity> entity;
         simd_float3 originalEntityScale { simd_make_float3(1, 1, 1) };
         simd_float3 originalBoundingBoxCenter { simd_make_float3(0, 0, 0) };
         simd_float3 originalBoundingBoxExtents { simd_make_float3(0, 0, 0) };
+
+        bool autoplay { false };
+        bool loop { false };
+        double playbackRate { 1.0 };
+        std::optional<WebCore::ModelPlayerAnimationState> animationStateToRestore;
+#if ENABLE(SPATIAL_PORTAL)
+        // Set from CSS or the entityTransform attribute. Stored rather than applied directly because it can arrive
+        // before the entity exists, and has to be recomposed whenever the container's scale changes.
+        simd_float4x4 childTransform { matrix_identity_float4x4 };
+#endif
     };
-    using HostedModelEntityMap = HashMap<WebCore::NodeIdentifier, HostedModelEntity>;
+    using TrackedModelMap = HashMap<WebCore::NodeIdentifier, UniqueRef<TrackedModel>>;
 
     RESRT modelStandardizedTransformSRT(RESRT originalSRT);
     RESRT modelLocalizedTransformSRT(RESRT originalSRT);
@@ -207,14 +221,23 @@ private:
     void applyEnvironmentMapDataAndRelease(CompletionHandler<void()>&&);
     void applyStageModeOperationToDriver();
     bool stageModeInteractionInProgress() const;
+    WebCore::StageModeOperation effectiveStageModeOperation() const;
     void updateTransformSRT();
     void notifyModelPlayerOfTransformChange();
+#if ENABLE(SPATIAL_PORTAL)
+    RESRT childEntityTransformSRT(const TrackedModel&) const;
+#endif
     void applyDefaultIBL();
     void updateForCurrentStageMode();
-    void setUpLoadedEntity(WKRKEntity *);
+    void setUpLoadedEntity(WebCore::NodeIdentifier, WKRKEntity *);
     simd_float3 reportingModelScale() const;
     void clearReportingModelIfNeeded(WebCore::NodeIdentifier);
-    HostedModelEntityMap::iterator findHostedEntityForLoader(const WebCore::REModelLoader&);
+    TrackedModel& ensureTrackedModel(WebCore::NodeIdentifier);
+    TrackedModel* trackedModel(WebCore::NodeIdentifier);
+    const TrackedModel* trackedModel(WebCore::NodeIdentifier) const;
+    TrackedModelMap::iterator findTrackedModelForLoader(const WebCore::REModelLoader&);
+    TrackedModelMap::iterator findTrackedModelForEntity(WKRKEntity *);
+    RetainPtr<WKRKEntity> entityForNode(WebCore::NodeIdentifier) const;
     void cancelAllLoaders();
 #if HAVE(CORE_RE)
     void ensurePortalEntityHierarchy();
@@ -232,10 +255,9 @@ private:
     std::unique_ptr<LayerHostingContext> m_layerHostingContext;
     RetainPtr<WKModelProcessModelLayer> m_layer;
 
-    HostedModelEntityMap m_hostedEntities;
+    TrackedModelMap m_trackedModels;
 
-    // The first model loaded reports animation playback state for the portal until that is
-    // generalized: rdar://182292543 (Child model animation forwarding).
+    // FIXME: rdar://182292380 - The first model loaded; it receives the portal's environment map.
     RetainPtr<WKRKEntity> m_modelRKEntity;
 #if HAVE(CORE_RE)
     REPtr<RESceneRef> m_scene;
@@ -251,14 +273,12 @@ private:
     bool m_transformNeedsUpdateAfterNextLayout { false };
     bool m_entityTransformSetByScript { false };
 
-    bool m_autoplay { false };
-    bool m_loop { false };
-    double m_playbackRate { 1.0 };
-
     RefPtr<WebCore::SharedBuffer> m_transientEnvironmentMapData;
     bool m_hasPortal { true };
 #if ENABLE(SPATIAL_PORTAL)
     WebCore::PortalTransformKind m_portalTransform { WebCore::PortalTransformKind::Auto };
+    WebCore::PortalActionKind m_portalAction { WebCore::PortalActionKind::None };
+    bool m_isSpatialPortal { false };
 #endif
 
     // For interactions
@@ -269,7 +289,6 @@ private:
     std::optional<int> m_debugEntityMemoryLimit;
     std::optional<int> m_debugImmersiveEntityMemoryLimit;
     std::optional<WebCore::TransformationMatrix> m_entityTransformToRestore;
-    std::optional<WebCore::ModelPlayerAnimationState> m_animationStateToRestore;
     RunLoop::Timer m_unloadModelTimer;
 
     // For testing

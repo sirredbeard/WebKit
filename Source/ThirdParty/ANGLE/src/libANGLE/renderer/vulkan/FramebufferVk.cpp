@@ -7,11 +7,8 @@
 //    Implements the class methods for FramebufferVk.
 //
 
-#ifdef UNSAFE_BUFFERS_BUILD
-#    pragma allow_unsafe_buffers
-#endif
-
 #include "libANGLE/renderer/vulkan/FramebufferVk.h"
+#include "common/unsafe_buffers.h"
 
 #include <array>
 
@@ -969,9 +966,9 @@ angle::Result FramebufferVk::clearBufferfv(const gl::Context *context,
     {
         clearColorBuffers.set(drawbuffer);
         clearValue.color.float32[0] = values[0];
-        clearValue.color.float32[1] = values[1];
-        clearValue.color.float32[2] = values[2];
-        clearValue.color.float32[3] = values[3];
+        clearValue.color.float32[1] = ANGLE_UNSAFE_TODO(values[1]);
+        clearValue.color.float32[2] = ANGLE_UNSAFE_TODO(values[2]);
+        clearValue.color.float32[3] = ANGLE_UNSAFE_TODO(values[3]);
     }
 
     return clearImpl(context, clearColorBuffers, clearDepth, false, clearValue.color,
@@ -989,9 +986,9 @@ angle::Result FramebufferVk::clearBufferuiv(const gl::Context *context,
     clearColorBuffers.set(drawbuffer);
 
     clearValue.color.uint32[0] = values[0];
-    clearValue.color.uint32[1] = values[1];
-    clearValue.color.uint32[2] = values[2];
-    clearValue.color.uint32[3] = values[3];
+    clearValue.color.uint32[1] = ANGLE_UNSAFE_TODO(values[1]);
+    clearValue.color.uint32[2] = ANGLE_UNSAFE_TODO(values[2]);
+    clearValue.color.uint32[3] = ANGLE_UNSAFE_TODO(values[3]);
 
     return clearImpl(context, clearColorBuffers, false, false, clearValue.color,
                      clearValue.depthStencil);
@@ -1016,9 +1013,9 @@ angle::Result FramebufferVk::clearBufferiv(const gl::Context *context,
     {
         clearColorBuffers.set(drawbuffer);
         clearValue.color.int32[0] = values[0];
-        clearValue.color.int32[1] = values[1];
-        clearValue.color.int32[2] = values[2];
-        clearValue.color.int32[3] = values[3];
+        clearValue.color.int32[1] = ANGLE_UNSAFE_TODO(values[1]);
+        clearValue.color.int32[2] = ANGLE_UNSAFE_TODO(values[2]);
+        clearValue.color.int32[3] = ANGLE_UNSAFE_TODO(values[3]);
     }
 
     return clearImpl(context, clearColorBuffers, false, clearStencil, clearValue.color,
@@ -1116,9 +1113,9 @@ angle::Result FramebufferVk::readPixels(const gl::Context *context,
         params.reverseRowOrder = !params.reverseRowOrder;
     }
 
-    ANGLE_TRY(readPixelsImpl(contextVk, params.area, params, getReadPixelsAspectFlags(format),
-                             getReadPixelsRenderTarget(format),
-                             static_cast<uint8_t *>(pixels) + outputSkipBytes));
+    ANGLE_UNSAFE_TODO(ANGLE_TRY(readPixelsImpl(
+        contextVk, params.area, params, getReadPixelsAspectFlags(format),
+        getReadPixelsRenderTarget(format), static_cast<uint8_t *>(pixels) + outputSkipBytes)));
     return angle::Result::Continue;
 }
 
@@ -1919,7 +1916,7 @@ angle::Result FramebufferVk::generateFragmentShadingRateWithCPU(
     uint8_t *mappedBuffer;
     ANGLE_TRY(buffer->map(contextVk, &mappedBuffer));
     uint8_t val = 0;
-    memset(mappedBuffer, 0, bufferSize);
+    ANGLE_UNSAFE_TODO(memset(mappedBuffer, 0, bufferSize));
 
     // The spec requires min_pixel_density to be computed thusly -
     //
@@ -1987,7 +1984,7 @@ angle::Result FramebufferVk::generateFragmentShadingRateWithCPU(
                 // Use shading rate 2x2
                 val = (1 << 2) | 1;
             }
-            mappedBuffer[y * fragmentShadingRateWidth + x] = val;
+            ANGLE_UNSAFE_TODO(mappedBuffer[y * fragmentShadingRateWidth + x]) = val;
         }
     }
 
@@ -2037,7 +2034,8 @@ angle::Result FramebufferVk::generateFragmentShadingRateWithCompute(
     for (const gl::FocalPoint &focalPoint : activeFocalPoints)
     {
         ASSERT(focalPoint.valid());
-        shadingRateParams.focalPoints[shadingRateParams.numFocalPoints] = focalPoint;
+        ANGLE_UNSAFE_TODO(shadingRateParams.focalPoints[shadingRateParams.numFocalPoints]) =
+            focalPoint;
         shadingRateParams.numFocalPoints++;
     }
 
@@ -2204,7 +2202,6 @@ angle::Result FramebufferVk::resolveColorWithCommand(ContextVk *contextVk,
     resolveRegion.dstSubresource.layerCount     = 1;
     resolveRegion.dstOffset.x                   = params.blitArea.x;
     resolveRegion.dstOffset.y                   = params.blitArea.y;
-    resolveRegion.dstOffset.z                   = 0;
     resolveRegion.extent.width                  = params.blitArea.width;
     resolveRegion.extent.height                 = params.blitArea.height;
     resolveRegion.extent.depth                  = 1;
@@ -2215,9 +2212,15 @@ angle::Result FramebufferVk::resolveColorWithCommand(ContextVk *contextVk,
         RenderTargetVk *drawRenderTarget = mRenderTargetCache.getColors()[colorIndexGL];
         vk::ImageHelper &dstImage        = drawRenderTarget->getImageForWrite();
 
+        // Note: In GL, the src image cannot be 3D because there is no way to create a multisampled
+        // 3D texture.
+        const bool isDst3D = dstImage.getType() == VK_IMAGE_TYPE_3D;
+
         vk::LevelIndex levelVk = dstImage.toVkLevel(drawRenderTarget->getLevelIndex());
         resolveRegion.dstSubresource.mipLevel       = levelVk.get();
-        resolveRegion.dstSubresource.baseArrayLayer = drawRenderTarget->getLayerIndex();
+        resolveRegion.dstSubresource.baseArrayLayer =
+            isDst3D ? 0 : drawRenderTarget->getLayerIndex();
+        resolveRegion.dstOffset.z = isDst3D ? drawRenderTarget->getLayerIndex() : 0;
 
         srcImage->resolve(renderer, &dstImage, resolveRegion, commandBuffer);
 
@@ -2253,7 +2256,7 @@ angle::Result FramebufferVk::invalidateImpl(ContextVk *contextVk,
 
     for (size_t i = 0; i < count; ++i)
     {
-        const GLenum attachment = attachments[i];
+        const GLenum attachment = ANGLE_UNSAFE_TODO(attachments[i]);
 
         switch (attachment)
         {
@@ -2330,7 +2333,7 @@ angle::Result FramebufferVk::invalidateImpl(ContextVk *contextVk,
             }
             else if (isRobustResourceInitEnabled)
             {
-                gl::ImageIndex imageIndex = colorRenderTarget->getImageIndexForClear(
+                gl::SourceImageIndex imageIndex = colorRenderTarget->getImageIndexForClear(
                     mCurrentFramebufferDesc.getLayerCount());
                 colorRenderTarget->getImageForWrite().stageRobustResourceClear(
                     imageIndex, VK_IMAGE_ASPECT_COLOR_BIT);
@@ -2374,8 +2377,9 @@ angle::Result FramebufferVk::invalidateImpl(ContextVk *contextVk,
                 }
                 if (dsAspectFlags)
                 {
-                    gl::ImageIndex imageIndex = depthStencilRenderTarget->getImageIndexForClear(
-                        mCurrentFramebufferDesc.getLayerCount());
+                    gl::SourceImageIndex imageIndex =
+                        depthStencilRenderTarget->getImageIndexForClear(
+                            mCurrentFramebufferDesc.getLayerCount());
                     depthStencilRenderTarget->getImageForWrite().stageRobustResourceClear(
                         imageIndex, dsAspectFlags);
                 }
@@ -2952,7 +2956,7 @@ void FramebufferVk::updateRenderPassDesc(ContextVk *contextVk)
                 break;
             }
         }
-        const gl::FramebufferAttachment *depthStencil = mState.getDepthStencilAttachment();
+        const gl::FramebufferAttachment *depthStencil = mState.getDepthOrStencilAttachment();
         if (depthStencil && depthStencil->isRenderToTexture())
         {
             ASSERT(!contextVk->getFeatures().supportsMultisampledRenderToSingleSampled.enabled ||
@@ -3515,7 +3519,7 @@ void FramebufferVk::restageDeferredClearsImpl(ContextVk *contextVk)
     for (size_t colorIndexGL : mDeferredClears.getColorMask())
     {
         RenderTargetVk *renderTarget = getColorDrawRenderTarget(colorIndexGL);
-        gl::ImageIndex imageIndex =
+        gl::SourceImageIndex imageIndex =
             renderTarget->getImageIndexForClear(mCurrentFramebufferDesc.getLayerCount());
         renderTarget->getImageForWrite().stageClear(imageIndex, VK_IMAGE_ASPECT_COLOR_BIT,
                                                     mDeferredClears[colorIndexGL]);
@@ -3527,7 +3531,7 @@ void FramebufferVk::restageDeferredClearsImpl(ContextVk *contextVk)
         RenderTargetVk *renderTarget = getDepthStencilRenderTarget();
         ASSERT(renderTarget);
 
-        gl::ImageIndex imageIndex =
+        gl::SourceImageIndex imageIndex =
             renderTarget->getImageIndexForClear(mCurrentFramebufferDesc.getLayerCount());
         renderTarget->getImageForWrite().stageClear(imageIndex, dsAspectFlags, dsClearValue);
     }
@@ -3774,6 +3778,11 @@ angle::Result FramebufferVk::startNewRenderPass(ContextVk *contextVk,
     const bool previousUnresolveDepth   = mRenderPassDesc.hasDepthUnresolveAttachment();
     const bool previousUnresolveStencil = mRenderPassDesc.hasStencilUnresolveAttachment();
 
+    const bool hasDynamicRenderingAndEmulatingMSRTT =
+        contextVk->getFeatures().preferDynamicRendering.enabled &&
+        (contextVk->getFeatures().enableMultisampledRenderToTexture.enabled &&
+         !contextVk->getFeatures().supportsMultisampledRenderToSingleSampled.enabled);
+
     // Make sure render pass and framebuffer are in agreement w.r.t unresolve attachments.
     ASSERT(mCurrentFramebufferDesc.getUnresolveAttachmentMask() ==
            MakeUnresolveAttachmentMask(mRenderPassDesc));
@@ -3833,6 +3842,12 @@ angle::Result FramebufferVk::startNewRenderPass(ContextVk *contextVk,
                 {
                     ASSERT(!mRenderPassDesc.getColorUnresolveAttachmentMask().test(colorIndexGL));
                     ANGLE_TRY(UnresolveYuvImage(contextVk, colorRenderTarget, renderArea));
+                }
+                // Unresolve for emulated MSRTT when dynamic rendering is enabled is done using a
+                // separate renderpass
+                else if (hasDynamicRenderingAndEmulatingMSRTT)
+                {
+                    mRenderPassDesc.packColorUnresolveAttachment(colorIndexGL);
                 }
                 else
                 {
@@ -3934,18 +3949,20 @@ angle::Result FramebufferVk::startNewRenderPass(ContextVk *contextVk,
 
         // Similar to color attachments, if there's a resolve attachment and the multisampled image
         // is transient, depth/stencil data need to be unresolved in an initial subpass.
+        // Except when MSRTT is emulated and dynamic rendering is preferred, in which case
+        // the unresolve will be handled in a dedicated renderpass.
         if (depthStencilRenderTarget->hasResolveAttachment() &&
             depthStencilRenderTarget->isImageTransient())
         {
             const bool unresolveDepth   = depthLoadOp == vk::RenderPassLoadOp::Load;
             const bool unresolveStencil = stencilLoadOp == vk::RenderPassLoadOp::Load;
 
-            if (unresolveDepth)
+            if (unresolveDepth && !hasDynamicRenderingAndEmulatingMSRTT)
             {
                 depthLoadOp = vk::RenderPassLoadOp::DontCare;
             }
 
-            if (unresolveStencil)
+            if (unresolveStencil && !hasDynamicRenderingAndEmulatingMSRTT)
             {
                 stencilLoadOp = vk::RenderPassLoadOp::DontCare;
 
@@ -3982,6 +3999,39 @@ angle::Result FramebufferVk::startNewRenderPass(ContextVk *contextVk,
         renderPassAttachmentOps.setOps(depthStencilAttachmentIndex, depthLoadOp, depthStoreOp);
         renderPassAttachmentOps.setStencilOps(depthStencilAttachmentIndex, stencilLoadOp,
                                               stencilStoreOp);
+    }
+
+    // If performing an unresolve for emulating MSRTT with dynamic rendering then the unresolve is
+    // done immediately using a separate renderpass. Once the unresolve is completed then unset all
+    // the unresolve bits.
+    if (hasDynamicRenderingAndEmulatingMSRTT)
+    {
+        if (mRenderPassDesc.getColorUnresolveAttachmentMask().any() ||
+            mRenderPassDesc.hasDepthUnresolveAttachment() ||
+            mRenderPassDesc.hasStencilUnresolveAttachment())
+        {
+            // Unresolve attachments using a separate renderpass.
+            UtilsVk::UnresolveParameters params;
+            params.unresolveColorMask  = mRenderPassDesc.getColorUnresolveAttachmentMask();
+            params.unresolveDepth      = mRenderPassDesc.hasDepthUnresolveAttachment();
+            params.unresolveStencil    = mRenderPassDesc.hasStencilUnresolveAttachment();
+            params.useDynamicRendering = true;
+            ANGLE_TRY(contextVk->getUtils().unresolve(contextVk, this, params));
+
+            // Update unresolve counters
+            angle::VulkanPerfCounters &perfCounters = contextVk->getPerfCounters();
+            perfCounters.colorAttachmentUnresolves +=
+                mRenderPassDesc.getColorUnresolveAttachmentMask().count();
+            perfCounters.depthAttachmentUnresolves +=
+                mRenderPassDesc.hasDepthUnresolveAttachment() ? 1 : 0;
+            perfCounters.stencilAttachmentUnresolves +=
+                mRenderPassDesc.hasStencilUnresolveAttachment() ? 1 : 0;
+
+            // Reset unresolve masks.
+            mRenderPassDesc.resetColorUnresolveAttachments();
+            mRenderPassDesc.removeDepthUnresolveAttachment();
+            mRenderPassDesc.removeStencilUnresolveAttachment();
+        }
     }
 
     // If render pass description is changed, the previous render pass desc is no longer compatible.
@@ -4043,6 +4093,7 @@ angle::Result FramebufferVk::startNewRenderPass(ContextVk *contextVk,
         params.unresolveColorMask = unresolveColorMask;
         params.unresolveDepth     = unresolveDepth;
         params.unresolveStencil   = unresolveStencil;
+        params.useDynamicRendering = false;
 
         ANGLE_TRY(contextVk->getUtils().unresolve(contextVk, this, params));
 

@@ -146,6 +146,7 @@ class IntSize;
 class KeyboardScrollingAnimator;
 class LayoutRect;
 class LocalFrame;
+class LocalFrameView;
 class LoginStatus;
 class LowPowerModeNotifier;
 class MediaCanStartListener;
@@ -429,9 +430,17 @@ public:
     WEBCORE_EXPORT bool hasAnyLocalFrame() const;
     WEBCORE_EXPORT Document* localTopDocument() const;
 
+    // localMainFrame() normally; under Site Isolation the main frame can be remote in this process,
+    // so falls back to the local root frame. Document overlays and their geometry are relative to it.
+    WEBCORE_EXPORT LocalFrame* NODELETE localMainOrRootFrame() const;
+
     Frame& mainFrame() const { return m_mainFrame.get(); }
     WEBCORE_EXPORT void setMainFrame(Ref<Frame>&&);
     WEBCORE_EXPORT const URL& NODELETE mainFrameURL() const LIFETIME_BOUND;
+
+    bool hasRemoteFrames() const;
+    void didAttachRemoteFrame() { ++m_remoteFrameCount; }
+    void didDetachRemoteFrame() { ASSERT(m_remoteFrameCount); --m_remoteFrameCount; }
 
     WEBCORE_EXPORT void didObserveFirstPartyUserGesture();
     SecurityOrigin& mainFrameOrigin() const;
@@ -557,6 +566,7 @@ public:
     ElementTargetingController& elementTargetingController() { return m_elementTargetingController.get(); }
 
     Seconds domTimerAlignmentInterval() const { return m_domTimerAlignmentInterval; }
+    Seconds domTimerAlignmentIntervalIncreaseLimit() const { return m_domTimerAlignmentIntervalIncreaseLimit; }
 
     void setTabKeyCyclesThroughElements(bool b) { m_tabKeyCyclesThroughElements = b; }
     bool tabKeyCyclesThroughElements() const { return m_tabKeyCyclesThroughElements; }
@@ -764,6 +774,12 @@ public:
     WEBCORE_EXPORT ImageAnalysisQueue& imageAnalysisQueue();
     ImageAnalysisQueue* imageAnalysisQueueIfExists() { return m_imageAnalysisQueue.get(); }
 #endif
+
+    // Non-empty while the user agent is presenting this page as a machine translation (e.g. a
+    // built-in "Translate this page" feature).
+    const String& displayedTranslationLocaleIdentifier() const LIFETIME_BOUND { return m_displayedTranslationLocaleIdentifier; }
+    bool isPresentingMachineTranslation() const { return !m_displayedTranslationLocaleIdentifier.isEmpty(); }
+    WEBCORE_EXPORT void setDisplayedTranslationLocaleIdentifier(String&&);
 
 #if ENABLE(WHEEL_EVENT_LATCHING)
     ScrollLatchingController& scrollLatchingController() LIFETIME_BOUND;
@@ -1068,11 +1084,12 @@ public:
 #if ENABLE(WIRELESS_PLAYBACK_TARGET)
     void addPlaybackTargetPickerClient(PlaybackTargetClientContextIdentifier);
     void removePlaybackTargetPickerClient(PlaybackTargetClientContextIdentifier);
-    void showPlaybackTargetPicker(PlaybackTargetClientContextIdentifier, const IntPoint&, bool, RouteSharingPolicy, const String&);
+    void showPlaybackTargetPicker(PlaybackTargetClientContextIdentifier, FrameIdentifier, const IntPoint&, bool, RouteSharingPolicy, const String&);
     void playbackTargetPickerClientStateDidChange(PlaybackTargetClientContextIdentifier, MediaProducerMediaStateFlags);
     WEBCORE_EXPORT void setMockMediaPlaybackTargetPickerEnabled(bool);
     WEBCORE_EXPORT void setMockMediaPlaybackTargetPickerState(const String&, MediaPlaybackTargetMockState);
     WEBCORE_EXPORT void mockMediaPlaybackTargetPickerDismissPopup();
+    WEBCORE_EXPORT void mockMediaPlaybackTargetPickerRect(CompletionHandler<void(FloatRect)>&&);
 
     WEBCORE_EXPORT void setPlaybackTarget(PlaybackTargetClientContextIdentifier, Ref<MediaPlaybackTarget>&&);
     WEBCORE_EXPORT void playbackTargetAvailabilityDidChange(PlaybackTargetClientContextIdentifier, bool);
@@ -1178,6 +1195,8 @@ public:
     static void forEachDocumentFromMainFrame(const Frame&, NOESCAPE const Function<void(Document&)>&);
     WEBCORE_EXPORT void forEachLocalFrame(NOESCAPE const Function<void(LocalFrame&)>&);
     void forEachWindowEventLoop(NOESCAPE const Function<void(WindowEventLoop&)>&);
+
+    void forEachRootFrameView(NOESCAPE const Function<void(LocalFrameView&)>&);
 
     bool shouldDisableCorsForRequestTo(const URL&) const;
     bool shouldAssumeSameSiteForRequestTo(const URL& url) const { return shouldDisableCorsForRequestTo(url); }
@@ -1523,6 +1542,9 @@ private:
     const UniqueRef<BackForwardController> m_backForwardController;
     HashSet<WeakRef<LocalFrame>> m_rootFrames;
     const UniqueRef<EditorClient> m_editorClient;
+
+    // Declared before m_mainFrame so a remote main frame can count itself as m_mainFrame is built.
+    unsigned m_remoteFrameCount { 0 };
     Ref<Frame> m_mainFrame;
     String m_mainFrameURLFragment;
 
@@ -1841,6 +1863,8 @@ private:
 #if HAVE(SPATIAL_TRACKING_LABEL)
     String m_defaultSpatialTrackingLabel;
 #endif
+
+    String m_displayedTranslationLocaleIdentifier;
 
 #if ENABLE(GAMEPAD)
     MonotonicTime m_lastAccessNotificationTime;

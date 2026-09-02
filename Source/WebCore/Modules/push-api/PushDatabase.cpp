@@ -33,7 +33,6 @@
 #include "SecurityOrigin.h"
 #include <iterator>
 #include <wtf/CrossThreadCopier.h>
-#include <wtf/Expected.h>
 #include <wtf/FileSystem.h>
 #include <wtf/RunLoop.h>
 #include <wtf/Scope.h>
@@ -190,7 +189,7 @@ PushTopics PushTopics::isolatedCopy() &&
 
 enum class ShouldDeleteAndRetry : bool { No, Yes };
 
-static Expected<UniqueRef<SQLiteDatabase>, ShouldDeleteAndRetry> openAndMigrateDatabaseImpl(const String& path)
+static std::expected<UniqueRef<SQLiteDatabase>, ShouldDeleteAndRetry> openAndMigrateDatabaseImpl(const String& path)
 {
     ASSERT(!RunLoop::isMain());
 
@@ -336,7 +335,7 @@ SQLiteStatementAutoResetScope PushDatabase::cachedStatementOnQueue(ASCIILiteral 
     auto statementRef = makeUniqueRefFromNonNullUniquePtr(WTF::move(statement));
     CheckedPtr statementPtr = statementRef.ptr();
     m_statements.add(query, WTF::move(statementRef));
-    return SQLiteStatementAutoResetScope(statementPtr);
+    return SQLiteStatementAutoResetScope(WTF::move(statementPtr));
 }
 
 template<typename... Args>

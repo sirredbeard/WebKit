@@ -26,12 +26,10 @@
 
 #include <WebCore/FloatPoint.h>
 #include <WebCore/FloatRect.h>
-#include <WebCore/FloatSize.h>
+#include <optional>
 #include <wtf/Vector.h>
 
 namespace WebCore {
-
-class Path;
 
 struct BezierSegment {
     FloatPoint start;
@@ -41,13 +39,22 @@ struct BezierSegment {
 };
 
 WEBCORE_EXPORT Vector<BezierSegment> trimBezierToRect(const BezierSegment& curve, const FloatRect&);
+
+struct BezierCurvesIntersection {
+    size_t indexOnFirst { 0 };
+    float parameterOnFirst { 0 };
+    size_t indexOnSecond { 0 };
+    float parameterOnSecond { 0 };
+    float fractionAlongFirst { 0 };
+    float fractionAlongSecond { 0 };
+    bool isTailToHead() const { return fractionAlongFirst > fractionAlongSecond; }
+};
+
+WEBCORE_EXPORT std::optional<BezierCurvesIntersection> findMonotonicBezierCurvesIntersection(const Vector<BezierSegment>& first, const Vector<BezierSegment>& second);
+
+WEBCORE_EXPORT void trimMonotonicBezierCurvesAtIntersection(Vector<BezierSegment>& first, Vector<BezierSegment>& second, const BezierCurvesIntersection&);
+
 // `parameter` is the Bézier curve parameter t in [0, 1]: 0 is the start point, 1 is the end point (not arc length).
 FloatPoint pointOnBezierAtParameter(const BezierSegment& curve, double parameter);
-Vector<FloatPoint> resampleByArcLength(const Vector<FloatPoint>& polyline, unsigned count);
-// `interpolationFraction` blends from the start curve (0) to the end curve (1); it is a shape-morph
-// fraction between two whole curves, not a position along a single curve.
-Vector<FloatPoint> hermiteInterpolate(const Vector<FloatPoint>& startPoints, const Vector<FloatSize>& startVelocities, const Vector<FloatPoint>& endPoints, const Vector<FloatSize>& endVelocities, double interpolationFraction);
-
-void addCatmullRomBeziers(Path&, const Vector<FloatPoint>& points, unsigned segmentCount, bool& started);
 
 } // namespace WebCore

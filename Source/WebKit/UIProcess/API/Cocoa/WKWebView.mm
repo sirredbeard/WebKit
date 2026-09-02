@@ -160,6 +160,7 @@
 #import "_WKTextManipulationToken.h"
 #import "_WKTextPreview.h"
 #import "_WKTextRunInternal.h"
+#import "_WKTranslationDelegate.h"
 #import "_WKVisitedLinkStoreInternal.h"
 #import "_WKWarningView.h"
 #import <WebCore/AppHighlight.h>
@@ -345,7 +346,7 @@ RetainPtr<NSError> nsErrorFromExceptionDetails(const std::optional<WebCore::Exce
 WK_OBJECT_DISABLE_DISABLE_KVC_IVAR_ACCESS;
 
 #if ENABLE(WEB_AUTHN)
-- (void)_showDigitalCredentialsChooser:(const WebCore::DigitalCredentialsRequestData&)requestData completionHandler:(WTF::CompletionHandler<void(Expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&)completionHandler
+- (void)_showDigitalCredentialsChooser:(const WebCore::DigitalCredentialsRequestData&)requestData completionHandler:(WTF::CompletionHandler<void(std::expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&)completionHandler
 {
     LOG(DigitalCredentials, "Did not show digital credentials chooser because it is not implemented.");
     completionHandler(makeUnexpected(WebCore::ExceptionData { WebCore::ExceptionCode::NotSupportedError, "Digital credentials chooser not implemented."_s }));
@@ -997,6 +998,9 @@ static void addBrowsingContextControllerMethodStubsIfNeeded()
     if ([key isEqualToString:@"serverTrust"])
         return (__bridge id)[self serverTrust];
 
+    if ([key isEqualToString:@"qualifiedServerTrust"])
+        return (__bridge id)[self qualifiedServerTrust];
+
     return [super valueForUndefinedKey:key];
 }
 
@@ -1199,6 +1203,11 @@ static void addBrowsingContextControllerMethodStubsIfNeeded()
 - (SecTrustRef)serverTrust
 {
     return _page->pageLoadState().certificateInfo().trust().get();
+}
+
+- (SecTrustRef)qualifiedServerTrust
+{
+    return _page->pageLoadState().qualifiedServerTrust().trust();
 }
 
 - (void)_didAccessBackForwardList
@@ -1956,6 +1965,29 @@ inline OptionSet<WebKit::FindOptions> toFindOptions(WKFindConfiguration *configu
     return @"WKWebView";
 }
 
+- (void)_translateAccessibilityAnnouncementStrings:(NSArray<NSString *> *)strings targetLocaleIdentifier:(NSString *)targetLocaleIdentifier completionHandler:(CompletionHandler<void(Vector<String>&&)>&&)completionHandler
+{
+    RetainPtr delegate = [self _translationDelegate];
+    if (![delegate respondsToSelector:@selector(_webView:translateAccessibilityAnnouncementStrings:targetLocaleIdentifier:completionHandler:)])
+        return completionHandler({ });
+
+    auto checker = WebKit::CompletionHandlerCallChecker::create(delegate.get(), @selector(_webView:translateAccessibilityAnnouncementStrings:targetLocaleIdentifier:completionHandler:));
+
+    // A client that releases the handler without calling it must not be fatal here. If that happens,
+    // rather than crashing, use a finalizer to reply as if no translation were available.
+    auto handler = CompletionHandlerWithFinalizer<void(Vector<String>&&)>(WTF::move(completionHandler), [checker = checker.copyRef()](Function<void(Vector<String>&&)>& function) mutable {
+        checker->didCallCompletionHandler();
+        function({ });
+    });
+
+    [delegate _webView:self translateAccessibilityAnnouncementStrings:strings targetLocaleIdentifier:targetLocaleIdentifier completionHandler:makeBlockPtr([handler = WTF::move(handler), checker = WTF::move(checker)](NSArray<NSString *> *translatedStrings) mutable {
+        if (checker->completionHandlerHasBeenCalled())
+            return;
+        checker->didCallCompletionHandler();
+        handler(makeVector<String>(translatedStrings));
+    }).get()];
+}
+
 - (void)_showWarningView:(const WebKit::BrowsingWarning&)warning completionHandler:(CompletionHandler<void(Variant<WebKit::ContinueUnsafeLoad, URL>&&)>&&)completionHandler
 {
 #if HAVE(SAFE_BROWSING)
@@ -2118,10 +2150,13 @@ inline OptionSet<WebKit::FindOptions> toFindOptions(WKFindConfiguration *configu
 #if PLATFORM(IOS_FAMILY)
     if (_overriddenLayoutParameters)
         return;
-#endif
 
+    [self _dispatchSetMinimumUnobscuredSize:minimumUnobscuredSize];
+    [self _dispatchSetMaximumUnobscuredSize:maximumUnobscuredSize];
+#else
     _page->setMinimumUnobscuredSize(minimumUnobscuredSize);
     _page->setMaximumUnobscuredSize(maximumUnobscuredSize);
+#endif
 }
 
 #if PLATFORM(MAC) && HAVE(NSWINDOW_SNAPSHOT_READINESS_HANDLER)
@@ -4503,6 +4538,10 @@ FOR_EACH_PRIVATE_WKCONTENTVIEW_ACTION(FORWARD_ACTION_TO_WKCONTENTVIEW)
     if (wasEditable == editable)
         return;
 
+#if PLATFORM(MAC) && ENABLE(CONTENT_INSET_BACKGROUND_FILL)
+    _impl->updateScrollPocketVisibilityWhenScrolledToTopAndNonEditable();
+#endif
+
 #if PLATFORM(IOS_FAMILY)
     [_contentView _didChangeWebViewEditability];
 #endif
@@ -4525,6 +4564,33 @@ FOR_EACH_PRIVATE_WKCONTENTVIEW_ACTION(FORWARD_ACTION_TO_WKCONTENTVIEW)
 - (void)_setTextManipulationDelegate:(id <_WKTextManipulationDelegate>)delegate
 {
     _textManipulationDelegate = delegate;
+}
+
+- (id<_WKTranslationDelegate>)_translationDelegate
+{
+    return _translationDelegate.getAutoreleased();
+}
+
+- (void)_setTranslationDelegate:(id<_WKTranslationDelegate>)delegate
+{
+    _translationDelegate = delegate;
+}
+
+- (NSString *)_displayedTranslationLocaleIdentifier
+{
+    THROW_IF_SUSPENDED;
+    if (!_page)
+        return nil;
+
+    auto& localeIdentifier = _page->displayedTranslationLocaleIdentifier();
+    return localeIdentifier.isEmpty() ? nil : localeIdentifier.createNSString().autorelease();
+}
+
+- (void)_setDisplayedTranslationLocaleIdentifier:(NSString *)localeIdentifier
+{
+    THROW_IF_SUSPENDED;
+    if (_page)
+        _page->setDisplayedTranslationLocaleIdentifier(localeIdentifier);
 }
 
 static RetainPtr<NSDictionary<NSString *, id>> createUserInfo(const std::optional<WebCore::TextManipulationTokenInfo>& info)
@@ -4924,10 +4990,15 @@ static RetainPtr<NSArray> wkTextManipulationErrors(NSArray<_WKTextManipulationIt
 
 - (void)_hitTestAtPoint:(CGPoint)point inFrameCoordinateSpace:(WKFrameInfo *)frame completionHandler:(void (^)(_WKJSHandle *, NSError *))completionHandler
 {
+    [self _hitTestAtPoint:point inFrameCoordinateSpace:frame inContentWorld:WKContentWorld.pageWorld completionHandler:completionHandler];
+}
+
+- (void)_hitTestAtPoint:(CGPoint)point inFrameCoordinateSpace:(WKFrameInfo *)frame inContentWorld:(WKContentWorld *)contentWorld completionHandler:(void (^)(_WKJSHandle *, NSError *))completionHandler
+{
     RefPtr mainFrame = _page->mainFrame();
     if (!frame && !mainFrame)
         return completionHandler(nil, unknownError().get());
-    _page->hitTestAtPoint(frame ? frame->_frameInfo->frameInfoData().frameID : mainFrame->frameID(), point, [completionHandler = makeBlockPtr(completionHandler)] (auto&& result) mutable {
+    _page->hitTestAtPoint(frame ? frame->_frameInfo->frameInfoData().frameID : mainFrame->frameID(), point, protect(*contentWorld->_contentWorld), [completionHandler = makeBlockPtr(completionHandler)] (auto&& result) mutable {
         if (!result)
             return completionHandler(nil, unknownError().get());
         completionHandler(wrapper(API::JSHandle::create(WTF::move(*result))).get(), nil);
@@ -5248,7 +5319,7 @@ static void convertAndAddHighlight(Vector<Ref<WebCore::SharedMemory>>& buffers, 
     auto url = resourceRequest.url();
     auto sizeConstraint = (maxSize.height || maxSize.width) ? std::optional(WebCore::FloatSize(maxSize)) : std::nullopt;
 
-    _page->loadAndDecodeImage(request, sizeConstraint, maximumBytesFromNetwork, [completionHandler = makeBlockPtr(completionHandler), url](Expected<Ref<WebCore::ShareableBitmap>, WebCore::ResourceError>&& result) mutable {
+    _page->loadAndDecodeImage(request, sizeConstraint, maximumBytesFromNetwork, [completionHandler = makeBlockPtr(completionHandler), url](std::expected<Ref<WebCore::ShareableBitmap>, WebCore::ResourceError>&& result) mutable {
         if (!result) {
             if (result.error().isNull())
                 return completionHandler(nil, protect(WebCore::internalError(url).nsError()).get()); // This can happen if IPC fails.
@@ -5480,12 +5551,10 @@ static void convertAndAddHighlight(Vector<Ref<WebCore::SharedMemory>>& buffers, 
 
 - (void)_setUserContentExtensionsEnabled:(BOOL)userContentExtensionsEnabled
 {
-    // This is kept for binary compatibility with iOS 9.
 }
 
 - (BOOL)_userContentExtensionsEnabled
 {
-    // This is kept for binary compatibility with iOS 9.
     return true;
 }
 

@@ -62,6 +62,34 @@ std::optional<FloatPoint> findIntersection(const FloatPoint& p1, const FloatPoin
     return FloatPoint(p1.x() + param * pxLength, p1.y() + param * pyLength);
 }
 
+std::optional<FloatPoint> findLineIntersection(const FloatPoint& firstOrigin, const FloatSize& firstDirection, const FloatPoint& secondOrigin, const FloatSize& secondDirection, float parallelTolerance)
+{
+    auto firstUnitDirection = firstDirection.normalized();
+    auto secondUnitDirection = secondDirection.normalized();
+
+    if (std::abs(firstUnitDirection.cross(secondUnitDirection)) < parallelTolerance)
+        return std::nullopt;
+
+    return findIntersection(firstOrigin, firstOrigin + firstUnitDirection, secondOrigin, secondOrigin + secondUnitDirection);
+}
+
+std::optional<FloatPoint> findSegmentLineIntersection(const FloatPoint& segmentStart, const FloatPoint& segmentEnd, const FloatPoint& lineA, const FloatPoint& lineB)
+{
+    auto intersection = findIntersection(segmentStart, segmentEnd, lineA, lineB);
+    if (!intersection)
+        return std::nullopt;
+
+    auto segment = segmentEnd - segmentStart;
+    float lengthSquared = segment.diagonalLengthSquared();
+    if (!lengthSquared)
+        return std::nullopt;
+
+    float position = dotProduct(*intersection - segmentStart, segment) / lengthSquared;
+    if (position < 0 || position > 1)
+        return std::nullopt;
+    return intersection;
+}
+
 IntRect unionRect(const Vector<IntRect>& rects)
 {
     IntRect result;

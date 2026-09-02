@@ -106,6 +106,7 @@
 #include "FrameInspectorController.h"
 #include "FrameLoader.h"
 #include "FrameMemoryMonitor.h"
+#include "FrameSelection.h"
 #include "FrameSnapshotting.h"
 #include "GCObservation.h"
 #include "GraphicsLayer.h"
@@ -145,6 +146,7 @@
 #include "InternalsMapLike.h"
 #include "InternalsSetLike.h"
 #include "JSDOMPromiseDeferred.h"
+#include "JSDOMRect.h"
 #include "JSFile.h"
 #include "JSInternals.h"
 #include "JSNode.h"
@@ -155,6 +157,7 @@
 #include "LocalFrameView.h"
 #include "LocalizedStrings.h"
 #include "Location.h"
+#include "LogInitialization.h"
 #include "MallocStatistics.h"
 #include "MediaControlsHost.h"
 #include "MediaDevices.h"
@@ -433,10 +436,6 @@
 #include "NavigatorMediaSession.h"
 #endif
 
-#if ENABLE(MEDIA_SESSION) && USE(GLIB)
-#include "MediaSessionManagerGLib.h"
-#endif
-
 #if ENABLE(IMAGE_ANALYSIS)
 #include "TextRecognitionResult.h"
 #endif
@@ -671,25 +670,21 @@ void Internals::resetToConsistentState(Page& page)
         localMainFrame->editor().toggleOverwriteModeEnabled();
     localMainFrame->loader().clearTestingOverrides();
 
-    RefPtr sessionManager = page.mediaSessionManager();
 #if ENABLE(VIDEO)
     page.group().ensureCaptionPreferences().setCaptionDisplayMode(CaptionUserPreferences::CaptionDisplayMode::ForcedOnly);
     page.group().ensureCaptionPreferences().setCaptionsStyleSheetOverride(emptyString());
     page.group().ensureCaptionPreferences().setPreferredLanguage(emptyString());
 
-    sessionManager->resetHaveEverRegisteredAsNowPlayingApplicationForTesting();
-    sessionManager->resetRestrictions();
-    sessionManager->resetSessionState();
-    sessionManager->setWillIgnoreSystemInterruptions(true);
-    sessionManager->applicationWillEnterForeground(false);
     if (page.mediaPlaybackIsSuspended())
         page.resumeAllMediaPlayback();
 #endif
 #if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
-    sessionManager->setIsPlayingToAutomotiveHeadUnit(false);
+    if (RefPtr sessionManager = page.mediaSessionManager())
+        sessionManager->resetToConsistentStateForTesting();
 #endif
     AXObjectCache::setEnhancedUserInterfaceAccessibility(false);
     AXObjectCache::disableAccessibilityForTesting();
+    AXObjectCache::setAnnouncementTranslationTimeoutForTesting(std::nullopt);
     WebCore::setShouldMockParentSearchResultsForTesting(false);
     WebCore::setShouldMockChildFrameSearchResultsForTesting(false);
 #if ENABLE(ACCESSIBILITY_ISOLATED_TREE)
@@ -764,22 +759,11 @@ void Internals::resetToConsistentState(Page& page)
     WebCore::setContentSizeCategory(kCTFontContentSizeCategoryL);
 #endif
 
-#if ENABLE(MEDIA_SESSION) && USE(GLIB)
-    if (auto* glibSessionManager = dynamicDowncast<MediaSessionManagerGLib>(sessionManager.get()))
-        glibSessionManager->setDBusNotificationsEnabled(false);
-#endif
-
 #if PLATFORM(COCOA)
     setOverrideEnhanceTextLegibility(false);
 #endif
 
     TextPainter::setForceUseGlyphDisplayListForTesting(false);
-
-#if USE(AUDIO_SESSION)
-    AudioSession::singleton().setCategoryOverride(AudioSessionCategory::None);
-    AudioSession::singleton().tryToSetActive(false)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
-    AudioSession::singleton().endInterruptionForTesting();
-#endif
 
 #if ENABLE(DAMAGE_TRACKING)
     page.chrome().client().resetDamageHistoryForTesting();
@@ -1230,6 +1214,16 @@ unsigned Internals::imageFrameCount(HTMLImageElement& element)
     return bitmapImage ? bitmapImage->frameCount() : 0;
 }
 
+// Decodes a specific frame synchronously. Drawing an image only decodes what the renderer needs,
+// and does nothing at all for an image that has not finished loading.
+bool Internals::forceDecodeImageFrameAtIndex(HTMLImageElement& element, unsigned index)
+{
+    auto* bitmapImage = bitmapImageFromImageElement(element);
+    if (!bitmapImage)
+        return false;
+    return !!bitmapImage->nativeImageAtIndex(index);
+}
+
 float Internals::imageFrameDurationAtIndex(HTMLImageElement& element, unsigned index)
 {
     auto* bitmapImage = bitmapImageFromImageElement(element);
@@ -1526,7 +1520,7 @@ ExceptionOr<void> Internals::resumeAnimations() const
 uint64_t Internals::identifierForTimeline(AnimationTimeline& timeline) const
 {
 #if ENABLE(THREADED_ANIMATIONS)
-    return timeline.acceleratedTimelineIdentifier().toRawValue();
+    return timeline.acceleratedTimelineIdentifier().toUInt64();
 #else
     UNUSED_PARAM(timeline);
     return 0;
@@ -1661,7 +1655,7 @@ float Internals::usedOutlineOffset(Element& element)
     auto* style = element.computedStyle();
     if (!style)
         return 0;
-    return Style::evaluate<float>(style->usedOutlineOffset(), style->usedZoomForLength());
+    return Style::evaluate<float>(style->usedOutlineOffset(), style->usedZoomForLength(), style->deviceScaleFactor());
 }
 
 Node& Internals::ensureUserAgentShadowRoot(Element& host)
@@ -1768,6 +1762,24 @@ bool Internals::scriptedAnimationsAreSuspended() const
 bool Internals::areTimersThrottled() const
 {
     return contextDocument()->isTimerThrottlingEnabled();
+}
+
+double Internals::domTimerAlignmentInterval() const
+{
+    RefPtr document = contextDocument();
+    RefPtr page = document ? document->page() : nullptr;
+    if (!page)
+        return 0;
+    return page->domTimerAlignmentInterval().milliseconds();
+}
+
+double Internals::domTimerAlignmentIntervalIncreaseLimit() const
+{
+    RefPtr document = contextDocument();
+    RefPtr page = document ? document->page() : nullptr;
+    if (!page)
+        return 0;
+    return page->domTimerAlignmentIntervalIncreaseLimit().milliseconds();
 }
 
 void Internals::setEventThrottlingBehaviorOverride(std::optional<EventThrottlingBehavior> value)
@@ -2546,6 +2558,29 @@ ExceptionOr<String> Internals::documentBackgroundColor()
     if (!document || !document->view())
         return Exception { ExceptionCode::InvalidAccessError };
     return serializationForCSS(document->view()->documentBackgroundColor());
+}
+
+ExceptionOr<String> Internals::paintedCaretColor()
+{
+    RefPtr document = contextDocument();
+    if (!document)
+        return Exception { ExceptionCode::InvalidAccessError };
+
+    document->updateLayoutIgnorePendingStylesheets();
+
+    RefPtr frame = document->frame();
+    if (!frame)
+        return Exception { ExceptionCode::InvalidAccessError };
+
+    CheckedRef selection = frame->selection();
+    if (!selection->selection().isCaret())
+        return Exception { ExceptionCode::InvalidStateError, "There is no caret selection"_s };
+
+    auto caretColor = selection->paintedCaretColor();
+    if (!caretColor.isValid())
+        return Exception { ExceptionCode::InvalidStateError, "The platform does not resolve a caret color"_s };
+
+    return serializationForCSS(caretColor);
 }
 
 ExceptionOr<void> Internals::setPagination(const String& mode, int gap, int pageLength)
@@ -4306,6 +4341,15 @@ void Internals::setFooterHeight(float height)
     document->page()->setFooterHeight(height);
 }
 
+float Internals::obscuredContentInsetTop()
+{
+    RefPtr document = contextDocument();
+    if (!document || !document->page())
+        return 0;
+
+    return protect(document->page())->obscuredContentInsets().top();
+}
+
 void Internals::setFullscreenInsets(FullscreenInsets insets)
 {
     Page* page = contextDocument()->frame()->page();
@@ -4789,6 +4833,11 @@ void Internals::forceAXObjectCacheUpdate() const
         if (CheckedPtr cache = document->axObjectCache())
             cache->performDeferredCacheUpdate(ForceLayout::Yes);
     }
+}
+
+void Internals::setAccessibilityAnnouncementTranslationTimeout(double seconds)
+{
+    AXObjectCache::setAnnouncementTranslationTimeoutForTesting(Seconds { seconds });
 }
 
 unsigned Internals::liveRegionSnapshotBuildCount() const
@@ -5569,41 +5618,61 @@ void Internals::setMediaElementRestrictions(HTMLMediaElement& element, StringVie
     element.mediaSession().addBehaviorRestriction(restrictions);
 }
 
+static std::optional<PlatformMediaSession::RemoteControlCommandType> remoteControlCommandForString(const String& commandString)
+{
+    if (equalLettersIgnoringASCIICase(commandString, "play"_s))
+        return PlatformMediaSession::RemoteControlCommandType::PlayCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "pause"_s))
+        return PlatformMediaSession::RemoteControlCommandType::PauseCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "stop"_s))
+        return PlatformMediaSession::RemoteControlCommandType::StopCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "toggleplaypause"_s))
+        return PlatformMediaSession::RemoteControlCommandType::TogglePlayPauseCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "beginseekingbackward"_s))
+        return PlatformMediaSession::RemoteControlCommandType::BeginSeekingBackwardCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "endseekingbackward"_s))
+        return PlatformMediaSession::RemoteControlCommandType::EndSeekingBackwardCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "beginseekingforward"_s))
+        return PlatformMediaSession::RemoteControlCommandType::BeginSeekingForwardCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "endseekingforward"_s))
+        return PlatformMediaSession::RemoteControlCommandType::EndSeekingForwardCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "seektoplaybackposition"_s))
+        return PlatformMediaSession::RemoteControlCommandType::SeekToPlaybackPositionCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "beginscrubbing"_s))
+        return PlatformMediaSession::RemoteControlCommandType::BeginScrubbingCommand;
+    if (equalLettersIgnoringASCIICase(commandString, "endscrubbing"_s))
+        return PlatformMediaSession::RemoteControlCommandType::EndScrubbingCommand;
+    return std::nullopt;
+}
+
 ExceptionOr<void> Internals::postRemoteControlCommand(const String& commandString, float argument)
 {
     RefPtr manager = sessionManager();
     if (!manager)
         return Exception { ExceptionCode::InvalidAccessError };
 
-    PlatformMediaSession::RemoteControlCommandType command;
-    PlatformMediaSession::RemoteCommandArgument parameter { argument, { } };
-
-    if (equalLettersIgnoringASCIICase(commandString, "play"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::PlayCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "pause"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::PauseCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "stop"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::StopCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "toggleplaypause"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::TogglePlayPauseCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "beginseekingbackward"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::BeginSeekingBackwardCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "endseekingbackward"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::EndSeekingBackwardCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "beginseekingforward"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::BeginSeekingForwardCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "endseekingforward"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::EndSeekingForwardCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "seektoplaybackposition"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::SeekToPlaybackPositionCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "beginscrubbing"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::BeginScrubbingCommand;
-    else if (equalLettersIgnoringASCIICase(commandString, "endscrubbing"_s))
-        command = PlatformMediaSession::RemoteControlCommandType::EndScrubbingCommand;
-    else
+    auto command = remoteControlCommandForString(commandString);
+    if (!command)
         return Exception { ExceptionCode::InvalidAccessError };
 
-    manager->processDidReceiveRemoteControlCommand(command, parameter);
+    manager->processDidReceiveRemoteControlCommand(*command, { argument, { } });
+    return { };
+}
+
+ExceptionOr<void> Internals::postSystemRemoteControlCommand(const String& commandString, float argument)
+{
+    RefPtr manager = sessionManager();
+    if (!manager)
+        return Exception { ExceptionCode::InvalidAccessError };
+
+    auto command = remoteControlCommandForString(commandString);
+    if (!command)
+        return Exception { ExceptionCode::InvalidAccessError };
+
+    // The GPU process delivers the command the way a real system command arrives. Without one (WebKitLegacy, or
+    // WebKit not using a GPU process) fall back to injecting into the local manager.
+    if (!platformStrategies()->mediaStrategy()->postNowPlayingRemoteControlCommandToGPUProcessForTesting(*command, { argument, { } }))
+        manager->processDidReceiveRemoteControlCommand(*command, { argument, { } });
     return { };
 }
 
@@ -5931,6 +6000,20 @@ bool Internals::elementIsActiveNowPlayingSession(HTMLMediaElement& element) cons
     return element.isActiveNowPlayingSession();
 }
 
+void Internals::elementIsActiveNowPlayingSessionInGPUProcess(HTMLMediaElement& element, DOMPromiseDeferred<IDLBoolean>&& promise)
+{
+    platformStrategies()->mediaStrategy()->isActiveNowPlayingSessionInGPUProcessForTesting(element.mediaSession().mediaSessionIdentifier(), [promise = WTF::move(promise)](bool result) mutable {
+        promise.resolve(result);
+    });
+}
+
+void Internals::elementIsRemoteCommandTargetInGPUProcess(HTMLMediaElement& element, DOMPromiseDeferred<IDLBoolean>&& promise)
+{
+    platformStrategies()->mediaStrategy()->isRemoteCommandTargetSessionInGPUProcessForTesting(element.mediaSession().mediaSessionIdentifier(), [promise = WTF::move(promise)](bool result) mutable {
+        promise.resolve(result);
+    });
+}
+
 #endif // ENABLE(VIDEO)
 
 #if ENABLE(WIRELESS_PLAYBACK_TARGET)
@@ -5971,6 +6054,19 @@ void Internals::mockMediaPlaybackTargetPickerDismissPopup()
         return;
 
     frame->page()->mockMediaPlaybackTargetPickerDismissPopup();
+}
+
+void Internals::mockMediaPlaybackTargetPickerRect(DOMPromiseDeferred<IDLInterface<DOMRect>>&& promise)
+{
+    auto frame = this->frame();
+    if (!frame || !frame->page()) {
+        promise.reject(Exception { ExceptionCode::InvalidAccessError });
+        return;
+    }
+
+    frame->page()->mockMediaPlaybackTargetPickerRect([promise = WTF::move(promise)](FloatRect rect) mutable {
+        promise.resolve(DOMRect::create(rect));
+    });
 }
 #endif
 
@@ -7043,6 +7139,38 @@ auto Internals::audioSessionCategory() const -> AudioSessionCategory
 #endif
 }
 
+void Internals::systemAudioSessionCategory(DOMPromiseDeferred<IDLEnumeration<AudioSessionCategory>>&& promise)
+{
+#if USE(AUDIO_SESSION)
+    AudioSession::singleton().systemCategoryForTesting()->whenSettled(RunLoop::mainSingleton(),
+        [promise = WTF::move(promise)](auto&& result) mutable {
+            if (!result) {
+                promise.reject(Exception { ExceptionCode::InvalidStateError, "Could not read the system audio session category"_s });
+                return;
+            }
+            promise.resolve(*result);
+        });
+#else
+    promise.resolve(AudioSessionCategory::None);
+#endif
+}
+
+void Internals::systemAudioSessionActivationCount(DOMPromiseDeferred<IDLUnsignedLongLong>&& promise)
+{
+#if USE(AUDIO_SESSION)
+    AudioSession::singleton().systemActivationCountForTesting()->whenSettled(RunLoop::mainSingleton(),
+        [promise = WTF::move(promise)](auto&& result) mutable {
+            if (!result) {
+                promise.reject(Exception { ExceptionCode::InvalidStateError, "Could not read the system audio session activation count"_s });
+                return;
+            }
+            promise.resolve(*result);
+        });
+#else
+    promise.resolve(0);
+#endif
+}
+
 auto Internals::audioSessionMode() const -> AudioSessionMode
 {
 #if USE(AUDIO_SESSION)
@@ -7134,7 +7262,7 @@ void Internals::sendH2Ping(String url, DOMPromiseDeferred<IDLDouble>&& promise)
         return;
     }
 
-    frame->loader().client().sendH2Ping(URL { url }, [promise = WTF::move(promise)] (Expected<Seconds, ResourceError>&& result) mutable {
+    frame->loader().client().sendH2Ping(URL { url }, [promise = WTF::move(promise)] (std::expected<Seconds, ResourceError>&& result) mutable {
         if (result.has_value())
             promise.resolve(result.value().value());
         else
@@ -7204,6 +7332,14 @@ void Internals::setConsoleMessageListener(RefPtr<StringCallback>&& listener)
 
     if (RefPtr page = contextDocument()->page())
         page->setConsoleMessageListenerForTesting(WTF::move(listener));
+}
+
+void Internals::configureLoggingChannel(const String& channelName, bool enabled)
+{
+    if (auto* channel = getLogChannel(channelName)) {
+        channel->state = enabled ? WTFLogChannelState::On : WTFLogChannelState::Off;
+        channel->level = enabled ? WTFLogLevel::Info : WTFLogLevel::Error;
+    }
 }
 
 void Internals::setResponseSizeWithPadding(FetchResponse& response, uint64_t size)
@@ -8142,7 +8278,7 @@ void Internals::loadArtworkImage(String&& url, ArtworkImagePromise&& promise)
             promise->reject(Exception { ExceptionCode::InvalidAccessError, "No image retrieved."_s });
             return;
         }
-        promise->settle(WebCodecsVideoFrame::create(*document, *nativeImage));
+        promise->settle(WebCodecsVideoFrame::create(*document, *nativeImage, { }));
     });
     m_artworkLoader->requestImageResource();
 }
@@ -8628,6 +8764,15 @@ void Internals::setTopDocumentURLForQuirks(const String& urlString)
     document->quirks().setTopDocumentURLForTesting(URL { urlString });
 }
 
+Vector<String> Internals::activeQuirks() const
+{
+    RefPtr document = contextDocument();
+    if (!document)
+        return { };
+
+    return document->quirks().activeQuirks();
+}
+
 #if ENABLE(DAMAGE_TRACKING)
 ExceptionOr<Vector<Internals::FrameDamage>> Internals::getFrameDamageHistory() const
 {
@@ -8767,12 +8912,6 @@ unsigned Internals::numberOfHostedModelsInSpatialPortal(Element& element)
 {
     CheckedPtr controller = element.spatialPortalController();
     return controller ? controller->numberOfHostedModels() : 0;
-}
-
-unsigned Internals::numberOfLoadedModelsInSpatialPortal(Element& element)
-{
-    CheckedPtr controller = element.spatialPortalController();
-    return controller ? controller->numberOfLoadedModels() : 0;
 }
 
 bool Internals::establishesSpatialPortal(Element& element)

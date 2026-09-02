@@ -39,6 +39,7 @@
 #include <WebCore/IntRect.h>
 #include <WebCore/IntSize.h>
 #include <array>
+#include <optional>
 #include <span>
 #include <wtf/EnumSet.h>
 #include <wtf/FunctionDispatcher.h>
@@ -1230,12 +1231,15 @@ public:
         WEBCORE_EXPORT virtual ~Client();
         virtual void forceContextLost() = 0;
         virtual void addDebugMessage(GCGLenum, GCGLenum, GCGLenum, const CString&) = 0;
+        virtual void didChangeMemoryCost() = 0;
     };
 
     WEBCORE_EXPORT GraphicsContextGL(GraphicsContextGLAttributes);
     WEBCORE_EXPORT virtual ~GraphicsContextGL();
 
     void setClient(Client* client) { m_client = client; }
+
+    virtual std::optional<size_t> NODELETE estimatedMemoryCost() = 0;
 
     // ========== WebGL 1 entry points.
     virtual void activeTexture(GCGLenum texture) = 0;
@@ -1669,7 +1673,7 @@ public:
     virtual void prepareForDisplay() = 0;
 
     using SurfaceBuffer = GraphicsContextGLSurfaceBuffer;
-    virtual RefPtr<NativeImage> copyNativeImageYFlipped(SurfaceBuffer) = 0;
+    virtual RefPtr<NativeImage> copyNativeImage(SurfaceBuffer) = 0;
 #if ENABLE(MEDIA_STREAM) || ENABLE(WEB_CODECS)
     virtual RefPtr<VideoFrame> surfaceBufferToVideoFrame(SurfaceBuffer) = 0;
 #endif
@@ -1726,13 +1730,12 @@ public:
     // Returns true upon success.
     static bool packImageData(Image*, std::span<const uint8_t> pixels, GCGLenum format, GCGLenum type, bool flipY, AlphaOp, DataFormat sourceFormat, unsigned sourceImageWidth, unsigned sourceImageHeight, const IntRect& sourceImageSubRectangle, int depth, unsigned sourceUnpackAlignment, int unpackImageHeight, Vector<uint8_t>& data);
 
-    WEBCORE_EXPORT static RefPtr<NativeImage> createNativeImageFromPixelBuffer(const GraphicsContextGLAttributes&, Ref<PixelBuffer>&&);
     WEBCORE_EXPORT static void paintToCanvas(NativeImage&, const IntSize& canvasSize, GraphicsContext&);
-    WEBCORE_EXPORT static void paintToCanvas(const GraphicsContextGLAttributes&, Ref<PixelBuffer>&&, const IntSize& canvasSize, GraphicsContext&);
 
     bool isContextLost() const { return m_contextLost; }
 protected:
     WEBCORE_EXPORT virtual void forceContextLost();
+    WEBCORE_EXPORT void didChangeMemoryCost();
 
     int m_currentWidth { 0 };
     int m_currentHeight { 0 };

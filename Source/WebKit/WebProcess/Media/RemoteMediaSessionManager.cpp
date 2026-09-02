@@ -73,6 +73,7 @@ RemoteMediaSessionManager::RemoteMediaSessionManager(WebPage& webPage)
         sharedSession->sceneIdentifier(),
         sharedSession->soundStageSize(),
         sharedSession->categoryOverride(),
+        sharedSession->isActive(),
     };
     send(Messages::RemoteMediaSessionManagerProxy::RemoteAudioConfigurationChanged(WTF::move(configuration)));
 #endif
@@ -109,19 +110,16 @@ void RemoteMediaSessionManager::setCurrentSession(WebCore::PlatformMediaSessionI
     send(Messages::RemoteMediaSessionManagerProxy::SetCurrentMediaSession(currentSessionState(session)));
 }
 
-void RemoteMediaSessionManager::sessionWillBeginPlayback(WebCore::PlatformMediaSessionInterface& session, CompletionHandler<void(bool)>&& completionHandler)
+void RemoteMediaSessionManager::sessionDidCompleteAdmission(WebCore::PlatformMediaSessionInterface& session)
 {
-    sendWithAsyncReply(Messages::RemoteMediaSessionManagerProxy::MediaSessionWillBeginPlayback(currentSessionState(session)),
-        [completionHandler = WTF::move(completionHandler)](bool granted, WebCore::AudioSessionCategory category, WebCore::AudioSessionMode mode, WebCore::RouteSharingPolicy policy) mutable {
-#if USE(AUDIO_SESSION)
-            WebCore::AudioSession::singleton().setCategory(category, mode, policy);
-#else
-            UNUSED_PARAM(category);
-            UNUSED_PARAM(mode);
-            UNUSED_PARAM(policy);
-#endif
-            completionHandler(granted);
-        });
+    REMOTE_MEDIA_SESSION_MANAGER_BASE_CLASS::sessionDidCompleteAdmission(session);
+
+    // Whether playback may begin was decided locally: the session, its state and the restrictions are
+    // all in this process. The UI process is told so that it can make this session current and enforce
+    // the concurrent playback restriction across every process's sessions. The snapshot is taken now,
+    // after commitPlaybackAdmission() has already run, so it carries State::Playing and
+    // preparingToPlay() == false.
+    send(Messages::RemoteMediaSessionManagerProxy::MediaSessionWillBeginPlayback(currentSessionState(session)));
 }
 
 void RemoteMediaSessionManager::addRestriction(WebCore::PlatformMediaSessionMediaType type, WebCore::MediaSessionRestrictions restrictions)
@@ -142,7 +140,7 @@ void RemoteMediaSessionManager::resetRestrictions()
     REMOTE_MEDIA_SESSION_MANAGER_BASE_CLASS::resetRestrictions();
 }
 
-Ref<GenericPromise> RemoteMediaSessionManager::updateSessionState()
+void RemoteMediaSessionManager::updateSessionState()
 {
     auto liveSessions = copySessionsToVector();
     Vector<RemoteMediaSessionState> sessions(liveSessions.size(), [&](size_t i) -> std::optional<RemoteMediaSessionState> {
@@ -152,16 +150,11 @@ Ref<GenericPromise> RemoteMediaSessionManager::updateSessionState()
         return currentSessionState(*session);
     });
 
-    return sendWithPromisedReply(Messages::RemoteMediaSessionManagerProxy::UpdateMediaSessionStates(m_webPageID, WTF::move(sessions), countActiveAudioCaptureSources()))->whenSettled(RunLoop::mainSingleton(),
-        [](auto&& result) -> Ref<GenericPromise> {
-            if (!result)
-                return GenericPromise::createAndReject();
-#if USE(AUDIO_SESSION)
-            auto [category, mode, policy] = WTF::move(*result);
-            WebCore::AudioSession::singleton().setCategory(category, mode, policy);
-#endif
-            return GenericPromise::createAndResolve();
-        });
+    // The UI process needs the session states and the capture count for the work it still owns:
+    // playback admission and audio session activation.
+    send(Messages::RemoteMediaSessionManagerProxy::UpdateMediaSessionStates(m_webPageID, WTF::move(sessions), countActiveAudioCaptureSources()));
+
+    REMOTE_MEDIA_SESSION_MANAGER_BASE_CLASS::updateSessionState();
 }
 
 void RemoteMediaSessionManager::sessionStateChanged(WebCore::PlatformMediaSessionInterface& session)
@@ -250,19 +243,9 @@ void RemoteMediaSessionManager::audioOutputDeviceChanged()
 #endif
 
 #if USE(AUDIO_SESSION)
-void RemoteMediaSessionManager::setAudioSessionCategory(WebCore::AudioSessionCategory type, WebCore::AudioSessionMode mode, WebCore::RouteSharingPolicy policy)
-{
-    WebCore::AudioSession::singleton().setCategory(type, mode, policy);
-}
-
 void RemoteMediaSessionManager::setAudioSessionPreferredBufferSize(uint64_t preferredBufferSize)
 {
     WebCore::AudioSession::singleton().setPreferredBufferSize(preferredBufferSize);
-}
-
-void RemoteMediaSessionManager::tryToSetAudioSessionActive(bool active)
-{
-    WebCore::AudioSession::singleton().tryToSetActive(active)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
 }
 #endif
 

@@ -54,6 +54,7 @@
 #include "CSSEasingFunctionValue.h"
 #include "CSSFilterImageValue.h"
 #include "CSSFilterValue.h"
+#include "CSSFlexWrapValue.h"
 #include "CSSFontFaceSrcValue.h"
 #include "CSSFontFamilyNameValue.h"
 #include "CSSFontFeatureValue.h"
@@ -81,6 +82,7 @@
 #include "CSSNamedImageValue.h"
 #include "CSSOffsetRotateValue.h"
 #include "CSSPaintImageValue.h"
+#include "CSSParamValue.h"
 #include "CSSPathValue.h"
 #include "CSSPositionValue.h"
 #include "CSSPrimitiveValue.h"
@@ -170,6 +172,8 @@ template<typename Visitor> constexpr decltype(auto) CSSValue::visitDerived(Visit
         return std::invoke(std::forward<Visitor>(visitor), uncheckedDowncast<CSSFilterImageValue>(*this));
     case Filter:
         return std::invoke(std::forward<Visitor>(visitor), uncheckedDowncast<CSSFilterValue>(*this));
+    case FlexWrap:
+        return std::invoke(std::forward<Visitor>(visitor), uncheckedDowncast<CSSFlexWrapValue>(*this));
     case Font:
         return std::invoke(std::forward<Visitor>(visitor), uncheckedDowncast<CSSFontValue>(*this));
     case FontFaceSrcLocal:
@@ -228,6 +232,8 @@ template<typename Visitor> constexpr decltype(auto) CSSValue::visitDerived(Visit
         return std::invoke(std::forward<Visitor>(visitor), uncheckedDowncast<CSSOffsetRotateValue>(*this));
     case PaintImage:
         return std::invoke(std::forward<Visitor>(visitor), uncheckedDowncast<CSSPaintImageValue>(*this));
+    case Param:
+        return std::invoke(std::forward<Visitor>(visitor), uncheckedDowncast<CSSParamValue>(*this));
     case Path:
         return std::invoke(std::forward<Visitor>(visitor), uncheckedDowncast<CSSPathValue>(*this));
     case ShorthandSubstitution:
@@ -322,17 +328,8 @@ void CSSValue::collectComputedStyleDependencies(ComputedStyleDependencies& depen
             listValue.collectComputedStyleDependencies(dependencies);
         return;
     }
-    if (auto* asCustomIdentValue = dynamicDowncast<CSSCustomIdentValue>(*this)) {
-        CSS::collectComputedStyleDependencies(dependencies, asCustomIdentValue->customIdent());
-        return;
-    }
     if (auto* asPrimitiveValue = dynamicDowncast<CSSPrimitiveValue>(*this))
         asPrimitiveValue->collectComputedStyleDependencies(dependencies);
-}
-
-bool CSSValue::canResolveDependenciesWithConversionData(const CSSToLengthConversionData& conversionData) const
-{
-    return computedStyleDependencies().canResolveDependenciesWithConversionData(conversionData);
 }
 
 bool CSSValue::equals(const CSSValue& other) const

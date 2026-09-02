@@ -54,6 +54,8 @@ class FormDataReference;
 }
 
 namespace WebCore {
+class CertificateInfo;
+class DocumentSyncData;
 class RegistrableDomain;
 class ResourceRequest;
 enum class CrossOriginOpenerPolicyValue : uint8_t;
@@ -62,6 +64,7 @@ enum class ShouldSample : bool;
 enum class ShouldTreatAsContinuingLoad : uint8_t;
 struct BackForwardItemIdentifierType;
 struct DiagnosticLoggingDictionary;
+struct DocumentSyncSerializationData;
 using BackForwardItemIdentifier = ProcessQualified<ObjectIdentifier<BackForwardItemIdentifierType>>;
 }
 
@@ -119,6 +122,10 @@ public:
     const std::optional<WebCore::Site>& deferredRemoteTransitionSite() const { return m_deferredRemoteTransitionSite; }
     bool hasActiveLoadForNavigation(const API::Navigation&) const;
 
+    void setDeferredTopDocumentSyncData(Ref<WebCore::DocumentSyncData>&&);
+    void updateDeferredTopDocumentSyncData(const WebCore::DocumentSyncSerializationData&);
+    RefPtr<WebCore::DocumentSyncData> takeDeferredTopDocumentSyncData();
+
     DrawingAreaProxy* drawingArea() const { return m_drawingArea.get(); }
     RefPtr<DrawingAreaProxy> takeDrawingArea();
 
@@ -160,7 +167,7 @@ public:
     void updateFrameProcess();
 
 private:
-    ProvisionalPageProxy(WebPageProxy&, Ref<FrameProcess>&&, BrowsingContextGroup&, RefPtr<SuspendedPageProxy>&&, API::Navigation&, bool isServerRedirect, const WebCore::ResourceRequest&, ProcessSwapRequestedByClient, bool isProcessSwappingOnNavigationResponse, API::WebsitePolicies*, WebsiteDataStore* replacedDataStoreForWebArchiveLoad = nullptr);
+    ProvisionalPageProxy(WebPageProxy&, Ref<FrameProcess>&&, BrowsingContextGroup&, RefPtr<SuspendedPageProxy>&&, API::Navigation&, bool isServerRedirect, const WebCore::ResourceRequest&, ProcessSwapRequestedByClient, bool isProcessSwappingOnNavigationResponse, WebCore::CertificateInfo&&, API::WebsitePolicies*, WebsiteDataStore* replacedDataStoreForWebArchiveLoad = nullptr);
 
     // IPC::MessageReceiver
     void didReceiveMessage(IPC::Connection&, IPC::Decoder&) final;
@@ -180,7 +187,7 @@ private:
     void didNavigateWithNavigationData(const WebNavigationDataStore&, WebCore::FrameIdentifier);
     void didPerformClientRedirect(String&& sourceURLString, String&& destinationURLString, WebCore::FrameIdentifier);
     void didStartProvisionalLoadForFrame(WebCore::FrameIdentifier, FrameInfoData&&, WebCore::ResourceRequest&&, std::optional<WebCore::NavigationIdentifier>, URL&&, URL&& unreachableURL, const UserData&, WallTime);
-    void didCommitLoadForFrame(IPC::Connection&, WebCore::FrameIdentifier, FrameInfoData&&, WebCore::ResourceRequest&&, std::optional<WebCore::NavigationIdentifier>, String&& mimeType, bool frameHasCustomContentProvider, WebCore::FrameLoadType, bool usedLegacyTLS, bool privateRelayed, String&& proxyName, WebCore::ResourceResponseSource, bool containsPluginDocument, WebCore::HasInsecureContent, WebCore::MouseEventPolicy, WebCore::DocumentSecurityPolicy&&, HashSet<WebCore::SecurityOriginData>&& cspOriginsThatUpgradeInsecureNavigations, const UserData&, WebCore::RestoredFromBackForwardCache, RefPtr<FrameState>&& redirectReplaceFrameState);
+    void didCommitLoadForFrame(IPC::Connection&, WebCore::FrameIdentifier, FrameInfoData&&, WebCore::ResourceRequest&&, std::optional<WebCore::NavigationIdentifier>, String&& mimeType, bool frameHasCustomContentProvider, WebCore::FrameLoadType, bool hasCertificateInfo, bool usedLegacyTLS, bool privateRelayed, String&& proxyName, WebCore::ResourceResponseSource, bool containsPluginDocument, WebCore::HasInsecureContent, WebCore::MouseEventPolicy, WebCore::DocumentSecurityPolicy&&, HashSet<WebCore::SecurityOriginData>&& cspOriginsThatUpgradeInsecureNavigations, const UserData&, WebCore::RestoredFromBackForwardCache, RefPtr<FrameState>&& redirectReplaceFrameState);
     void didFailProvisionalLoadForFrame(FrameInfoData&&, WebCore::ResourceRequest&&, std::optional<WebCore::NavigationIdentifier>, String&& provisionalURL, WebCore::ResourceError&&, WebCore::WillContinueLoading, const UserData&, WebCore::WillInternallyHandleFailure);
 
     Ref<FrameState> copyFrameStateForBackForwardNavigation(API::Navigation&, WebBackForwardListItem&) const;
@@ -235,6 +242,7 @@ private:
     bool m_shouldClosePage { true };
     bool m_didFailProvisionalLoad { false };
     std::optional<WebCore::Site> m_deferredRemoteTransitionSite;
+    RefPtr<WebCore::DocumentSyncData> m_deferredTopDocumentSyncData;
     URL m_provisionalLoadURL;
     WebPageProxyMessageReceiverRegistration m_messageReceiverRegistration;
     RefPtr<API::WebsitePolicies> m_mainFrameWebsitePolicies;

@@ -75,11 +75,11 @@ void JSWebAssemblyModule::finishCreation(VM& vm)
     const Wasm::ModuleInformation& moduleInformation = m_module->moduleInformation();
     {
         auto offset = exportSymbolTable->takeNextScopeOffset(NoLockingNecessary);
-        exportSymbolTable->set(NoLockingNecessary, vm.propertyNames->starNamespacePrivateName.impl(), SymbolTableEntry(VarOffset(offset)));
+        exportSymbolTable->add(NoLockingNecessary, vm.propertyNames->starNamespacePrivateName.impl(), SymbolTableEntry(VarOffset(offset)));
     }
     for (auto& exp : moduleInformation.exports) {
         auto offset = exportSymbolTable->takeNextScopeOffset(NoLockingNecessary);
-        exportSymbolTable->set(NoLockingNecessary, makeAtomString(exp.field).impl(), SymbolTableEntry(VarOffset(offset)));
+        exportSymbolTable->add(NoLockingNecessary, makeAtomString(exp.field).impl(), SymbolTableEntry(VarOffset(offset)));
     }
 
     m_exportSymbolTable.set(vm, this, exportSymbolTable);
@@ -88,7 +88,7 @@ void JSWebAssemblyModule::finishCreation(VM& vm)
 void JSWebAssemblyModule::destroy(JSCell* cell)
 {
     static_cast<JSWebAssemblyModule*>(cell)->JSWebAssemblyModule::~JSWebAssemblyModule();
-    Wasm::TypeInformation::tryCleanup();
+    Wasm::TypeInformation::requestCleanup();
 }
 
 const Wasm::ModuleInformation& JSWebAssemblyModule::moduleInformation() const

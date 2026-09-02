@@ -66,7 +66,7 @@ WebAssemblyModuleRecord* WebAssemblyModuleRecord::create(JSGlobalObject* globalO
 }
 
 WebAssemblyModuleRecord::WebAssemblyModuleRecord(VM& vm, Structure* structure, const Identifier& moduleKey)
-    : Base(vm, structure, moduleKey)
+    : Base(vm, structure, moduleKey, SourceProviderSourceType::WebAssembly)
 {
 }
 
@@ -122,11 +122,11 @@ Synchronousness WebAssemblyModuleRecord::link(JSGlobalObject* globalObject, RefP
     return Synchronousness::Sync;
 }
 
-static const WebAssemblyBuiltinSet* findEnabledBuiltinSet(const String& qualifiedName, const Wasm::ModuleInformation& moduleInformation)
+static const WebAssemblyBuiltinSet* findEnabledBuiltinSet(const Wasm::Import& import, const Wasm::ModuleInformation& moduleInformation)
 {
-    if (!moduleInformation.builtinSetsInclude(qualifiedName))
+    if (!moduleInformation.builtinSetsInclude(import.module))
         return nullptr;
-    return WebAssemblyBuiltinRegistry::singleton().findByQualifiedName(qualifiedName);
+    return WebAssemblyBuiltinRegistry::singleton().findByQualifiedName(makeString(import.module));
 }
 
 static void defineImportedStringConstant(VM& vm, WriteBarrier<JSWebAssemblyInstance>& instance, const Wasm::Import& import)
@@ -178,11 +178,11 @@ void WebAssemblyModuleRecord::initializeImports(JSGlobalObject* globalObject, JS
 
         // Imports related to builtins or importedStringConstants are special and bypass
         // the normal procedure of looking up a value in importObject.
-        if (moduleInformation.importedStringConstantsEquals(moduleNameString)) {
+        if (moduleInformation.importedStringConstantsEquals(import.module)) {
             defineImportedStringConstant(vm, m_instance, import);
             continue;
         }
-        const WebAssemblyBuiltinSet* builtinSet = findEnabledBuiltinSet(moduleNameString, moduleInformation);
+        const WebAssemblyBuiltinSet* builtinSet = findEnabledBuiltinSet(import, moduleInformation);
         if (builtinSet) {
             String fieldName = makeString(import.field);
             auto* builtin = builtinSet->findBuiltin(fieldName);
@@ -244,6 +244,12 @@ void WebAssemblyModuleRecord::initializeImports(JSGlobalObject* globalObject, JS
 
                 // Snapshotting a value.
                 value = importedEnvironment->variableAt(entry.scopeOffset()).get();
+            }
+            if (!value) {
+                if (auto* wasmRecord = dynamicDowncast<WebAssemblyModuleRecord>(importedRecord)) {
+                    if (JSObject* exports = wasmRecord->exportsObject())
+                        value = exports->getDirect(vm, resolution.localName);
+                }
             }
         }
         if (!value)
@@ -307,6 +313,7 @@ void WebAssemblyModuleRecord::initializeImports(JSGlobalObject* globalObject, JS
                         return exception(createJSWebAssemblyLinkError(globalObject, vm, importFailMessage(import, "imported global"_s, "must be a same type"_s)));
                     if (globalValue->global()->mutability() != Wasm::Immutable)
                         return exception(createJSWebAssemblyLinkError(globalObject, vm, importFailMessage(import, "imported global"_s, "must be a same mutability"_s)));
+                    m_instance->setImportedGlobalWrapper(vm, import.kindIndex, globalValue);
                     const auto& declaredGlobalType = moduleInformation.globals[import.kindIndex].type;
                     switch (declaredGlobalType.kind()) {
                     case Wasm::TypeKind::I32:
@@ -439,8 +446,8 @@ void WebAssemblyModuleRecord::initializeImports(JSGlobalObject* globalObject, JS
             if (!table)
                 return exception(createJSWebAssemblyLinkError(globalObject, vm, importFailMessage(import, "Table import"_s, "is not an instance of WebAssembly.Table"_s)));
 
-            uint32_t expectedInitial = moduleInformation.tables[import.kindIndex].initial();
-            uint32_t actualInitial = table->length();
+            uint64_t expectedInitial = moduleInformation.tables[import.kindIndex].initial();
+            uint64_t actualInitial = table->length();
             if (actualInitial < expectedInitial)
                 return exception(createJSWebAssemblyLinkError(globalObject, vm, importFailMessage(import, "Table import"_s, "provided an 'initial' that is too small"_s)));
 
@@ -479,6 +486,7 @@ void WebAssemblyModuleRecord::initializeImports(JSGlobalObject* globalObject, JS
                 return exception(createJSWebAssemblyLinkError(globalObject, vm, importFailMessage(import, "imported Tag"_s, "signature doesn't match the imported WebAssembly Tag's signature"_s)));
 
             m_instance->setTag(import.kindIndex, tag->tag());
+            m_instance->setTagWrapper(vm, import.kindIndex, tag);
             break;
         }
 
@@ -726,6 +734,10 @@ void WebAssemblyModuleRecord::initializeExports(JSGlobalObject* globalObject)
                 // If global is immutable, we are not creating a binding internally.
                 // But we need to create a binding just to export it. This binding is not actually connected. But this is OK since it is immutable.
                 if (global.bindingMode == Wasm::GlobalInformation::BindingMode::EmbeddedInInstance) {
+                    if (JSWebAssemblyGlobal* wrapper = m_instance->importedGlobalWrapper(exp.kindIndex)) {
+                        exportedValue = wrapper;
+                        break;
+                    }
                     RefPtr<Wasm::Global> globalRef;
                     if (global.type.kind() == Wasm::TypeKind::V128) {
                         v128_t initialValue = m_instance->loadV128Global(exp.kindIndex);
@@ -753,19 +765,38 @@ void WebAssemblyModuleRecord::initializeExports(JSGlobalObject* globalObject)
             break;
         }
         case Wasm::ExternalKind::Exception: {
-            exportedValue = JSWebAssemblyTag::create(vm, globalObject, globalObject->m_webAssemblyTagStructure.get(globalObject), m_instance->tag(exp.kindIndex));
+            if (JSWebAssemblyTag* wrapper = m_instance->tagWrapper(exp.kindIndex))
+                exportedValue = wrapper;
+            else {
+                auto* created = JSWebAssemblyTag::create(vm, globalObject, globalObject->m_webAssemblyTagStructure.get(globalObject), m_instance->tag(exp.kindIndex));
+                m_instance->setTagWrapper(vm, exp.kindIndex, created);
+                exportedValue = created;
+            }
             break;
         }
         }
 
         auto propertyName = Identifier::fromString(vm, makeAtomString(exp.field));
 
+        JSValue namespaceValue = exportedValue;
+        if (exp.kind == Wasm::ExternalKind::Global) {
+            const Wasm::GlobalInformation& global = moduleInformation.globals[exp.kindIndex];
+            if (global.type.kind() == Wasm::TypeKind::V128 || Wasm::isExnref(global.type))
+                namespaceValue = JSValue();
+            else if (global.mutability == Wasm::Mutability::Immutable) {
+                namespaceValue = uncheckedDowncast<JSWebAssemblyGlobal>(exportedValue)->global()->get(globalObject);
+                RETURN_IF_EXCEPTION(scope, void());
+            }
+        }
+
         bool shouldThrowReadOnlyError = false;
         bool ignoreReadOnlyErrors = true;
         bool putResult = false;
-        symbolTablePutTouchWatchpointSet(moduleEnvironment, globalObject, propertyName, exportedValue, shouldThrowReadOnlyError, ignoreReadOnlyErrors, putResult);
-        scope.assertNoException();
-        RELEASE_ASSERT(putResult);
+        if (namespaceValue) {
+            symbolTablePutTouchWatchpointSet(moduleEnvironment, globalObject, propertyName, namespaceValue, shouldThrowReadOnlyError, ignoreReadOnlyErrors, putResult);
+            scope.assertNoException();
+            RELEASE_ASSERT(putResult);
+        }
 
         if (std::optional<uint32_t> index = parseIndex(propertyName)) {
             exportsObject->putDirectIndex(globalObject, index.value(), exportedValue);

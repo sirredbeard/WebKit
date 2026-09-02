@@ -132,8 +132,8 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
     endif ()
 
     if (${CMAKE_CXX_COMPILER_ID} STREQUAL "GNU")
-        if (${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS "12.2.0")
-            message(FATAL_ERROR "GCC 12.2 or newer is required to build WebKit. Use a newer GCC version or Clang.")
+        if (${CMAKE_CXX_COMPILER_VERSION} VERSION_LESS "13.1.0")
+            message(FATAL_ERROR "GCC 13.1 or newer is required to build WebKit. Use a newer GCC version or Clang.")
         endif ()
     endif ()
 
@@ -338,6 +338,11 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
     include(OptionsCommon)
     include(Options${PORT})
 
+    # This has to come after Options${PORT} to see any ENABLE_THREAD_SAFETY_WARNING.
+    if (ENABLE_THREAD_SAFETY_WARNING)
+        WEBKIT_PREPEND_GLOBAL_CXX_FLAGS(-Wthread-safety)
+    endif ()
+
     # Check gperf after including OptionsXXX.cmake since gperf is required only when ENABLE_WEBCORE is true,
     # and ENABLE_WEBCORE is configured in OptionsXXX.cmake.
     if (ENABLE_WEBCORE)
@@ -382,7 +387,7 @@ if (NOT HAS_RUN_WEBKIT_COMMON)
         # LTO builds error out on duplicate __llvm_profile_filename definitions.
         set(PGO_LINK_FLAGS "${PGO_COMPILE_OPTIONS}")
         if (LD_SUPPORTS_ALLOW_MULTIPLE_DEFINITION)
-            string(PREPEND PGO_LINK_FLAGS "-Wl,--allow-multiple-definition ")
+            add_link_options("LINKER:--allow-multiple-definition")
         endif ()
         string(PREPEND CMAKE_EXE_LINKER_FLAGS "${PGO_LINK_FLAGS} ")
         string(PREPEND CMAKE_SHARED_LINKER_FLAGS "${PGO_LINK_FLAGS} ")

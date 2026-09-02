@@ -52,7 +52,7 @@ public:
     };
 
     static SupportsResult supportsCondition(CSSParserTokenRange, CSSParser&, ParsingMode);
-    static SupportsResult supportsCondition(const String&, const CSSParserContext&, ParsingMode);
+    static SupportsResult supportsCondition(StringView, const CSSParserContext&, ParsingMode);
 
 private:
     CSSSupportsParser(CSSParser& parser)
@@ -74,6 +74,9 @@ private:
 
     // https://drafts.csswg.org/css-conditional-5/#typedef-supports-at-rule-fn
     SupportsResult consumeSupportsAtRuleFunction(CSSParserTokenRange&);
+
+    // https://drafts.csswg.org/css-conditional-5/#typedef-supports-named-feature-fn
+    SupportsResult consumeSupportsNamedFeatureFunction(CSSParserTokenRange&);
 
     SupportsResult consumeConditionInParenthesis(CSSParserTokenRange&, CSSParserTokenType);
 

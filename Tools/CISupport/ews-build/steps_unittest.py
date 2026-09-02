@@ -25,10 +25,12 @@ import json
 import logging
 import operator
 import os
+import re
 import shutil
 import sys
 import tempfile
 import time
+from typing import Any, Generator
 from unittest import skip as skipTest
 from unittest.mock import call, create_autospec, patch
 
@@ -48,11 +50,18 @@ from Shared.steps import *
 
 from . import send_email
 from .layout_test_failures import LayoutTestFailures
+from .results_db import FlakyVerdict
 from .steps import *
 
 # Workaround for https://github.com/buildbot/buildbot/issues/4669
 FakeBuild.addStepsAfterCurrentStep = lambda FakeBuild, step_factories: None
 FakeBuild._builderid = 1
+
+# Several tests below replace FindUnexpectedStaticAnalyzerResults methods on the class rather than
+# with self.patch, so the replacements outlive the test that made them. Capture the real
+# implementations here, at import time, so tests that need them can patch them back.
+REAL_FILTER_RESULTS_USING_RESULTS_DB = FindUnexpectedStaticAnalyzerResults.filter_results_using_results_db
+REAL_WRITE_UNEXPECTED_RESULTS_FILE_TO_MASTER = FindUnexpectedStaticAnalyzerResults.write_unexpected_results_file_to_master
 
 # Prevent unit-tests from talking to live bugzilla and github servers
 BugzillaMixin.fetch_data_from_url_with_authentication_bugzilla = lambda x, y: None
@@ -128,6 +137,13 @@ class ExpectMasterShellCommand(object):
 
 
 class BuildStepMixinAdditions(BuildStepMixin, TestReactorMixin):
+    @staticmethod
+    def layout_test_failures(failing_tests, flaky_tests, did_exceed_test_failure_limit):
+        return LayoutTestFailures({
+            **{test: {'report': 'REGRESSION', 'expected': 'PASS', 'actual': 'TEXT'} for test in failing_tests},
+            **{test: {'report': 'FLAKY', 'expected': 'PASS', 'actual': 'TIMEOUT PASS'} for test in flaky_tests},
+        }, did_exceed_test_failure_limit)
+
     def setup_test_build_step(self):
         self.patch(reactor, 'spawnProcess', lambda *args, **kwargs: self._checkSpawnProcess(*args, **kwargs))
         self.patch(send_email, 'send_email', self._send_email)
@@ -136,6 +152,19 @@ class BuildStepMixinAdditions(BuildStepMixin, TestReactorMixin):
         self._emails_list = []
         self._expected_local_commands = []
         self.setup_test_reactor()
+
+        # Test steps report to the results database as they run, so stub the one network call they
+        # make rather than each step that makes it.
+        self.results_db_reports = []
+
+        def record_report_ews(suite=None, results=None, flaky_type=None, commits=None, configuration=None, details=None, timestamp=None, logger=None):
+            self.results_db_reports.append(dict(
+                suite=suite, results=results, flaky_type=flaky_type, commits=commits,
+                configuration=configuration, details=details, timestamp=timestamp,
+            ))
+            return defer.succeed(True)
+
+        self.patch(ResultsDatabase, 'report_ews', record_report_ews)
 
         self._temp_directory = tempfile.mkdtemp()
         os.chdir(self._temp_directory)
@@ -1363,14 +1392,6 @@ class TestCompileWebKit(BuildStepMixinAdditions, unittest.TestCase):
         self.expect_outcome(result=FAILURE, state_string='Failed to compile WebKit')
         return self.run_step()
 
-    def test_skip_for_revert_patches_on_commit_queue(self):
-        self.setup_step(CompileWebKit())
-        self.setProperty('buildername', 'Commit-Queue')
-        self.setProperty('configuration', 'debug')
-        self.setProperty('fast_commit_queue', True)
-        self.expect_outcome(result=SKIPPED, state_string='Skipped compiling WebKit in fast-cq mode')
-        return self.run_step()
-
 
 class TestCompileWebKitWithoutChange(BuildStepMixinAdditions, unittest.TestCase):
     def setUp(self):
@@ -1423,18 +1444,6 @@ class TestAnalyzeCompileWebKitResults(BuildStepMixinAdditions, unittest.TestCase
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_patch_with_build_failure(self):
-        previous_steps = [
-            mock_step(CompileWebKit(), results=FAILURE),
-            mock_step(CompileWebKitWithoutChange(), results=SUCCESS),
-        ]
-        self.setup_step(AnalyzeCompileWebKitResults(), previous_steps=previous_steps)
-        self.setProperty('patch_id', '1234')
-        self.expect_outcome(result=FAILURE, state_string='Patch 1234 does not build (failure)')
-        rc = self.run_step()
-        self.expect_property('comment_text', None)
-        self.expect_property('build_finish_summary', 'Patch 1234 does not build')
-        return rc
 
     def test_pull_request_with_build_failure(self):
         previous_steps = [
@@ -1449,29 +1458,6 @@ class TestAnalyzeCompileWebKitResults(BuildStepMixinAdditions, unittest.TestCase
         self.expect_property('build_finish_summary', 'Hash 7496f8ec for PR 1234 does not build')
         return rc
 
-    def test_patch_with_build_failure_on_commit_queue(self):
-        previous_steps = [
-            mock_step(CompileWebKit(), results=FAILURE),
-            mock_step(CompileWebKitWithoutChange(), results=SUCCESS),
-        ]
-        self.setup_step(AnalyzeCompileWebKitResults(), previous_steps=previous_steps)
-        self.setProperty('patch_id', '1234')
-        self.setProperty('buildername', 'commit-queue')
-        self.expect_outcome(result=FAILURE, state_string='Patch 1234 does not build (failure)')
-        rc = self.run_step()
-        self.expect_property('comment_text', 'Patch 1234 does not build')
-        self.expect_property('build_finish_summary', 'Patch 1234 does not build')
-        return rc
-
-    @expectedFailure
-    def test_patch_with_trunk_failure(self):
-        previous_steps = [
-            mock_step(CompileWebKit(), results=FAILURE),
-            mock_step(CompileWebKitWithoutChange(), results=FAILURE),
-        ]
-        self.setup_step(AnalyzeCompileWebKitResults(), previous_steps=previous_steps)
-        self.expect_outcome(result=FAILURE, state_string='Unable to build WebKit without patch, retrying build (failure)')
-        return self.run_step()
 
     @expectedFailure
     def test_pr_with_main_failure(self):
@@ -1631,7 +1617,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         log_environ=False,
                         timeout=1 * 60 * 60,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         logfiles={'json': self.jsonFileName},
                         )
             .exit(0),
@@ -1646,7 +1632,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         log_environ=False,
                         timeout=1 * 60 * 60,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --remote-config-file=remote-machines.json --no-testmasm --no-testair --no-testb3 --no-testdfg --no-testapi --memory-limited --verbose --jsc-only --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --remote-config-file=remote-machines.json --no-testmasm --no-testair --no-testb3 --no-testdfg --no-testapi --memory-limited --verbose --jsc-only --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         logfiles={'json': self.jsonFileName},
                         )
             .exit(0),
@@ -1660,7 +1646,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         log_environ=False,
                         timeout=1 * 60 * 60,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         logfiles={'json': self.jsonFileName},
                         )
             .log('stdio', stdout='9 failures found.')
@@ -1677,7 +1663,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
                         log_environ=False,
                         timeout=1 * 60 * 60,
                         logfiles={'json': self.jsonFileName},
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         )
             .exit(2)
             .log('json', stdout=self.jsc_single_stress_test_failure),
@@ -1696,7 +1682,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
                         log_environ=False,
                         timeout=1 * 60 * 60,
                         logfiles={'json': self.jsonFileName},
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         )
             .exit(2)
             .log('json', stdout=self.jsc_multiple_stress_test_failures),
@@ -1715,7 +1701,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
                         log_environ=False,
                         timeout=1 * 60 * 60,
                         logfiles={'json': self.jsonFileName},
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         )
             .exit(2)
             .log('json', stdout=self.jsc_masm_failure),
@@ -1733,7 +1719,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
                         log_environ=False,
                         timeout=1 * 60 * 60,
                         logfiles={'json': self.jsonFileName},
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         )
             .exit(2)
             .log('json', stdout=self.jsc_b3_and_stress_test_failure),
@@ -1751,7 +1737,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
                         log_environ=False,
                         timeout=1 * 60 * 60,
                         logfiles={'json': self.jsonFileName},
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --memory-limited --verbose --jsc-only --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --memory-limited --verbose --jsc-only --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         )
             .exit(2)
             .log('json', stdout=self.jsc_dfg_air_and_stress_test_failure),
@@ -1770,7 +1756,7 @@ class TestRunJavaScriptCoreTests(BuildStepMixinAdditions, unittest.TestCase):
                         log_environ=False,
                         timeout=1 * 60 * 60,
                         logfiles={'json': self.jsonFileName},
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --memory-limited --verbose --jsc-only --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --memory-limited --verbose --jsc-only --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         )
             .exit(0)
             .log('json', stdout=self.jsc_passed_with_flaky),
@@ -1800,7 +1786,7 @@ class TestRunJSCTestsWithoutChange(BuildStepMixinAdditions, unittest.TestCase):
         self.expectRemoteCommands(
             ExpectShell(workdir='wkdir',
                         log_environ=False,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --release --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         logfiles={'json': self.jsonFileName},
                         timeout=1 * 60 * 60,
                         )
@@ -1816,7 +1802,7 @@ class TestRunJSCTestsWithoutChange(BuildStepMixinAdditions, unittest.TestCase):
         self.expectRemoteCommands(
             ExpectShell(workdir='wkdir',
                         log_environ=False,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 2>&1 | Tools/Scripts/filter-test-logs jsc'],
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', f'perl Tools/Scripts/run-javascriptcore-tests --no-build --no-fail-fast --json-output={self.jsonFileName} --debug --treat-failing-as-flaky=0.6,10,200 --max-timeout 800 2>&1 | Tools/Scripts/filter-test-logs jsc'],
                         logfiles={'json': self.jsonFileName},
                         timeout=1 * 60 * 60,
                         )
@@ -1979,6 +1965,32 @@ ts","version":4,"num_passes":42158,"pixel_tests_enabled":false,"date":"11:28AM o
         self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
         return self.run_step()
 
+    @defer.inlineCallbacks
+    def test_the_run_labels_the_build_wk2(self) -> None:
+        # Nothing else sets `flavor`, and a query missing it is a partial configuration: it reads
+        # wk1 and site-isolation history for the same test alongside this queue's own.
+        self.configureStep()
+        self.setProperty('platform', 'mac')
+        self.setProperty('fullPlatform', 'mac-sequoia')
+        self.setProperty('configuration', 'release')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        logfiles={'json': self.jsonFileName},
+                        log_environ=False,
+                        timeout=19800,
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --release --results-directory layout-test-results --debug-rwt-logging --exit-after-n-failures 60 --skip-failing-tests 2>&1 | Tools/Scripts/filter-test-logs layout'],
+                        )
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
+        yield self.run_step()
+
+        self.assertEqual(self.getProperty('flavor'), 'wk2')
+        self.assertEqual(
+            self.get_nth_step(0).results_db_query_configuration(),
+            {'platform': 'mac', 'style': 'release', 'flavor': 'wk2'},
+        )
+
     def test_warnings(self):
         self.configureStep()
         self.setProperty('fullPlatform', 'ios-simulator')
@@ -2013,25 +2025,6 @@ ts","version":4,"num_passes":42158,"pixel_tests_enabled":false,"date":"11:28AM o
             .exit(0),
         )
         self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
-        return self.run_step()
-
-    def test_skip_for_revert_patches_on_commit_queue(self):
-        self.configureStep()
-        self.setProperty('buildername', 'Commit-Queue')
-        self.setProperty('fullPlatform', 'mac')
-        self.setProperty('configuration', 'debug')
-        self.setProperty('fast_commit_queue', True)
-        self.expect_outcome(result=SKIPPED, state_string='Skipped layout-tests in fast-cq mode')
-        return self.run_step()
-
-    def test_skip_for_mac_wk2_passed_change_on_commit_queue(self):
-        self.configureStep()
-        self.setProperty('patch_id', '1234')
-        self.setProperty('buildername', 'Commit-Queue')
-        self.setProperty('fullPlatform', 'mac')
-        self.setProperty('configuration', 'debug')
-        self.setProperty('passed_mac_wk2', True)
-        self.expect_outcome(result=SKIPPED, state_string='Skipped layout-tests')
         return self.run_step()
 
     def test_skip_for_mac_wk2_passed_change_on_merge_queue(self):
@@ -2211,23 +2204,6 @@ ts","version":4,"num_passes":42158,"pixel_tests_enabled":false,"date":"11:28AM o
         self.expect_outcome(result=FAILURE, state_string='layout-tests (failure)')
         return self.run_step()
 
-    def test_success_wpt_import_bot(self):
-        self.configureStep()
-        self.setProperty('fullPlatform', 'ios-simulator')
-        self.setProperty('configuration', 'release')
-        self.setProperty('patch_author', 'webkit-wpt-import-bot@igalia.com')
-        self.expectRemoteCommands(
-            ExpectShell(workdir='wkdir',
-                        logfiles={'json': self.jsonFileName},
-                        log_environ=False,
-                        timeout=19800,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --release --results-directory layout-test-results --debug-rwt-logging imported/w3c/web-platform-tests 2>&1 | Tools/Scripts/filter-test-logs layout'],
-                        )
-            .exit(0),
-        )
-        self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
-        return self.run_step()
-
     def test_failure_no_failure_limits(self):
         self.configureStep()
         self.setProperty('fullPlatform', 'ios-simulator')
@@ -2299,6 +2275,29 @@ ts","version":4,"num_passes":42158,"pixel_tests_enabled":false,"date":"11:28AM o
         self.property_failures = 'second_run_failures'
         ReRunWebKitTests.filter_failures_using_results_db = lambda x, failing_tests: ''
 
+    @defer.inlineCallbacks
+    def test_the_rerun_leaves_the_label_the_first_run_set(self) -> None:
+        # Every queue reruns with this class, wk1 queues included, so relabelling here would move a
+        # wk1 build's rows and queries to wk2 halfway through the build.
+        self.configureStep()
+        self.setProperty('fullPlatform', 'ios-simulator')
+        self.setProperty('configuration', 'release')
+        self.setProperty('flavor', 'wk1')
+        self.setProperty('first_run_failures', ['test1'])
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        logfiles={'json': self.jsonFileName},
+                        log_environ=False,
+                        timeout=19800,
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --release --results-directory layout-test-results --debug-rwt-logging --exit-after-n-failures 60 --skip-failing-tests 2>&1 | Tools/Scripts/filter-test-logs layout'],
+                        )
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
+        yield self.run_step()
+
+        self.assertEqual(self.getProperty('flavor'), 'wk1')
+
     def test_flaky_failures_in_first_run(self):
         self.configureStep()
         self.setProperty('fullPlatform', 'ios-simulator')
@@ -2369,6 +2368,28 @@ class TestRunWebKitTestsInStressMode(BuildStepMixinAdditions, unittest.TestCase)
         self.setup_step(RunWebKitTestsInStressMode())
         self.property_exceed_failure_limit = 'first_results_exceed_failure_limit'
         self.property_failures = 'first_run_failures'
+
+    @defer.inlineCallbacks
+    def test_stress_mode_does_not_label_the_build(self) -> None:
+        # It runs one test 100 times to provoke a failure, so its rates are not comparable with an
+        # ordinary run's. It reports nothing, and must not label the rows the real run writes.
+        self.configureStep()
+        self.setProperty('fullPlatform', 'ios-simulator')
+        self.setProperty('configuration', 'release')
+        self.setProperty('modified_tests', ['test1'])
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        logfiles={'json': self.jsonFileName},
+                        log_environ=False,
+                        timeout=19800,
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --release -2 --results-directory layout-test-results --debug-rwt-logging --exit-after-n-failures 10 --skipped always --iterations 100 test1 2>&1 | Tools/Scripts/filter-test-logs layout'],
+                        )
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
+        yield self.run_step()
+
+        self.assertIsNone(self.getProperty('flavor'))
 
     def test_success(self):
         self.configureStep()
@@ -2807,6 +2828,148 @@ class TestRunWebKitTestsWithoutChange(BuildStepMixinAdditions, unittest.TestCase
             return self.run_step()
 
 
+class TestRunWebKitTestsEWSSiteIsolation(BuildStepMixinAdditions, unittest.TestCase):
+    def setUp(self):
+        self.longMessage = True
+        self.jsonFileName = 'layout-test-results/full_results.json'
+        return self.setup_test_build_step()
+
+    def tearDown(self):
+        return self.tear_down_test_build_step()
+
+    def configureStep(self):
+        self.setup_step(RunWebKitTestsEWSSiteIsolation())
+        self.property_exceed_failure_limit = 'first_results_exceed_failure_limit'
+        self.property_failures = 'first_run_failures'
+        RunWebKitTestsEWSSiteIsolation.filter_failures_using_results_db = lambda x, failing_tests: ''
+
+    def test_success(self):
+        self.configureStep()
+        self.setProperty('platform', 'mac-sequoia')
+        self.setProperty('fullPlatform', 'mac-sequoia')
+        self.setProperty('configuration', 'release')
+        self.setProperty('additionalArguments', ['imported/w3c/web-platform-tests', '--site-isolation-enabled-by-default', '--exclude-tests', 'imported/w3c/web-platform-tests/css'])
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        logfiles={'json': self.jsonFileName},
+                        log_environ=False,
+                        timeout=19800,
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --release --results-directory layout-test-results --debug-rwt-logging --exit-after-n-failures 60 --skip-failing-tests imported/w3c/web-platform-tests --site-isolation-enabled-by-default --exclude-tests imported/w3c/web-platform-tests/css 2>&1 | Tools/Scripts/filter-test-logs layout'],
+                        )
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
+        return self.run_step()
+
+    def test_failure(self):
+        self.configureStep()
+        self.setProperty('platform', 'mac-sequoia')
+        self.setProperty('fullPlatform', 'mac-sequoia')
+        self.setProperty('configuration', 'release')
+        self.setProperty('additionalArguments', ['imported/w3c/web-platform-tests', '--site-isolation-enabled-by-default', '--exclude-tests', 'imported/w3c/web-platform-tests/css'])
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        logfiles={'json': self.jsonFileName},
+                        log_environ=False,
+                        timeout=19800,
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --release --results-directory layout-test-results --debug-rwt-logging --exit-after-n-failures 60 --skip-failing-tests imported/w3c/web-platform-tests --site-isolation-enabled-by-default --exclude-tests imported/w3c/web-platform-tests/css 2>&1 | Tools/Scripts/filter-test-logs layout'],
+                        )
+            .log('stdio', stdout='9 failures found.')
+            .exit(2),
+        )
+        self.expect_outcome(result=FAILURE, state_string='layout-tests (failure)')
+        return self.run_step()
+
+    @defer.inlineCallbacks
+    def test_the_run_labels_the_build_site_isolation(self) -> None:
+        # The rows this queue writes carry the label, so the query has to ask for it too. An
+        # unlabelled query is a partial configuration, which matches every other flavor instead.
+        self.configureStep()
+        self.setProperty('platform', 'mac')
+        self.setProperty('fullPlatform', 'mac-sequoia')
+        self.setProperty('configuration', 'release')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        logfiles={'json': self.jsonFileName},
+                        log_environ=False,
+                        timeout=19800,
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --release --results-directory layout-test-results --debug-rwt-logging --exit-after-n-failures 60 --skip-failing-tests 2>&1 | Tools/Scripts/filter-test-logs layout'],
+                        )
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
+        yield self.run_step()
+
+        self.assertEqual(self.getProperty('flavor'), 'site-isolation')
+        self.assertEqual(
+            self.get_nth_step(0).results_db_query_configuration(),
+            {'platform': 'mac', 'style': 'release', 'flavor': 'site-isolation'},
+        )
+
+    def test_failure_schedules_site_isolation_rerun(self):
+        self.configureStep()
+        self.setProperty('platform', 'mac-sequoia')
+        self.setProperty('fullPlatform', 'mac-sequoia')
+        self.setProperty('configuration', 'release')
+        next_steps = []
+        self.patch(self.build, 'addStepsAfterCurrentStep', lambda s: next_steps.extend(s))
+        self.patch(RunWebKitTestsEWSSiteIsolation, 'evaluateResult', lambda s, r: r)
+        self.get_nth_step(0).evaluateCommand(FAILURE)
+        self.assertTrue(any(isinstance(step, ReRunWebKitTestsEWSSiteIsolation) for step in next_steps))
+        self.assertFalse(any(type(step) is ReRunWebKitTests for step in next_steps))
+
+
+class TestReRunWebKitTestsEWSSiteIsolation(BuildStepMixinAdditions, unittest.TestCase):
+    def setUp(self):
+        self.longMessage = True
+        self.jsonFileName = 'layout-test-results/full_results.json'
+        return self.setup_test_build_step()
+
+    def tearDown(self):
+        return self.tear_down_test_build_step()
+
+    def configureStep(self):
+        self.setup_step(ReRunWebKitTestsEWSSiteIsolation())
+        ReRunWebKitTestsEWSSiteIsolation.filter_failures_using_results_db = lambda x, failing_tests: ''
+
+    @defer.inlineCallbacks
+    def test_the_rerun_keeps_the_site_isolation_label(self) -> None:
+        # ReRunWebKitTests declares no flavor so an ordinary rerun leaves the first run's label
+        # alone; the mixin has to win the MRO here or a site-isolation rerun would go unlabelled.
+        self.configureStep()
+        self.setProperty('platform', 'mac')
+        self.setProperty('fullPlatform', 'mac-sequoia')
+        self.setProperty('configuration', 'release')
+        self.setProperty('first_run_failures', ['imported/w3c/web-platform-tests/test1.html'])
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        logfiles={'json': self.jsonFileName},
+                        log_environ=False,
+                        timeout=19800,
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --release --results-directory layout-test-results --debug-rwt-logging --exit-after-n-failures 60 --skip-failing-tests 2>&1 | Tools/Scripts/filter-test-logs layout'],
+                        )
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
+        yield self.run_step()
+
+        self.assertEqual(self.getProperty('flavor'), 'site-isolation')
+
+    def test_failure_schedules_clean_tree_run(self):
+        self.configureStep()
+        self.setProperty('platform', 'mac-sequoia')
+        self.setProperty('fullPlatform', 'mac-sequoia')
+        self.setProperty('configuration', 'release')
+        self.setProperty('first_run_failures', ['imported/w3c/web-platform-tests/test1.html'])
+        self.setProperty('second_run_failures', ['imported/w3c/web-platform-tests/test1.html'])
+        next_steps = []
+        self.patch(self.build, 'addStepsAfterCurrentStep', lambda s: next_steps.extend(s))
+        self.patch(ReRunWebKitTestsEWSSiteIsolation, 'evaluateResult', lambda s, r: r)
+        self.get_nth_step(0).evaluateCommand(FAILURE)
+        self.assertTrue(any(isinstance(step, RunWebKitTestsWithoutChange) for step in next_steps))
+        self.assertTrue(any(isinstance(step, ValidateChange) for step in next_steps))
+
+
 class TestRunWebKit1Tests(BuildStepMixinAdditions, unittest.TestCase):
     def setUp(self):
         self.longMessage = True
@@ -2832,6 +2995,33 @@ class TestRunWebKit1Tests(BuildStepMixinAdditions, unittest.TestCase):
         self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
         return self.run_step()
 
+    @defer.inlineCallbacks
+    def test_the_run_labels_the_build_wk1(self) -> None:
+        # wk1 and wk2 keep separate history for the same test, so a wk1 queue asking without the
+        # label would be answered largely out of wk2's rows.
+        self.setup_step(RunWebKit1Tests())
+        RunWebKit1Tests.filter_failures_using_results_db = lambda x, failing_tests: ''
+        self.setProperty('platform', 'mac')
+        self.setProperty('fullPlatform', 'mac-sequoia')
+        self.setProperty('configuration', 'debug')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        logfiles={'json': self.jsonFileName},
+                        log_environ=False,
+                        timeout=19800,
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'python3 Tools/Scripts/run-webkit-tests --no-build --no-show-results --no-new-test-results --clobber-old-results --debug -1 --results-directory layout-test-results --debug-rwt-logging --exit-after-n-failures 60 --skip-failing-tests 2>&1 | Tools/Scripts/filter-test-logs layout'],
+                        )
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Passed layout tests')
+        yield self.run_step()
+
+        self.assertEqual(self.getProperty('flavor'), 'wk1')
+        self.assertEqual(
+            self.get_nth_step(0).results_db_query_configuration(),
+            {'platform': 'mac', 'style': 'debug', 'flavor': 'wk1'},
+        )
+
     def test_failure(self):
         self.setup_step(RunWebKit1Tests())
         self.setProperty('fullPlatform', 'ios-11')
@@ -2847,15 +3037,6 @@ class TestRunWebKit1Tests(BuildStepMixinAdditions, unittest.TestCase):
             .exit(2),
         )
         self.expect_outcome(result=FAILURE, state_string='layout-tests (failure)')
-        return self.run_step()
-
-    def test_skip_for_revert_patches_on_commit_queue(self):
-        self.setup_step(RunWebKit1Tests())
-        self.setProperty('buildername', 'Commit-Queue')
-        self.setProperty('fullPlatform', 'mac')
-        self.setProperty('configuration', 'debug')
-        self.setProperty('fast_commit_queue', True)
-        self.expect_outcome(result=SKIPPED, state_string='Skipped layout-tests in fast-cq mode')
         return self.run_step()
 
 
@@ -2902,16 +3083,6 @@ class TestAnalyzeLayoutTestsResults(BuildStepMixinAdditions, unittest.TestCase):
         self.expect_property('build_finish_summary', 'Found 1 new test failure: test1')
         return rc
 
-    def test_consistent_failure_without_clean_tree_failures_commit_queue(self):
-        self.configureStep()
-        self.setProperty('buildername', 'Commit-Queue')
-        self.setProperty('first_run_failures', ['test1'])
-        self.setProperty('second_run_failures', ['test1'])
-        self.expect_outcome(result=FAILURE, state_string='Found 1 new test failure: test1 (failure)')
-        rc = self.run_step()
-        self.expect_property('comment_text', 'Found 1 new test failure: test1')
-        self.expect_property('build_finish_summary', 'Found 1 new test failure: test1')
-        return rc
 
     def test_flaky_and_inconsistent_failures_without_clean_tree_failures(self):
         self.configureStep()
@@ -3163,6 +3334,8 @@ class TestFilterLayoutTestFailuresUsingResultsDB(BuildStepMixinAdditions, unitte
 
         self.patch(ResultsDatabase, 'is_test_pre_existing_failure', classmethod(fake_is_pre_existing))
         self.patch(ResultsDatabase, 'has_commit', classmethod(lambda cls, commit=None: defer.succeed(False)))
+        self.patch(ResultsDatabase, 'flaky_verdicts_for', classmethod(lambda cls, tests, **kwargs: defer.succeed((
+            {test: FlakyVerdict() for test in tests}, ''))))
         return step
 
     @defer.inlineCallbacks
@@ -3187,6 +3360,103 @@ class TestFilterLayoutTestFailuresUsingResultsDB(BuildStepMixinAdditions, unitte
         )
 
     @defer.inlineCallbacks
+    def test_a_verdict_in_the_included_set_removes_the_failure(self) -> Generator[Any, Any, None]:
+        step = self._configure(set())
+        builds = [f'https://build.webkit.org/#/builders/1/builds/{number}' for number in (11, 12, 13)]
+        self.patch(ResultsDatabase, 'flaky_verdicts_for', classmethod(
+            lambda cls, tests, **kwargs: defer.succeed(({
+                test: (
+                    FlakyVerdict(flaky_type='DirtyTree', build_urls=set(builds))
+                    if test == 'flaky.html' else FlakyVerdict()
+                ) for test in tests
+            }, ''))))
+
+        yield step.filter_failures_using_results_db(['real.html', 'flaky.html'])
+
+        self.assertEqual(step.failing_tests_filtered, ['real.html'])
+        self.assertEqual(step.flaky_failures_in_results_db, {'flaky.html': 'DirtyTree'})
+        self.assertEqual(step.preexisting_failures_in_results_db, [])
+        self.assertEqual(step.results_db_ignore_message(), 'Ignored flaky tests: flaky.html based on results-db')
+
+    @defer.inlineCallbacks
+    def test_a_verdict_outside_the_included_set_is_recorded_without_ignoring_the_failure(self) -> Generator[Any, Any, None]:
+        step = self._configure(set())
+        step.INCLUDED_FLAKY_VERDICTS = frozenset({'CleanTree'})
+        self.patch(ResultsDatabase, 'flaky_verdicts_for', classmethod(
+            lambda cls, tests, **kwargs: defer.succeed(({
+                test: (
+                    FlakyVerdict(flaky_type='BetweenBuilds')
+                    if test == 'flaky.html' else FlakyVerdict()
+                ) for test in tests
+            }, ''))))
+
+        yield step.filter_failures_using_results_db(['real.html', 'flaky.html'])
+
+        self.assertEqual(step.failing_tests_filtered, ['real.html', 'flaky.html'])
+        self.assertEqual(step.flaky_failures_in_results_db, {'flaky.html': 'BetweenBuilds'})
+
+    @defer.inlineCallbacks
+    def test_a_test_with_no_verdict_is_not_treated_as_sound(self):
+        # flaky_verdicts_for answers for every test it is given, so this cannot happen today. If that
+        # ever drifts, the failure must not read as a clean 'not flaky'.
+        step = self._configure(set())
+        self.patch(ResultsDatabase, 'flaky_verdicts_for', classmethod(
+            lambda cls, tests, **kwargs: defer.succeed(({}, ''))))
+
+        yield step.filter_failures_using_results_db(['real.html'])
+
+        self.assertEqual(step.failing_tests_filtered, ['real.html'])
+        self.assertEqual(step.flaky_failures_in_results_db, {})
+
+    @defer.inlineCallbacks
+    def test_the_ignore_message_covers_both_categories(self):
+        step = self._configure({'pre-existing.html'})
+        self.patch(ResultsDatabase, 'flaky_verdicts_for', classmethod(
+            lambda cls, tests, **kwargs: defer.succeed(({
+                test: (
+                    FlakyVerdict(flaky_type='CleanTree')
+                    if test == 'flaky.html' else FlakyVerdict()
+                ) for test in tests
+            }, ''))))
+
+        yield step.filter_failures_using_results_db(['pre-existing.html', 'flaky.html'])
+
+        self.assertEqual(step.failing_tests_filtered, [])
+        self.assertEqual(
+            step.results_db_ignore_message(),
+            'Ignored pre-existing failures: pre-existing.html; flaky tests: flaky.html based on results-db',
+        )
+
+    @defer.inlineCallbacks
+    def test_set_build_summary_restores_success_from_the_property(self):
+        # buildbot overwrites build.results after the step that ignored the failures, so the verdict
+        # has to be restored here. Driven by a property rather than the summary's wording.
+        self.setup_step(SetBuildSummary())
+        self.setProperty('build_summary', 'Ignored flaky tests: flaky.html based on results-db')
+        self.setProperty('force_build_success', True)
+        self.build.results = FAILURE
+        self.expect_outcome(result=SUCCESS)
+        yield self.run_step()
+        self.assertEqual(self.build.results, SUCCESS)
+
+    def test_ignoring_every_failure_sets_the_property_set_build_summary_reads(self):
+        # The other half of the wiring: nothing else tells SetBuildSummary to keep this build green.
+        class Cmd:
+            rc = 1
+
+        self.setup_step(RunWebKitTests())
+        step = self.get_nth_step(0)
+        step._addToLog = lambda logName, message: defer.succeed(None)
+        step.incorrectLayoutLines = []
+        step.failing_tests_filtered = []
+        step.preexisting_failures_in_results_db = ['pre-existing.html']
+        step.flaky_failures_in_results_db = ['flaky.html']
+        self.patch(self.build, 'addStepsAfterCurrentStep', lambda steps: None)
+
+        self.assertEqual(step.evaluateCommand(Cmd()), WARNINGS)
+        self.assertTrue(self.getProperty('force_build_success'))
+
+    @defer.inlineCallbacks
     def test_wpe_platform_is_translated_to_uppercase_for_results_db(self):
         configurations = []
 
@@ -3203,9 +3473,34 @@ class TestFilterLayoutTestFailuresUsingResultsDB(BuildStepMixinAdditions, unitte
         self.setProperty('configuration', 'release')
         self.patch(ResultsDatabase, 'is_test_pre_existing_failure', classmethod(fake_is_pre_existing))
         self.patch(ResultsDatabase, 'has_commit', classmethod(lambda cls, commit=None: defer.succeed(False)))
+        self.patch(ResultsDatabase, 'flaky_verdicts_for', classmethod(lambda cls, tests, **kwargs: defer.succeed((
+            {test: FlakyVerdict() for test in tests}, ''))))
 
         yield step.filter_failures_using_results_db(['real.html'])
         self.assertEqual(configurations, [dict(platform='WPE', style='release')])
+
+    def test_queries_include_the_flavor_being_tested(self):
+        # wk1 and wk2 record separate history for the same test.
+        self.setup_step(RunWebKitTests())
+        self.setProperty('platform', 'mac')
+        self.setProperty('configuration', 'release')
+        self.setProperty('flavor', 'wk2')
+        self.assertEqual(
+            self.get_nth_step(0).results_db_query_configuration(),
+            {'platform': 'mac', 'style': 'release', 'flavor': 'wk2'},
+        )
+
+    def test_site_isolation_queries_keep_their_platform(self) -> None:
+        # mac has its own site-isolation post-commit queue, so dropping the platform here would
+        # fold another platform's history for the same test into the verdict.
+        self.setup_step(RunWebKitTestsEWSSiteIsolation())
+        self.setProperty('platform', 'mac')
+        self.setProperty('configuration', 'release')
+        self.setProperty('flavor', 'site-isolation')
+        self.assertEqual(
+            self.get_nth_step(0).results_db_query_configuration(),
+            {'platform': 'mac', 'style': 'release', 'flavor': 'site-isolation'},
+        )
 
     @defer.inlineCallbacks
     def test_caps_number_of_results_db_queries(self):
@@ -3223,18 +3518,13 @@ class TestFilterLayoutTestFailuresUsingResultsDB(BuildStepMixinAdditions, unitte
         step._addToLog = lambda logName, message: defer.succeed(None)
         self.patch(ResultsDatabase, 'is_test_pre_existing_failure', classmethod(fake_is_pre_existing))
         self.patch(ResultsDatabase, 'has_commit', classmethod(lambda cls, commit=None: defer.succeed(False)))
+        self.patch(ResultsDatabase, 'flaky_verdicts_for', classmethod(lambda cls, tests, **kwargs: defer.succeed((
+            {test: FlakyVerdict() for test in tests}, ''))))
 
         cap = RunWebKitTests.MAX_FAILURES_TO_CHECK_RESULTS_DB
         failing_tests = [f'test{i}.html' for i in range(cap + 10)]
         yield step.filter_failures_using_results_db(failing_tests)
         self.assertEqual(len(queried), cap)
-
-
-class MockLayoutTestFailures(object):
-    def __init__(self, failing_tests, flaky_tests, did_exceed_test_failure_limit):
-        self.failing_tests = failing_tests
-        self.flaky_tests = flaky_tests
-        self.did_exceed_test_failure_limit = did_exceed_test_failure_limit
 
 
 class TestRunWebKitTestsRedTree(BuildStepMixinAdditions, unittest.TestCase):
@@ -3281,7 +3571,7 @@ class TestRunWebKitTestsRedTree(BuildStepMixinAdditions, unittest.TestCase):
         )
         # Patch LayoutTestFailures.results_from_string() to report the expected values
         # Check this values end on the properties this class should define
-        mock_test_failures = MockLayoutTestFailures(first_run_failures, first_run_flakies, False)
+        mock_test_failures = self.layout_test_failures(first_run_failures, first_run_flakies, False)
         self.patch(LayoutTestFailures, 'results_from_string', lambda f: mock_test_failures)
         self.expect_outcome(result=FAILURE, state_string='layout-tests (failure)')
         rc = self.run_step()
@@ -3317,6 +3607,451 @@ class TestRunWebKitTestsRedTree(BuildStepMixinAdditions, unittest.TestCase):
         self.assertFalse(InstallWpeDependencies() in next_steps)
         self.assertFalse(RunWebKitTestsWithoutChangeRedTree() in next_steps)
         self.assertTrue(AnalyzeLayoutTestsResultsRedTree() in next_steps)
+
+
+class TestReportToResultsDB(BuildStepMixinAdditions, unittest.TestCase):
+    def setUp(self):
+        self.longMessage = True
+        return self.setup_test_build_step()
+
+    def tearDown(self):
+        return self.tear_down_test_build_step()
+
+    def configureStep(self, StepClass=RunWebKitTests):
+        self.setup_step(StepClass())
+        step = self.get_nth_step(0)
+        step._addToLog = lambda logName, message: defer.succeed(None)
+        self.setProperty('platform', 'mac')
+        self.setProperty('fullPlatform', 'mac-sonoma')
+        self.setProperty('os_version', '14.6.1')
+        self.setProperty('configuration', 'release')
+        self.setProperty('flavor', 'wk2')
+        self.setProperty('identifier', '286000@main')
+        self.setProperty('remote', 'https://github.com/WebKit/WebKit')
+        self.setProperty('github.number', 12345)
+        self.setProperty('github.head.sha', 'abc123')
+        self.setProperty('got_revision', 'def456')
+        self.setProperty('commit_timestamp', 1599000000)
+        self.setProperty('buildnumber', 678)
+        self.setProperty('architecture', 'arm64')
+        self.setProperty('workername', 'bot123')
+        self.setProperty('owners', ['jdoe'])
+        self.setProperty('retry_count', 0)
+        return step
+
+    FLAKE = {'fast/flaky.html': dict(expected='PASS', actual='TEXT PASS')}
+
+    @defer.inlineCallbacks
+    def test_reports_the_configuration_the_tests_ran_in(self):
+        step = self.configureStep()
+        yield step.report_to_results_db(self.FLAKE, flaky_type='WithinStepDirtyTree', stage='first-run')
+
+        self.assertEqual(len(self.results_db_reports), 1)
+        report = self.results_db_reports[0]
+        self.assertEqual(report['suite'], 'layout-tests')
+        self.assertEqual(report['flaky_type'], 'WithinStepDirtyTree')
+        self.assertEqual(report['configuration'], dict(
+            platform='mac', version='14.6.1', is_simulator=False,
+            style='release', flavor='wk2', architecture='arm64',
+        ))
+        self.assertEqual(report['results'], self.FLAKE)
+
+    @defer.inlineCallbacks
+    def test_folds_build_provenance_into_details(self):
+        # Provenance isn't queryable, so it rides along in details rather than the configuration.
+        step = self.configureStep()
+        yield step.report_to_results_db(self.FLAKE, stage='first-run')
+
+        details = self.results_db_reports[0]['details']
+        self.assertEqual(details['stage'], 'first-run')
+        self.assertEqual(details['worker'], 'bot123')
+        self.assertEqual(details['authors'], ['jdoe'])
+        self.assertEqual(details['retry_count'], 0)
+        self.assertEqual(details['remote'], 'https://github.com/WebKit/WebKit')
+        self.assertEqual(details['pr_number'], 12345)
+        self.assertEqual(details['commit_hash'], 'abc123')
+        self.assertEqual(details['build_url'], 'http://localhost:8080/#/builders/1/builds/13')
+
+    @defer.inlineCallbacks
+    def test_reports_the_commit_ews_tested(self):
+        step = self.configureStep()
+        self.setProperty('ews_revision', 'aaa111')
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(self.results_db_reports[0]['commits'], [{
+            'repository_id': 'webkit',
+            'hash': 'aaa111',
+            'branch': 'main',
+            'timestamp': 1599000000,
+            'identifier': '286000@main',
+        }])
+
+    @defer.inlineCallbacks
+    def test_commit_is_left_resolvable_without_a_timestamp(self):
+        # The endpoint refuses to look a commit up when a timestamp or a second reference is present.
+        step = self.configureStep()
+        self.setProperty('commit_timestamp', None)
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(self.results_db_reports[0]['commits'], [{
+            'repository_id': 'webkit',
+            'hash': 'def456',
+            'branch': 'main',
+        }])
+
+    @defer.inlineCallbacks
+    def test_reports_when_the_run_started(self):
+        # Reports from one build share a partition and a commit-derived uuid, so two that also
+        # shared a timestamp would collide on the primary key and overwrite each other.
+        step = self.configureStep()
+        step.run_started_at = 1600000000
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(self.results_db_reports[0]['timestamp'], 1600000000)
+
+    @defer.inlineCallbacks
+    def test_falls_back_to_the_current_time_when_no_run_was_timed(self):
+        step = self.configureStep(StepClass=AnalyzeLayoutTestsResults)
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertLessEqual(abs(self.results_db_reports[0]['timestamp'] - int(time.time())), 60)
+
+    def test_merge_skips_a_test_no_run_produced_a_result_for(self):
+        # Callers pass the tests a report covers, and a run that never saw one of them has nothing
+        # to say about it. Reporting it anyway would upload an empty result leaf.
+        step = self.configureStep()
+        self.setProperty('first_run_results', {'fast/a.html': dict(expected='PASS', actual='TEXT')})
+        self.assertEqual(
+            step.merged_results({'fast/a.html', 'fast/never-ran.html'}, {'first-run': 'first_run_results'}),
+            {'fast/a.html': dict(expected='PASS', actual='TEXT', actual_by_run={'first-run': 'TEXT'})},
+        )
+
+    @defer.inlineCallbacks
+    def test_records_results_against_the_branch_the_change_targets(self):
+        step = self.configureStep()
+        self.setProperty('github.base.ref', 'safari-7620-branch')
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(len(self.results_db_reports), 1)
+        self.assertEqual(self.results_db_reports[0]['commits'][0]['branch'], 'safari-7620-branch')
+
+    @defer.inlineCallbacks
+    def test_reports_nothing_without_a_version(self):
+        # PrintConfiguration only reports an OS version for apple platforms, and the resultsdb
+        # rejects a configuration without one.
+        step = self.configureStep()
+        self.setProperty('platform', 'wpe')
+        self.setProperty('os_version', None)
+        logs = []
+        step._addToLog = lambda logName, message: logs.append(message) or defer.succeed(None)
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(self.results_db_reports, [])
+        self.assertIn('this build has no version', ''.join(logs))
+
+    @defer.inlineCallbacks
+    def test_reports_nothing_without_an_architecture(self):
+        # A tester triggered by nothing inherits no architecture, e.g. JSC-Tests-O3-Debug-arm64-EWS.
+        step = self.configureStep()
+        self.setProperty('architecture', None)
+        logs = []
+        step._addToLog = lambda logName, message: logs.append(message) or defer.succeed(None)
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(self.results_db_reports, [])
+        self.assertIn('this build has no architecture', ''.join(logs))
+
+    @defer.inlineCallbacks
+    def test_reports_the_architecture_the_tests_ran_on(self):
+        # The builder config only knows what its build queue produces, so the macOS-Sequoia testers
+        # inherit both architectures. PrintConfiguration reads the tester's own.
+        step = self.configureStep()
+        self.setProperty('architecture', 'x86_64 arm64')
+        self.setProperty('machine_architecture', 'x86_64')
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(self.results_db_reports[0]['configuration']['architecture'], 'x86_64')
+
+    @defer.inlineCallbacks
+    def test_reports_nothing_for_several_architectures_at_once(self):
+        step = self.configureStep()
+        self.setProperty('architecture', 'x86_64 arm64')
+        logs = []
+        step._addToLog = lambda logName, message: logs.append(message) or defer.succeed(None)
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(self.results_db_reports, [])
+        self.assertIn('this build has no architecture', ''.join(logs))
+
+    @defer.inlineCallbacks
+    def test_reports_for_a_wildcard_builder_that_resolves_to_apple(self):
+        # A builder configured with platform '*' only has one at run time, so the decision can't be
+        # made when the factory is built.
+        step = self.configureStep()
+        self.setProperty('platform', 'ios-simulator-26')
+        self.setProperty('fullPlatform', 'ios-simulator-26')
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(len(self.results_db_reports), 1)
+        self.assertTrue(self.results_db_reports[0]['configuration']['is_simulator'])
+
+    @defer.inlineCallbacks
+    def test_a_step_that_provokes_flakiness_reports_nothing(self):
+        # Ten iterations of the tests a change touched are not evidence the tests are flaky.
+        step = self.configureStep(StepClass=RunWebKitTestsInStressMode)
+        yield step.report_to_results_db(self.FLAKE)
+
+        self.assertEqual(self.results_db_reports, [])
+
+    @defer.inlineCallbacks
+    def test_an_unreachable_results_database_does_not_fail_the_step(self):
+        # Reporting runs inside the steps whose verdict gates the pull request.
+        def explode(**kwargs):
+            raise RuntimeError('results.webkit.org is unreachable')
+
+        step = self.configureStep()
+        self.patch(ResultsDatabase, 'report_ews', explode)
+        reported = yield step.report_to_results_db(self.FLAKE)
+
+        self.assertFalse(reported)
+
+    def test_uploads_the_platform_name_queries_ask_for(self):
+        step = self.configureStep()
+        self.setProperty('platform', 'wpe')
+        self.assertEqual(step.results_db_configuration()['platform'], 'WPE')
+
+    def test_a_glib_port_reports_the_webkit_version_it_builds(self) -> None:
+        # GTK and WPE workers leave os_version empty, and version is a required member, so without
+        # this fallback the guard drops every glib report.
+        step = self.configureStep()
+        self.setProperty('platform', 'gtk')
+        self.setProperty('os_version', '')
+        self.setProperty('webkit_version', '2.53')
+        self.assertEqual(step.results_db_configuration()['version'], '2.53')
+
+    def test_merges_a_tests_outcomes_across_runs_without_repeating_them(self):
+        step = self.configureStep()
+
+        self.setProperty('first_run_results', {'fast/a.html': dict(expected='PASS', actual='CRASH')})
+        self.setProperty('second_run_results', {'fast/a.html': dict(expected='PASS', actual='TEXT')})
+        self.assertEqual(
+            step.merged_results({'fast/a.html'}, {'first-run': 'first_run_results', 'second-run': 'second_run_results'}),
+            {'fast/a.html': dict(
+                expected='PASS', actual='CRASH TEXT',
+                actual_by_run={'first-run': 'CRASH', 'second-run': 'TEXT'},
+            )},
+        )
+
+        self.setProperty('second_run_results', {'fast/a.html': dict(expected='PASS', actual='CRASH')})
+        self.assertEqual(
+            step.merged_results({'fast/a.html'}, {'first-run': 'first_run_results', 'second-run': 'second_run_results'}),
+            {'fast/a.html': dict(
+                expected='PASS', actual='CRASH',
+                actual_by_run={'first-run': 'CRASH', 'second-run': 'CRASH'},
+            )},
+        )
+
+
+class TestLayoutTestStepsReportAsTheyRun(BuildStepMixinAdditions, unittest.TestCase):
+    """Each report has to leave the step that derived it: the analyze steps end the build outright,
+    so anything queued behind them never runs."""
+
+    FLAKY = '{"tests":{"fast":{"flaky.html":{"report":"FLAKY","expected":"PASS","actual":"TIMEOUT PASS"}}},"num_regressions":0,"interrupted":false,"num_flaky":1,"version":4}'
+    FLAKY_AND_REGRESSED = '{"tests":{"fast":{"flaky.html":{"report":"FLAKY","expected":"PASS","actual":"TIMEOUT PASS"},"b.html":{"report":"REGRESSION","expected":"PASS","actual":"TEXT"},"both.html":{"report":"REGRESSION","expected":"PASS","actual":"TEXT"}}},"num_regressions":2,"interrupted":false,"num_flaky":1,"version":4}'
+    TRUNCATED = '{"tests":{"fast":{"flaky.html":{"report":"FLAKY","expected":"PASS","actual":"TIMEOUT PASS"},"b.html":{"report":"REGRESSION","expected":"PASS","actual":"TEXT"},"both.html":{"report":"REGRESSION","expected":"PASS","actual":"TEXT"}}},"num_regressions":2,"interrupted":true,"num_flaky":1,"version":4}'
+
+    class FakeLogObserver(object):
+        def __init__(self, stdout=''):
+            self.stdout = stdout
+
+        def getStdout(self):
+            return self.stdout
+
+        def getStderr(self):
+            return ''
+
+        def getHeaders(self):
+            return ''
+
+    def setUp(self):
+        self.longMessage = True
+        return self.setup_test_build_step()
+
+    def tearDown(self):
+        return self.tear_down_test_build_step()
+
+    def configureStep(self, StepClass, results_json):
+        self.setup_step(StepClass())
+        self.setProperty('platform', 'mac')
+        self.setProperty('fullPlatform', 'mac-sonoma')
+        self.setProperty('os_version', '14.6.1')
+        self.setProperty('configuration', 'release')
+        self.setProperty('architecture', 'arm64')
+        self.setProperty('got_revision', 'def456')
+        self.setProperty('commit_timestamp', 1599000000)
+
+        step = self.get_nth_step(0)
+        step._addToLog = lambda logName, message: defer.succeed(None)
+        step._parseRunWebKitTestsOutput = lambda logText: None
+        step.log_observer = self.FakeLogObserver()
+        step.log_observer_json = self.FakeLogObserver(f'ADD_RESULTS({results_json});')
+
+        def fake_filter(failing_tests):
+            step.failing_tests_filtered = list(failing_tests)
+            step.preexisting_failures_in_results_db = []
+            return defer.succeed(None)
+
+        step.filter_failures_using_results_db = fake_filter
+        self.patch(shell.Test, 'runCommand', lambda *args, **kwargs: defer.succeed(None))
+        return step
+
+    def reported(self):
+        return [
+            (report['flaky_type'], (report['details'] or {}).get('stage'), sorted(report['results']))
+            for report in self.results_db_reports
+        ]
+
+    @defer.inlineCallbacks
+    def test_the_first_run_reports_its_own_flakes(self):
+        step = self.configureStep(RunWebKitTests, self.FLAKY)
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [('WithinStepDirtyTree', 'first-run', ['fast/flaky.html'])])
+
+    @defer.inlineCallbacks
+    def test_the_first_run_records_its_failures_for_later_reports(self):
+        # It reports only its flakes, but a later step merging across runs needs the failures too:
+        # inter-step and new-failure reports are about tests that failed one run and not another.
+        step = self.configureStep(RunWebKitTests, self.FLAKY_AND_REGRESSED)
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [('WithinStepDirtyTree', 'first-run', ['fast/flaky.html'])])
+        self.assertEqual(
+            sorted(self.getProperty('first_run_results')),
+            ['fast/b.html', 'fast/both.html', 'fast/flaky.html'],
+        )
+
+    @defer.inlineCallbacks
+    def test_the_first_run_exports_the_verdicts_it_relied_on(self):
+        step = self.configureStep(RunWebKitTests, self.FLAKY_AND_REGRESSED)
+
+        def fake_filter(failing_tests):
+            step.failing_tests_filtered = list(failing_tests)
+            step.preexisting_failures_in_results_db = ['fast/b.html']
+            step.flaky_failures_in_results_db = {'fast/both.html': 'CleanTree'}
+            step.unsupported_flakes_in_results_db = ['fast/both.html']
+            step.unknown_flakes_in_results_db = ['fast/a.html']
+            return defer.succeed(None)
+
+        step.filter_failures_using_results_db = fake_filter
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.getProperty('results-db_first_run_flaky'), {'fast/both.html': 'CleanTree'})
+        self.assertEqual(self.getProperty('results-db_first_run_pre_existing'), ['fast/b.html'])
+        self.assertEqual(self.getProperty('results-db_first_run_flaky_unsupported'), ['fast/both.html'])
+        self.assertEqual(self.getProperty('results-db_first_run_flaky_unknown'), ['fast/a.html'])
+
+    @defer.inlineCallbacks
+    def test_the_rerun_reports_its_flakes_and_what_differed_from_the_first_run(self):
+        step = self.configureStep(ReRunWebKitTests, self.FLAKY_AND_REGRESSED)
+        self.setProperty('first_run_failures', ['fast/a.html', 'fast/both.html'])
+        self.setProperty('first_run_results', {
+            'fast/a.html': dict(expected='PASS', actual='TEXT'),
+            'fast/both.html': dict(expected='PASS', actual='TEXT'),
+        })
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [
+            ('WithinStepDirtyTree', 'second-run', ['fast/flaky.html']),
+            ('BetweenStepsDirtyTree', None, ['fast/a.html', 'fast/b.html']),
+        ])
+
+    @defer.inlineCallbacks
+    def test_the_rerun_reports_no_inter_step_flakes_when_its_own_run_was_truncated(self):
+        # Once a run stops at the failure limit the two runs cover different subsets, so a test in
+        # only one of them was never run rather than passing.
+        step = self.configureStep(ReRunWebKitTests, self.TRUNCATED)
+        self.setProperty('first_run_failures', ['fast/a.html', 'fast/both.html'])
+        self.setProperty('first_run_results', {
+            'fast/a.html': dict(expected='PASS', actual='TEXT'),
+            'fast/both.html': dict(expected='PASS', actual='TEXT'),
+        })
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [('WithinStepDirtyTree', 'second-run', ['fast/flaky.html'])])
+
+    @defer.inlineCallbacks
+    def test_the_rerun_reports_no_inter_step_flakes_when_the_first_run_was_truncated(self):
+        step = self.configureStep(ReRunWebKitTests, self.FLAKY_AND_REGRESSED)
+        self.setProperty('first_results_exceed_failure_limit', True)
+        self.setProperty('first_run_failures', ['fast/a.html', 'fast/both.html'])
+        self.setProperty('first_run_results', {
+            'fast/a.html': dict(expected='PASS', actual='TEXT'),
+            'fast/both.html': dict(expected='PASS', actual='TEXT'),
+        })
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [('WithinStepDirtyTree', 'second-run', ['fast/flaky.html'])])
+
+    @defer.inlineCallbacks
+    def test_the_rerun_reports_no_inter_step_flakes_without_a_first_run_to_compare(self):
+        step = self.configureStep(ReRunWebKitTests, self.FLAKY)
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [('WithinStepDirtyTree', 'second-run', ['fast/flaky.html'])])
+
+    @defer.inlineCallbacks
+    def test_the_clean_tree_run_reports_flakes_the_change_cannot_have_caused(self):
+        step = self.configureStep(RunWebKitTestsWithoutChange, self.FLAKY)
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [('WithinStepCleanTree', 'clean-tree', ['fast/flaky.html'])])
+
+    @defer.inlineCallbacks
+    def test_the_redtree_repeat_run_reports_with_change_flakes(self):
+        step = self.configureStep(RunWebKitTestsRepeatFailuresRedTree, self.FLAKY)
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [('WithinStepDirtyTree', 'redtree-with-change', ['fast/flaky.html'])])
+
+    @defer.inlineCallbacks
+    def test_the_redtree_clean_tree_repeat_run_reports_without_change_flakes(self):
+        step = self.configureStep(RunWebKitTestsRepeatFailuresWithoutChangeRedTree, self.FLAKY)
+        yield step.runCommand(['run-webkit-tests'])
+
+        self.assertEqual(self.reported(), [('WithinStepCleanTree', 'redtree-without-change', ['fast/flaky.html'])])
+
+    @defer.inlineCallbacks
+    def test_the_analyze_step_reports_the_failures_it_attributes_to_the_change(self):
+        # The one report derived from comparing runs rather than produced by one.
+        self.setup_step(AnalyzeLayoutTestsResults())
+        self.setProperty('platform', 'mac')
+        self.setProperty('fullPlatform', 'mac-sonoma')
+        self.setProperty('os_version', '14.6.1')
+        self.setProperty('configuration', 'release')
+        self.setProperty('architecture', 'arm64')
+        self.setProperty('got_revision', 'def456')
+        self.setProperty('commit_timestamp', 1599000000)
+        self.setProperty('first_run_results', {'fast/b.html': dict(expected='PASS', actual='CRASH')})
+        self.setProperty('second_run_results', {'fast/b.html': dict(expected='PASS', actual='TEXT')})
+        step = self.get_nth_step(0)
+        step._addToLog = lambda logName, message: defer.succeed(None)
+        step.send_email_for_new_test_failures = lambda *args, **kwargs: defer.succeed(None)
+        self.patch(AnalyzeLayoutTestsResults, 'getResultSummary', lambda self: {})
+
+        yield step.report_failure(new_failures=['fast/b.html'])
+
+        # No flaky_type: a failure attributed to the change is not flakiness.
+        self.assertEqual(self.reported(), [(None, None, ['fast/b.html'])])
+        self.assertEqual(
+            self.results_db_reports[0]['results']['fast/b.html']['actual'], 'CRASH TEXT',
+            msg='the reported outcome should span both with-change runs',
+        )
+        self.assertEqual(
+            self.results_db_reports[0]['results']['fast/b.html']['actual_by_run'],
+            {'first-run': 'CRASH', 'second-run': 'TEXT'},
+            msg='a flattened actual cannot say which run saw which outcome',
+        )
 
 
 class TestRunWebKitTestsRepeatFailuresRedTree(BuildStepMixinAdditions, unittest.TestCase):
@@ -3399,7 +4134,7 @@ class TestRunWebKitTestsRepeatFailuresRedTree(BuildStepMixinAdditions, unittest.
         # Check this fake values do not end on the properties that belong to the superclass.
         fake_failing_tests = ['fake/should/not/happen/failure1.html', 'imported/fake/failure2.html']
         fake_flaky_tests = ['fake/should/not/happen/flaky1.html', 'imported/fake/flaky2.html']
-        fake_layout_test_failures = MockLayoutTestFailures(fake_failing_tests, fake_flaky_tests, True)
+        fake_layout_test_failures = self.layout_test_failures(fake_failing_tests, fake_flaky_tests, True)
         self.patch(LayoutTestFailures, 'results_from_string', lambda f: fake_layout_test_failures)
         self.expect_outcome(result=FAILURE, state_string='layout-tests (failure)')
         rc = yield self.run_step()
@@ -3534,7 +4269,7 @@ class TestRunWebKitTestsRepeatFailuresWithoutChangeRedTree(BuildStepMixinAdditio
         # Check this fake values do not end on the properties that belong to the superclass.
         fake_failing_tests = ['fake/should/not/happen/failure1.html', 'imported/fake/failure2.html']
         fake_flaky_tests = ['fake/should/not/happen/flaky1.html', 'imported/fake/flaky2.html']
-        fake_layout_test_failures = MockLayoutTestFailures(fake_failing_tests, fake_flaky_tests, True)
+        fake_layout_test_failures = self.layout_test_failures(fake_failing_tests, fake_flaky_tests, True)
         self.patch(LayoutTestFailures, 'results_from_string', lambda f: fake_layout_test_failures)
         self.expect_outcome(result=FAILURE, state_string='layout-tests (failure)')
         rc = yield self.run_step()
@@ -3566,8 +4301,11 @@ class TestAnalyzeLayoutTestsResultsRedTree(BuildStepMixinAdditions, unittest.Tes
     def configureCommonProperties(self):
         self.setProperty('fullPlatform', 'gtk')
         self.setProperty('configuration', 'release')
-        self.setProperty('patch_author', 'test@igalia.com')
-        self.setProperty('patch_id', '404044')
+        self.setProperty('github.number', 404044)
+        self.setProperty('github.head.sha', '1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b')
+        self.setProperty('repository', 'https://github.com/WebKit/WebKit')
+        self.setProperty('owners', ['webkit-commit-queue'])
+        Contributors.load = mock_load_contributors
 
     def test_failure_introduced_by_change_clean_tree_green(self):
         self.configureStep()
@@ -3585,7 +4323,7 @@ class TestAnalyzeLayoutTestsResultsRedTree(BuildStepMixinAdditions, unittest.Tes
         for flaky_test in ["test/flaky1.html", "test/flaky2.html", "test/failure2.html", "test/pre-existent/flaky.html"]:
             self.assertTrue(f'Test name: <a href="https://github.com/WebKit/WebKit/blob/main/LayoutTests/{flaky_test}">{flaky_test}</a>' in self._emails_list[0])
         self.assertFalse('Test name: <a href="https://github.com/WebKit/WebKit/blob/main/LayoutTests/test/failure1.html">test/failure1.html</a>' in self._emails_list[0])
-        self.assertTrue('Subject: Layout test failure for Patch' in self._emails_list[1])
+        self.assertTrue('Subject: Layout test failure for Hash 1a2b3c4d' in self._emails_list[1])
         self.assertTrue('test/failure1.html' in self._emails_list[1])
         return step_result
 
@@ -3607,7 +4345,7 @@ class TestAnalyzeLayoutTestsResultsRedTree(BuildStepMixinAdditions, unittest.Tes
         self.assertFalse('Test name: <a href="https://github.com/WebKit/WebKit/blob/main/LayoutTests/preexisting-test/pre-existent/failure.html">preexisting-test/pre-existent/failure.html</a>' in self._emails_list[0])
         self.assertTrue('Subject: Info about 1 pre-existent failure at' in self._emails_list[1])
         self.assertTrue('preexisting-test/pre-existent/failure.html' in self._emails_list[1])
-        self.assertTrue('Subject: Layout test failure for Patch' in self._emails_list[2])
+        self.assertTrue('Subject: Layout test failure for Hash 1a2b3c4d' in self._emails_list[2])
         self.assertTrue('test/failure1.html' in self._emails_list[2])
         return step_result
 
@@ -3812,7 +4550,7 @@ class TestAnalyzeLayoutTestsResultsRedTree(BuildStepMixinAdditions, unittest.Tes
         self.assertEqual(len(self._emails_list), 2)
         expected_infrastructure_error = 'The step "layout-tests-repeat-failures-with-change" reached the timeout but the step "layout-tests-repeat-failures-without-change" ended. Not trying to repeat this. Reporting 2 failures from the first run.'
         self.assertTrue(expected_infrastructure_error in self._emails_list[0])
-        self.assertTrue('Subject: Layout test failure for Patch' in self._emails_list[1])
+        self.assertTrue('Subject: Layout test failure for Hash 1a2b3c4d' in self._emails_list[1])
         for failed_test in ['test/failure1.html', 'test/failure2.html']:
             self.assertTrue(failed_test in self._emails_list[1])
         return step_result
@@ -4124,188 +4862,6 @@ class TestUpdateWorkingDirectory(BuildStepMixinAdditions, unittest.TestCase):
             .exit(2),
         )
         self.expect_outcome(result=FAILURE, state_string='Failed to updated working directory')
-        return self.run_step()
-
-
-class TestApplyPatch(BuildStepMixinAdditions, unittest.TestCase):
-    READ_LIMIT = 1000
-    ENV = dict(FILTER_BRANCH_SQUELCH_WARNING='1')
-
-    @staticmethod
-    def downloadFileRecordingContents(limit, recorder):
-        def behavior(command):
-            reader = command.args['reader']
-            data = reader.remote_read(limit)
-            recorder(data)
-            reader.remote_close()
-        return behavior
-
-    def setUp(self):
-        self.longMessage = True
-
-        def mock_start(cls, *args, **kwargs):
-            from buildbot.steps import shell
-            return shell.ShellCommand.start(cls)
-        ApplyPatch.start = mock_start
-        return self.setup_test_build_step()
-
-    def tearDown(self):
-        return self.tear_down_test_build_step()
-
-    @expectedFailure
-    def test_success(self):
-        self.setup_step(ApplyPatch())
-        self.setProperty('patch_id', '1234')
-        self.assertEqual(ApplyPatch.flunkOnFailure, True)
-        self.assertEqual(ApplyPatch.haltOnFailure, True)
-        buf = []
-        self.expectRemoteCommands(
-            Expect('downloadFile', dict(
-                workerdest='.buildbot-diff', workdir='wkdir',
-                blocksize=1024 * 32, maxsize=None, mode=None,
-                reader=ExpectRemoteRef(remotetransfer.FileReader),
-            ))
-            + Expect.behavior(self.downloadFileRecordingContents(self.READ_LIMIT, buf.append))
-            .exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['curl', '-L', 'https://bugs.webkit.org/attachment.cgi?id=1234', '-o', '.buildbot-diff'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'config', 'user.name', 'EWS'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'config', 'user.email', 'ews@webkit.org'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'am', '--keep-non-patch', '.buildbot-diff'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'filter-branch', '-f', '--msg-filter', 'python3 -c "{}"'.format(ApplyPatch.FILTER_BRANCH_PROGRAM), 'HEAD...HEAD~1'],
-            ).exit(0),
-        )
-        self.expect_outcome(result=SUCCESS, state_string='Applied patch')
-        return self.run_step()
-
-    @expectedFailure
-    def test_success_win(self):
-        self.setup_step(ApplyPatch())
-        self.setProperty('patch_id', '1234')
-        self.setProperty('platform', 'win')
-        self.assertEqual(ApplyPatch.flunkOnFailure, True)
-        self.assertEqual(ApplyPatch.haltOnFailure, True)
-        buf = []
-        self.expectRemoteCommands(
-            Expect('downloadFile', dict(
-                workerdest='.buildbot-diff', workdir='wkdir',
-                blocksize=1024 * 32, maxsize=None, mode=None,
-                reader=ExpectRemoteRef(remotetransfer.FileReader),
-            ))
-            + Expect.behavior(self.downloadFileRecordingContents(self.READ_LIMIT, buf.append))
-            .exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['curl', '-L', 'https://bugs.webkit.org/attachment.cgi?id=1234', '-o', '.buildbot-diff'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'config', 'user.name', 'EWS'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'config', 'user.email', 'ews@webkit.org'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'am', '--keep-non-patch', '.buildbot-diff'],
-            ).exit(0),
-        )
-        self.expect_outcome(result=SUCCESS, state_string='Applied patch')
-        return self.run_step()
-
-    @expectedFailure
-    def test_failure(self):
-        self.setup_step(ApplyPatch())
-        self.setProperty('patch_id', '1234')
-        buf = []
-        self.expectRemoteCommands(
-            Expect('downloadFile', dict(
-                workerdest='.buildbot-diff', workdir='wkdir',
-                blocksize=1024 * 32, maxsize=None, mode=None,
-                reader=ExpectRemoteRef(remotetransfer.FileReader),
-            ))
-            + Expect.behavior(self.downloadFileRecordingContents(self.READ_LIMIT, buf.append))
-            .exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['curl', '-L', 'https://bugs.webkit.org/attachment.cgi?id=1234', '-o', '.buildbot-diff'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'config', 'user.name', 'EWS'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'config', 'user.email', 'ews@webkit.org'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=600,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'am', '--keep-non-patch', '.buildbot-diff'],
-            ).exit(1),
-        )
-        self.expect_outcome(result=FAILURE, state_string='git failed to apply patch to trunk')
-        rc = self.run_step()
-        self.expect_property('comment_text', None)
-        self.expect_property('build_finish_summary', None)
-        return rc
-
-    def test_skipped(self):
-        self.setup_step(ApplyPatch())
-        self.expect_hidden(True)
-        self.expect_outcome(result=SKIPPED, state_string="Skipping applying patch since patch_id isn't provided")
         return self.run_step()
 
 
@@ -6740,6 +7296,8 @@ ProductName:		macOS
 ProductVersion:		15.7.3
 BuildVersion:		24G419
 '''),
+            ExpectShell(command=['uname', '-m'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
+            .log('stdio', stdout='arm64\n'),
             ExpectShell(command=['system_profiler', 'SPSoftwareDataType', 'SPHardwareDataType'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
             .log('stdio', stdout='Configuration version: Software: System Software Overview: System Version: macOS 11.4 (20F71) Kernel Version: Darwin 20.5.0 Boot Volume: Macintosh HD Boot Mode: Normal Computer Name: bot1020 User Name: WebKit Build Worker (buildbot) Secure Virtual Memory: Enabled System Integrity Protection: Enabled Time since boot: 27 seconds Hardware: Hardware Overview: Model Name: Mac mini Model Identifier: Macmini8,1 Processor Name: 6-Core Intel Core i7 Processor Speed: 3.2 GHz Number of Processors: 1 Total Number of Cores: 6 L2 Cache (per Core): 256 KB L3 Cache: 12 MB Hyper-Threading Technology: Enabled Memory: 32 GB System Firmware Version: 1554.120.19.0.0 (iBridge: 18.16.14663.0.0,0) Serial Number (system): C07DXXXXXXXX Hardware UUID: F724DE6E-706A-5A54-8D16-000000000000 Provisioning UDID: E724DE6E-006A-5A54-8D16-000000000000 Activation Lock Status: Disabled Xcode 12.5 Build version 12E262'),
             ExpectShell(command=['cat', '/usr/share/zoneinfo/+VERSION'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
@@ -6777,6 +7335,8 @@ Build version 17C52''')
             .log('stdio', stdout='''ProductName:	macOS
 ProductVersion:	14.5
 BuildVersion:	23F79'''),
+            ExpectShell(command=['uname', '-m'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
+            .log('stdio', stdout='arm64\n'),
             ExpectShell(command=['system_profiler', 'SPSoftwareDataType', 'SPHardwareDataType'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
             .log('stdio', stdout='Sample system information'),
             ExpectShell(command=['cat', '/usr/share/zoneinfo/+VERSION'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
@@ -6804,6 +7364,7 @@ Build version 15F31d''')
 
         self.expectRemoteCommands(*self.mac_remote_commands)
         self.expect_outcome(result=SUCCESS, state_string='OS: Sequoia (15.7.3), Xcode: 26.2')
+        self.expect_property('machine_architecture', 'arm64')
         return self.run_step()
 
     @defer.inlineCallbacks
@@ -6872,6 +7433,8 @@ Build version 15F31d''')
             .log('stdio', stdout='''ProductName:	macOS
 ProductVersion:	14.5
 BuildVersion:	23F79'''),
+            ExpectShell(command=['uname', '-m'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
+            .log('stdio', stdout='arm64\n'),
             ExpectShell(command=['system_profiler', 'SPSoftwareDataType', 'SPHardwareDataType'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
             .log('stdio', stdout='Sample system information'),
             ExpectShell(command=['cat', '/usr/share/zoneinfo/+VERSION'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
@@ -6896,11 +7459,15 @@ BuildVersion:	23F79'''),
             .log('stdio', stdout='Tue Apr  9 15:30:52 PDT 2019'),
             ExpectShell(command=['uname', '-a'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
             .log('stdio', stdout='''Linux kodama-ews 5.0.4-arch1-1-ARCH #1 SMP PREEMPT Sat Mar 23 21:00:33 UTC 2019 x86_64 GNU/Linux'''),
+            ExpectShell(command=['uname', '-m'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
+            .log('stdio', stdout='aarch64\n'),
             ExpectShell(command=['uptime'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
             .log('stdio', stdout=' 6:31  up 22 seconds, 12:05, 2 users, load averages: 3.17 7.23 5.45'),
             ExpectShell(command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'if test -f /etc/build-info; then cat /etc/build-info; else cat /etc/os-release; fi'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
         )
         self.expect_outcome(result=SUCCESS, state_string='Printed configuration')
+        # uname reports aarch64, GLibPort and results.webkit.org call the same architecture arm64.
+        self.expect_property('machine_architecture', 'arm64')
         return self.run_step()
 
     def test_success_linux_gtk(self):
@@ -6912,6 +7479,8 @@ BuildVersion:	23F79'''),
             ExpectShell(command=['df', '-hl', '--exclude-type=fuse.portal'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
             ExpectShell(command=['date'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
             ExpectShell(command=['uname', '-a'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
+            ExpectShell(command=['uname', '-m'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
+            .log('stdio', stdout='aarch64\n'),
             ExpectShell(command=['uptime'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
             ExpectShell(command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'if test -f /etc/build-info; then cat /etc/build-info; else cat /etc/os-release; fi'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
         )
@@ -6937,6 +7506,8 @@ BuildVersion:	23F79'''),
   File "/usr/lib/python2.7/os.py", line 382, in _execvpe
     func(fullname, *argrest)
 OSError: [Errno 2] No such file or directory'''),
+            ExpectShell(command=['uname', '-m'], workdir='wkdir', timeout=60, log_environ=False).exit(0)
+            .log('stdio', stdout='arm64\n'),
             ExpectShell(command=['system_profiler', 'SPSoftwareDataType', 'SPHardwareDataType'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
             ExpectShell(command=['cat', '/usr/share/zoneinfo/+VERSION'], workdir='wkdir', timeout=60, log_environ=False).exit(0),
             ExpectShell(command=['xcodebuild', '-sdk', '-version'], workdir='wkdir', timeout=60, log_environ=False)
@@ -7110,13 +7681,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
             ), labels=[dict(name=label) for label in labels or []],
         )
 
-    def test_skipped_patch(self):
-        self.setup_step(ValidateChange())
-        self.setProperty('patch_id', '1234')
-        self.setProperty('bug_id', '5678')
-        self.setProperty('skip_validation', True)
-        self.expect_outcome(result=SKIPPED, state_string='Validated change (skipped)')
-        return self.run_step()
 
     def test_skipped_pr(self):
         self.setup_step(ValidateChange())
@@ -7126,14 +7690,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.expect_outcome(result=SKIPPED, state_string='Validated change (skipped)')
         return self.run_step()
 
-    def test_success_patch(self):
-        self.setup_step(ValidateChange(verifyBugClosed=False))
-        ValidateChange.get_patch_json = lambda x, patch_id: self.get_patch()
-        self.setProperty('patch_id', '425806')
-        self.expect_outcome(result=SUCCESS, state_string='Validated change')
-        rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
-        return rc
 
     def test_success_pr(self):
         self.setup_step(ValidateChange(verifyBugClosed=False))
@@ -7143,7 +7699,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '7496f8ecc4cc8011f19c8cc1bc7b18fe4a88ad5c')
         self.expect_outcome(result=SUCCESS, state_string='Validated change')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
     def test_success_pr_blocked(self):
@@ -7154,17 +7709,8 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '7496f8ecc4cc8011f19c8cc1bc7b18fe4a88ad5c')
         self.expect_outcome(result=SUCCESS, state_string='Validated change')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
-    def test_obsolete_patch(self):
-        self.setup_step(ValidateChange(verifyBugClosed=False))
-        ValidateChange.get_patch_json = lambda x, patch_id: self.get_patch(obsolete=1)
-        self.setProperty('patch_id', '425806')
-        self.expect_outcome(result=FAILURE, state_string='Patch 425806 is obsolete')
-        rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
-        return rc
 
     def test_obsolete_pr(self):
         self.setup_step(ValidateChange(verifyBugClosed=False))
@@ -7174,7 +7720,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '1ad60d45a112301f7b9f93dac06134524dae8480')
         self.expect_outcome(result=FAILURE, state_string='Hash 1ad60d45 on PR 1234 is outdated')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
     def test_deleted_pr(self):
@@ -7185,20 +7730,8 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '1ad60d45a112301f7b9f93dac06134524dae8480')
         self.expect_outcome(result=FAILURE, state_string='Pull request 1234 is already closed')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
-    @skipTest("This should be expectedFailure, except https://github.com/twisted/twisted/issues/10969")
-    def test_fast_cq_patches_trigger_fast_cq_mode(self):
-        fast_cq_patch_titles = ('REVERT OF r1234', 'revert of r1234', 'REVERT of 123456@main', '[fast-cq]Patch', '[FAST-cq] patch', 'fast-cq-patch', 'FAST-CQ Patch')
-        for fast_cq_patch_title in fast_cq_patch_titles:
-            self.setup_step(ValidateChange(verifyBugClosed=False))
-            ValidateChange.get_patch_json = lambda x, patch_id: self.get_patch(title=fast_cq_patch_title)
-            self.setProperty('patch_id', '425806')
-            self.expect_outcome(result=SUCCESS, state_string='Validated change')
-            rc = self.run_step()
-            self.expect_property('fast_commit_queue', True, f'fast_commit_queue is not set, patch title: {fast_cq_patch_title}')
-        return rc
 
     def test_merge_queue(self):
         self.setup_step(ValidateChange(verifyMergeQueue=True))
@@ -7208,7 +7741,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '7496f8ecc4cc8011f19c8cc1bc7b18fe4a88ad5c')
         self.expect_outcome(result=SUCCESS, state_string='Validated change')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
     def test_merge_queue_blocked(self):
@@ -7219,7 +7751,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '7496f8ecc4cc8011f19c8cc1bc7b18fe4a88ad5c')
         self.expect_outcome(result=FAILURE, state_string="PR 1234 has been marked as 'merging-blocked'")
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
     def test_no_merge_queue(self):
@@ -7230,7 +7761,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '7496f8ecc4cc8011f19c8cc1bc7b18fe4a88ad5c')
         self.expect_outcome(result=FAILURE, state_string='PR 1234 does not have a merge queue label')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
     def test_draft(self):
@@ -7241,7 +7771,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '7496f8ecc4cc8011f19c8cc1bc7b18fe4a88ad5c')
         self.expect_outcome(result=FAILURE, state_string='PR 1234 is a draft pull request')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
     def test_no_draft(self):
@@ -7252,23 +7781,8 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
         self.setProperty('github.head.sha', '7496f8ecc4cc8011f19c8cc1bc7b18fe4a88ad5c')
         self.expect_outcome(result=SUCCESS, state_string='Validated change')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
-    def test_sensative_patch(self):
-        self.setup_step(ValidateChange(verifyBugClosed=False))
-        ValidateChange.get_patch_json = lambda x, patch_id: self.get_patch()
-        self.setProperty('patch_id', '425806')
-        self.setProperty('sensitive', True)
-        self.setProperty('buildername', 'Commit-Queue')
-
-        message = 'Cannot land security changes with Commit-Queue, please use a GitHub PR against a secret remote'
-        self.expect_outcome(result=FAILURE, state_string=message)
-        rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
-        self.expect_property('build_finish_summary', message)
-        self.expect_property('comment_text', message)
-        return rc
 
     def test_skipped_branch(self):
         self.setup_step(ValidateChange(verifyBugClosed=False, branches=[r'main']))
@@ -7280,7 +7794,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
 
         self.expect_outcome(result=FAILURE, state_string="Changes to 'safari-123-branch' are not tested")
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
     def test_excluded_branch(self):
@@ -7293,7 +7806,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
 
         self.expect_outcome(result=FAILURE, state_string="Skipping as PR 1234 targets 'webkitglib/2.46' branch")
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
     def test_allowed_branch_not_in_excluded(self):
@@ -7306,7 +7818,6 @@ class TestValidateChange(BuildStepMixinAdditions, unittest.TestCase):
 
         self.expect_outcome(result=SUCCESS, state_string='Validated change')
         rc = self.run_step()
-        self.expect_property('fast_commit_queue', None, 'fast_commit_queue is unexpectedly set')
         return rc
 
 
@@ -7708,11 +8219,6 @@ class TestValidateUserForQueue(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_success_patch(self):
-        self.setup_step(ValidateUserForQueue())
-        self.setProperty('patch_committer', 'committer@webkit.org')
-        self.expect_outcome(result=SUCCESS, state_string='Validated user for queue')
-        return self.run_step()
 
     def test_success_pr(self):
         self.setup_step(ValidateUserForQueue())
@@ -7721,12 +8227,6 @@ class TestValidateUserForQueue(BuildStepMixinAdditions, unittest.TestCase):
         self.expect_outcome(result=SUCCESS, state_string='Validated user for queue')
         return self.run_step()
 
-    def test_failure_load_contributors_patch(self):
-        self.setup_step(ValidateUserForQueue())
-        self.setProperty('patch_committer', 'abc@webkit.org')
-        Contributors.load = lambda *args, **kwargs: ({}, [])
-        self.expect_outcome(result=FAILURE, state_string='Failed to get contributors information (failure)')
-        return self.run_step()
 
     def test_failure_load_contributors_pr(self):
         self.setup_step(ValidateUserForQueue())
@@ -7736,11 +8236,6 @@ class TestValidateUserForQueue(BuildStepMixinAdditions, unittest.TestCase):
         self.expect_outcome(result=FAILURE, state_string='Failed to get contributors information (failure)')
         return self.run_step()
 
-    def test_failure_invalid_committer_patch(self):
-        self.setup_step(ValidateUserForQueue())
-        self.setProperty('patch_committer', 'abc@webkit.org')
-        self.expect_outcome(result=FAILURE, state_string='Skipping queue, as abc@webkit.org lacks committer status (failure)')
-        return self.run_step()
 
     def test_failure_invalid_committer_pr(self):
         self.setup_step(ValidateUserForQueue())
@@ -7759,17 +8254,6 @@ class TestValidateCommitterAndReviewer(BuildStepMixinAdditions, unittest.TestCas
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_success_patch(self):
-        self.setup_step(ValidateCommitterAndReviewer())
-        self.setProperty('patch_id', '1234')
-        self.setProperty('patch_committer', 'committer@webkit.org')
-        self.setProperty('reviewer', 'reviewer@apple.com')
-        self.expect_hidden(False)
-        self.assertEqual(ValidateCommitterAndReviewer.haltOnFailure, False)
-        self.expect_outcome(result=SUCCESS, state_string='Validated committer and reviewer')
-        rc = self.run_step()
-        self.expect_property('valid_reviewers', ['WebKit Reviewer'])
-        return rc
 
     def test_success_pr(self):
         self.setup_step(ValidateCommitterAndReviewer())
@@ -7795,13 +8279,6 @@ class TestValidateCommitterAndReviewer(BuildStepMixinAdditions, unittest.TestCas
         self.expect_property('valid_reviewers', ['WebKit Reviewer'])
         return rc
 
-    def test_success_no_reviewer_patch(self):
-        self.setup_step(ValidateCommitterAndReviewer())
-        self.setProperty('patch_id', '1234')
-        self.setProperty('patch_committer', 'reviewer@apple.com')
-        self.expect_hidden(False)
-        self.expect_outcome(result=SUCCESS, state_string='Validated committer, valid reviewer not found')
-        return self.run_step()
 
     def test_success_no_reviewer_pr(self):
         self.setup_step(ValidateCommitterAndReviewer())
@@ -7821,14 +8298,6 @@ class TestValidateCommitterAndReviewer(BuildStepMixinAdditions, unittest.TestCas
         self.expect_outcome(result=SUCCESS, state_string='Validated committer and reviewer')
         return self.run_step()
 
-    def test_failure_load_contributors_patch(self):
-        self.setup_step(ValidateCommitterAndReviewer())
-        self.setProperty('patch_id', '1234')
-        self.setProperty('patch_committer', 'abc@webkit.org')
-        Contributors.load = lambda *args, **kwargs: ({}, [])
-        self.expect_hidden(False)
-        self.expect_outcome(result=FAILURE, state_string='Failed to get contributors information')
-        return self.run_step()
 
     def test_failure_load_contributors_pr(self):
         self.setup_step(ValidateCommitterAndReviewer())
@@ -7839,13 +8308,6 @@ class TestValidateCommitterAndReviewer(BuildStepMixinAdditions, unittest.TestCas
         self.expect_outcome(result=FAILURE, state_string='Failed to get contributors information')
         return self.run_step()
 
-    def test_failure_invalid_committer_patch(self):
-        self.setup_step(ValidateCommitterAndReviewer())
-        self.setProperty('patch_id', '1234')
-        self.setProperty('patch_committer', 'abc@webkit.org')
-        self.expect_hidden(False)
-        self.expect_outcome(result=FAILURE, state_string='abc@webkit.org does not have committer permissions')
-        return self.run_step()
 
     def test_failure_invalid_committer_pr(self):
         self.setup_step(ValidateCommitterAndReviewer())
@@ -7855,17 +8317,6 @@ class TestValidateCommitterAndReviewer(BuildStepMixinAdditions, unittest.TestCas
         self.expect_outcome(result=FAILURE, state_string='abc does not have committer permissions')
         return self.run_step()
 
-    def test_success_invalid_reviewer_patch(self):
-        self.setup_step(ValidateCommitterAndReviewer())
-        self.setProperty('patch_id', '1234')
-        self.setProperty('patch_committer', 'reviewer@apple.com')
-        self.setProperty('reviewer', 'committer@webkit.org')
-        self.expect_hidden(False)
-        self.expect_outcome(result=SUCCESS, state_string='Validated committer, valid reviewer not found')
-        rc = self.run_step()
-        self.expect_property('valid_reviewers', [])
-        self.expect_property('invalid_reviewers', ['WebKit Committer'])
-        return rc
 
     def test_success_invalid_reviewer_pr(self):
         self.setup_step(ValidateCommitterAndReviewer())
@@ -7991,7 +8442,6 @@ class TestPushCommitToWebKitRepo(BuildStepMixinAdditions, unittest.TestCase):
 
     def test_success(self):
         self.setup_step(PushCommitToWebKitRepo())
-        self.setProperty('patch_id', '1234')
         self.setProperty('remote', 'origin')
         self.expectRemoteCommands(
             ExpectShell(workdir='wkdir',
@@ -8011,7 +8461,6 @@ class TestPushCommitToWebKitRepo(BuildStepMixinAdditions, unittest.TestCase):
     @expectedFailure
     def test_failure_retry(self):
         self.setup_step(PushCommitToWebKitRepo())
-        self.setProperty('patch_id', '2345')
         self.setProperty('remote', 'origin')
 
         self.expectRemoteCommands(
@@ -8030,26 +8479,6 @@ class TestPushCommitToWebKitRepo(BuildStepMixinAdditions, unittest.TestCase):
         self.expect_property('landed_hash', None)
         return rc
 
-    def test_failure_patch(self):
-        self.setup_step(PushCommitToWebKitRepo())
-        self.setProperty('remote', 'origin')
-        self.setProperty('patch_id', '2345')
-        self.setProperty('retry_count', PushCommitToWebKitRepo.MAX_RETRY)
-        self.expectRemoteCommands(
-            ExpectShell(workdir='wkdir',
-                        timeout=300,
-                        log_environ=False,
-                        env=dict(GIT_USER='webkit-commit-queue', GIT_PASSWORD='password'),
-                        command=['git', 'push', 'origin', 'HEAD:main'])
-            .log('stdio', stdout='Unexpected failure')
-            .exit(2),
-        )
-        self.expect_outcome(result=FAILURE, state_string='Failed to push commit to Webkit repository')
-        with current_hostname(EWS_BUILD_HOSTNAMES[0]):
-            rc = self.run_step()
-        self.expect_property('build_finish_summary', 'Failed to commit to WebKit repository')
-        self.expect_property('comment_text', 'commit-queue failed to commit attachment 2345 to WebKit repository. To retry, please set cq+ flag again.')
-        return rc
 
     def test_failure_pr(self):
         self.setup_step(PushCommitToWebKitRepo())
@@ -8311,48 +8740,6 @@ class TestDetermineLandedIdentifier(BuildStepMixinAdditions, unittest.TestCase):
         self.expect_property('comment_text', 'Committed ? (5dc27962b4c5): <https://commits.webkit.org/5dc27962b4c5>\n\nReviewed commits have been landed. Closing PR #1234 and removing active labels.')
         self.expect_property('build_summary', 'Committed 5dc27962b4c5')
 
-    @defer.inlineCallbacks
-    def test_success_patch(self):
-        with self.mock_commits_webkit_org(identifier='220797@main'), self.mock_sleep():
-            self.setup_step(DetermineLandedIdentifier())
-            self.setProperty('landed_hash', '5dc27962b4c5')
-            self.setProperty('patch_id', '1234')
-            self.expectRemoteCommands(
-                ExpectShell(workdir='wkdir',
-                            timeout=300,
-                            log_environ=False,
-                            command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log -1 --format=%B | sed 's/^Canonical link:/Canonical-link:/' | git -c trailer.Canonical-link.key=Canonical-link -c trailer.Identifier.key=Identifier -c trailer.git-svn-id.key=git-svn-id interpret-trailers --parse --no-divider | grep 'Canonical-link: https://commits\\.webkit\\.org/'"])
-                .log('stdio', stdout='')
-                .exit(1),
-            )
-            self.expect_outcome(result=SUCCESS, state_string='Identifier: 220797@main')
-            with current_hostname(EWS_BUILD_HOSTNAMES[0]):
-                yield self.run_step()
-
-        self.expect_property('comment_text', 'Committed 220797@main (5dc27962b4c5): <https://commits.webkit.org/220797@main>\n\nAll reviewed patches have been landed. Closing bug and clearing flags on attachment 1234.')
-        self.expect_property('build_summary', 'Committed 220797@main')
-
-    @defer.inlineCallbacks
-    def test_patch_no_identifier(self):
-        with self.mock_commits_webkit_org(), self.mock_sleep():
-            self.setup_step(DetermineLandedIdentifier())
-            self.setProperty('landed_hash', '5dc27962b4c5')
-            self.setProperty('patch_id', '1234')
-            self.expectRemoteCommands(
-                ExpectShell(workdir='wkdir',
-                            timeout=300,
-                            log_environ=False,
-                            command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log -1 --format=%B | sed 's/^Canonical link:/Canonical-link:/' | git -c trailer.Canonical-link.key=Canonical-link -c trailer.Identifier.key=Identifier -c trailer.git-svn-id.key=git-svn-id interpret-trailers --parse --no-divider | grep 'Canonical-link: https://commits\\.webkit\\.org/'"])
-                .log('stdio', stdout='')
-                .exit(1),
-            )
-            self.expect_outcome(result=FAILURE, state_string='Failed to determine identifier')
-            with current_hostname(EWS_BUILD_HOSTNAMES[0]):
-                yield self.run_step()
-
-        self.expect_property('comment_text', 'Committed ? (5dc27962b4c5): <https://commits.webkit.org/5dc27962b4c5>\n\nAll reviewed patches have been landed. Closing bug and clearing flags on attachment 1234.')
-        self.expect_property('build_summary', 'Committed 5dc27962b4c5')
-
 
 class TestCheckOutSource(BuildStepMixinAdditions, unittest.TestCase):
     ENV = dict(GIT_USER='webkit-commit-queue', GIT_PASSWORD='password')
@@ -8587,6 +8974,84 @@ class TestCheckOutSource(BuildStepMixinAdditions, unittest.TestCase):
         return self.run_step()
 
 
+class TestShowWebKitVersion(BuildStepMixinAdditions, unittest.TestCase):
+    def setUp(self):
+        self.longMessage = True
+        return self.setup_test_build_step()
+
+    def tearDown(self):
+        return self.tear_down_test_build_step()
+
+    def configureStep(self, platform):
+        self.setup_step(ShowWebKitVersion())
+        self.setProperty('platform', platform)
+
+    def test_version_for_wpe(self):
+        self.configureStep('wpe')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        timeout=60,
+                        log_environ=False,
+                        command=['grep', 'SET_PROJECT_VERSION', 'Source/cmake/OptionsWPE.cmake'])
+            .log('stdio', stdout='SET_PROJECT_VERSION(2 53 3)\n')
+            .exit(0),
+        )
+        # GLibPort uploads the port release rather than the OS version, and drops the micro version.
+        self.expect_outcome(result=SUCCESS, state_string='WebKit version: 2.53')
+        rc = self.run_step()
+        self.expect_property('webkit_version', '2.53')
+        return rc
+
+    def test_version_for_gtk(self):
+        self.configureStep('gtk')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        timeout=60,
+                        log_environ=False,
+                        command=['grep', 'SET_PROJECT_VERSION', 'Source/cmake/OptionsGTK.cmake'])
+            .log('stdio', stdout='SET_PROJECT_VERSION(2 48 0)\n')
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='WebKit version: 2.48')
+        rc = self.run_step()
+        self.expect_property('webkit_version', '2.48')
+        return rc
+
+    def test_a_missing_options_file_does_not_fail_the_build(self):
+        # grep exits 1 when there is nothing to find, so the step reports that honestly. The version
+        # is best effort, so flunkOnFailure keeps it off the build's verdict.
+        self.configureStep('gtk')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        timeout=60,
+                        log_environ=False,
+                        command=['grep', 'SET_PROJECT_VERSION', 'Source/cmake/OptionsGTK.cmake'])
+            .exit(1),
+        )
+        self.expect_outcome(result=FAILURE, state_string='Failed to find WebKit version')
+        rc = self.run_step()
+        self.assertIsNone(self.get_nth_step(0).getProperty('webkit_version'))
+        self.assertFalse(ShowWebKitVersion.flunkOnFailure)
+        self.assertFalse(ShowWebKitVersion.haltOnFailure)
+        return rc
+
+    def test_the_step_is_skipped_on_a_platform_that_has_no_project_version(self):
+        # Only the GLib ports keep a version in the checkout, and doStepIf decides that. It is also
+        # called from hideStepIf, so anything it raises surfaces as a buildbot error, not a red step.
+        self.configureStep('mac')
+        self.expectRemoteCommands()
+        self.expect_outcome(result=SKIPPED, state_string='Failed to find WebKit version')
+        rc = self.run_step()
+        self.assertIsNone(self.get_nth_step(0).getProperty('webkit_version'))
+        return rc
+
+    def test_apple_platforms_do_not_run_it(self):
+        self.configureStep('mac')
+        self.expectRemoteCommands()
+        self.expect_outcome(result=SKIPPED)
+        return self.run_step()
+
+
 class TestShowIdentifier(BuildStepMixinAdditions, unittest.TestCase):
     class MockPreviousStep(object):
         def __init__(self):
@@ -8604,6 +9069,63 @@ class TestShowIdentifier(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
+    def test_records_commit_timestamp(self):
+        previous_steps = {
+            CheckOutSpecificRevision.name: self.MockPreviousStep(),
+            CheckOutSource.name: self.MockPreviousStep(),
+        }
+        ShowIdentifier.getLastBuildStepByName = lambda _, name: previous_steps.get(name, self.MockPreviousStep())
+        self.setup_step(ShowIdentifier())
+        self.setProperty('ews_revision', '51a6aec9f664')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        timeout=300,
+                        log_environ=False,
+                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664', '--json'])
+            .log('stdio', stdout=json.dumps({'identifier': '233175@main', 'timestamp': 1599031200}))
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Identifier: 233175@main')
+        rc = self.run_step()
+        self.expect_property('identifier', '233175@main')
+        self.expect_property('commit_timestamp', 1599031200)
+        return rc
+
+    def test_no_commit_timestamp_when_absent(self):
+        ShowIdentifier.getLastBuildStepByName = lambda _, name: self.MockPreviousStep()
+        self.setup_step(ShowIdentifier())
+        self.setProperty('ews_revision', '51a6aec9f664')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        timeout=300,
+                        log_environ=False,
+                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664', '--json'])
+            .log('stdio', stdout=json.dumps({'identifier': '233175@main'}))
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Identifier: 233175@main')
+        rc = self.run_step()
+        self.assertIsNone(self.get_nth_step(0).getProperty('commit_timestamp'))
+        return rc
+
+    def test_output_that_is_not_json_does_not_fail_the_step(self):
+        ShowIdentifier.getLastBuildStepByName = lambda _, name: self.MockPreviousStep()
+        self.setup_step(ShowIdentifier())
+        self.setProperty('ews_revision', '51a6aec9f664')
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        timeout=300,
+                        log_environ=False,
+                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664', '--json'])
+            .log('stdio', stdout='Identifier: 233175@main\n')
+            .exit(0),
+        )
+        self.expect_outcome(result=SUCCESS, state_string='Failed to find identifier')
+        rc = self.run_step()
+        self.assertIsNone(self.get_nth_step(0).getProperty('identifier'))
+        self.assertIsNone(self.get_nth_step(0).getProperty('commit_timestamp'))
+        return rc
+
     @expectedFailure
     def test_success(self):
         previous_steps = {
@@ -8617,8 +9139,8 @@ class TestShowIdentifier(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         timeout=300,
                         log_environ=False,
-                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664'])
-            .log('stdio', stdout='Identifier: 233175@main\n')
+                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664', '--json'])
+            .log('stdio', stdout=json.dumps({'identifier': '233175@main'}))
             .exit(0),
         )
         self.expect_outcome(result=SUCCESS, state_string='Identifier: 233175@main')
@@ -8643,8 +9165,8 @@ class TestShowIdentifier(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         timeout=300,
                         log_environ=False,
-                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664'])
-            .log('stdio', stdout='Identifier: 233175@main\n')
+                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664', '--json'])
+            .log('stdio', stdout=json.dumps({'identifier': '233175@main'}))
             .exit(0),
         )
         self.expect_outcome(result=SUCCESS, state_string='Identifier: 233175@main')
@@ -8664,8 +9186,8 @@ class TestShowIdentifier(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         timeout=300,
                         log_environ=False,
-                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664'])
-            .log('stdio', stdout='Identifier: 233175@main\n')
+                        command=['python3', 'Tools/Scripts/git-webkit', 'find', '51a6aec9f664', '--json'])
+            .log('stdio', stdout=json.dumps({'identifier': '233175@main'}))
             .exit(0),
         )
         self.expect_outcome(result=SUCCESS, state_string='Identifier: 233175@main')
@@ -8679,7 +9201,7 @@ class TestShowIdentifier(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         timeout=300,
                         log_environ=False,
-                        command=['python3', 'Tools/Scripts/git-webkit', 'find', 'HEAD'])
+                        command=['python3', 'Tools/Scripts/git-webkit', 'find', 'HEAD', '--json'])
             .log('stdio', stdout='Unexpected failure')
             .exit(2),
         )
@@ -8906,9 +9428,8 @@ class TestValidateRemote(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_patch(self):
+    def test_no_pull_request(self):
         self.setup_step(ValidateRemote())
-        self.setProperty('patch_id', '1234')
         self.expect_outcome(result=SKIPPED, state_string='finished (skipped)')
         return self.run_step()
 
@@ -8960,9 +9481,8 @@ class TestMapBranchAlias(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_patch(self):
+    def test_no_pull_request(self):
         self.setup_step(MapBranchAlias())
-        self.setProperty('patch_id', '1234')
         self.expect_outcome(result=SKIPPED, state_string='finished (skipped)')
         return self.run_step()
 
@@ -9350,36 +9870,6 @@ class TestValidateSquashed(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_patch(self):
-        self.setup_step(ValidateSquashed())
-        self.setProperty('patch_id', '1234')
-        self.expectRemoteCommands(
-            ExpectShell(workdir='wkdir',
-                        log_environ=False,
-                        command=['git', 'log', '--format=format:%H', 'HEAD', '^origin/main', '--max-count=51'],
-                        )
-            .exit(0)
-            .log('stdio', stdout='e1eb24603493\n'),
-        )
-        self.expect_outcome(result=SUCCESS, state_string='Verified commit is squashed')
-        return self.run_step()
-
-    def test_failure_patch(self):
-        self.setup_step(ValidateSquashed())
-        self.setProperty('patch_id', '1234')
-        self.expectRemoteCommands(
-            ExpectShell(workdir='wkdir',
-                        log_environ=False,
-                        command=['git', 'log', '--format=format:%H', 'HEAD', '^origin/main', '--max-count=51'],
-                        )
-            .exit(0)
-            .log('stdio', stdout='e1eb24603493\n08abb9ddcbb5\n45cf3efe4dfb\n'),
-        )
-        self.expect_outcome(result=FAILURE, state_string='Can only land squashed commits')
-        rc = self.run_step()
-        self.expect_property('comment_text', 'This change contains multiple commits which are not squashed together, rejecting attachment 1234 from commit queue. Please squash the commits to land.')
-        self.expect_property('build_finish_summary', 'Can only land squashed commits')
-        return rc
 
     def test_success(self):
         self.setup_step(ValidateSquashed())
@@ -9491,9 +9981,8 @@ class TestAddReviewerToCommitMessage(BuildStepMixinAdditions, unittest.TestCase)
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_skipped_patch(self):
+    def test_skipped_no_pull_request(self):
         self.setup_step(AddReviewerToCommitMessage())
-        self.setProperty('patch_id', '1234')
         self.expect_outcome(result=SKIPPED, state_string='Skipped because there are no valid reviewers')
         return self.run_step()
 
@@ -9624,13 +10113,13 @@ class TestValidateCommitMessage(BuildStepMixinAdditions, unittest.TestCase):
                         log_environ=False,
                         timeout=60,
                         command=['/bin/bash', '--posix', '-o', 'pipefail', '-c',
-                                 "git log --format=%B eng/pull-request-branch ^main > commit_msg.txt; grep -q '^\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\|Unreviewed\\|Versioning.\\)' commit_msg.txt || echo 'No reviewer information in commit message';"])
+                                 "git log --format=%B eng/pull-request-branch ^main > commit_msg.txt; grep -q '^[[:space:]]*\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\|Unreviewed\\|Versioning.\\)' commit_msg.txt || echo 'No reviewer information in commit message';"])
             .exit(0),
             ExpectShell(workdir='wkdir',
                         log_environ=False,
                         timeout=60,
                         command=['/bin/bash', '--posix', '-o', 'pipefail', '-c',
-                                 "git log --format=%B eng/pull-request-branch ^main | grep '^\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\)' || true"])
+                                 "git log --format=%B eng/pull-request-branch ^main | grep '^[[:space:]]*\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\)' || true"])
             .exit(0)
             .log('stdio', stdout=expected_remote_command_output),
         )
@@ -9649,9 +10138,8 @@ class TestValidateCommitMessage(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_patch(self):
+    def test_no_pull_request(self):
         self.setup_step(ValidateCommitMessage())
-        self.setProperty('patch_id', '1234')
         self.expectRemoteCommands(
             ExpectShell(workdir='wkdir',
                         log_environ=False,
@@ -9666,12 +10154,12 @@ class TestValidateCommitMessage(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         log_environ=False,
                         timeout=60,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log --format=%B HEAD ^origin/main > commit_msg.txt; grep -q '^\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\|Unreviewed\\|Versioning.\\)' commit_msg.txt || echo 'No reviewer information in commit message';"])
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log --format=%B HEAD ^origin/main > commit_msg.txt; grep -q '^[[:space:]]*\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\|Unreviewed\\|Versioning.\\)' commit_msg.txt || echo 'No reviewer information in commit message';"])
             .exit(0),
             ExpectShell(workdir='wkdir',
                         log_environ=False,
                         timeout=60,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log --format=%B HEAD ^origin/main | grep '^\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\)' || true"])
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log --format=%B HEAD ^origin/main | grep '^[[:space:]]*\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\)' || true"])
             .exit(0)
             .log('stdio', stdout='Reviewed by WebKit Reviewer.\n'),
         )
@@ -9683,6 +10171,15 @@ class TestValidateCommitMessage(BuildStepMixinAdditions, unittest.TestCase):
         ValidateCommitMessage._files = lambda x: ['+++ Tools/CISupport/ews-build/steps.py']
         self.setUpCommonProperties()
         expected_remote_command_output = 'Reviewed by WebKit Reviewer.\n'
+        self.expectCommonRemoteCommandsWithOutput(expected_remote_command_output)
+        self.expect_outcome(result=SUCCESS, state_string='Validated commit message')
+        return self.run_step()
+
+    def test_success_indented_cherry_pick(self):
+        self.setup_step(ValidateCommitMessage())
+        ValidateCommitMessage._files = lambda x: ['+++ Tools/CISupport/ews-build/steps.py']
+        self.setUpCommonProperties()
+        expected_remote_command_output = '    Reviewed by WebKit Reviewer.\n'
         self.expectCommonRemoteCommandsWithOutput(expected_remote_command_output)
         self.expect_outcome(result=SUCCESS, state_string='Validated commit message')
         return self.run_step()
@@ -9733,12 +10230,12 @@ class TestValidateCommitMessage(BuildStepMixinAdditions, unittest.TestCase):
             ExpectShell(workdir='wkdir',
                         log_environ=False,
                         timeout=60,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log --format=%B eng/pull-request-branch ^main > commit_msg.txt; grep -q '^\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\|Unreviewed\\|Versioning.\\)' commit_msg.txt || echo 'No reviewer information in commit message';"])
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log --format=%B eng/pull-request-branch ^main > commit_msg.txt; grep -q '^[[:space:]]*\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\|Unreviewed\\|Versioning.\\)' commit_msg.txt || echo 'No reviewer information in commit message';"])
             .exit(0),
             ExpectShell(workdir='wkdir',
                         log_environ=False,
                         timeout=60,
-                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log --format=%B eng/pull-request-branch ^main | grep '^\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\)' || true"])
+                        command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', "git log --format=%B eng/pull-request-branch ^main | grep '^[[:space:]]*\\(Reviewed by\\|Rubber-stamped by\\|Rubber stamped by\\)' || true"])
             .exit(0)
             .log('stdio', stdout='Reviewed by Myles C. Maxfield.\n'),
         )
@@ -9869,59 +10366,6 @@ class TestCanonicalize(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_patch(self):
-        self.setup_step(Canonicalize())
-        self.setProperty('patch_id', '1234')
-        self.setProperty('patch_committer', 'committer@webkit.org')
-        self.setProperty('remote', 'origin')
-
-        gmtoffset = int(time.localtime().tm_gmtoff * 100 / (60 * 60))
-        fixed_time = int(time.time())
-        date = f'{int(time.time())} {gmtoffset}'
-        time.time = lambda: fixed_time
-
-        self.expectRemoteCommands(
-            ExpectShell(
-                workdir='wkdir',
-                timeout=300,
-                log_environ=False,
-                env=self.ENV,
-                command=['/bin/bash', '--posix', '-o', 'pipefail', '-c', 'rm .git/identifiers.json || true'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=300,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'pull', 'origin', 'main', '--rebase'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=300,
-                log_environ=False,
-                env=self.ENV,
-                command=['git', 'checkout', '--progress', 'main'],
-            ).exit(0),
-            ExpectShell(
-                workdir='wkdir',
-                timeout=300,
-                log_environ=False,
-                env=self.ENV,
-                command=['python3', 'Tools/Scripts/git-webkit', 'canonicalize', '-n', '1'],
-            ).exit(0),
-            ExpectShell(workdir='wkdir',
-                        log_environ=False,
-                        env=self.ENV,
-                        timeout=300,
-                        command=[
-                            'git', 'filter-branch', '-f',
-                            '--env-filter', "GIT_AUTHOR_DATE='{date}';GIT_COMMITTER_DATE='{date}';GIT_COMMITTER_NAME='WebKit Committer';GIT_COMMITTER_EMAIL='committer@webkit.org'".format(date=date),
-                            'HEAD...HEAD~1',
-                        ],
-                        ).exit(0),
-        )
-        self.expect_outcome(result=SUCCESS, state_string='Canonicalized commit')
-        return self.run_step()
 
     def test_success(self):
         self.setup_step(Canonicalize())
@@ -10212,9 +10656,8 @@ class TestPushPullRequestBranch(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_skipped_patch(self):
+    def test_skipped_no_pull_request(self):
         self.setup_step(PushPullRequestBranch())
-        self.setProperty('patch_id', '1234')
         self.expect_outcome(result=SKIPPED, state_string='finished (skipped)')
         return self.run_step()
 
@@ -10307,9 +10750,8 @@ class TestUpdatePullRequest(BuildStepMixinAdditions, unittest.TestCase):
     def tearDown(self):
         return self.tear_down_test_build_step()
 
-    def test_skipped_patch(self):
+    def test_skipped_no_pull_request(self):
         self.setup_step(UpdatePullRequest())
-        self.setProperty('patch_id', '1234')
         self.expect_outcome(result=SKIPPED, state_string="'git log ...' (skipped)")
         return self.run_step()
 
@@ -11449,6 +11891,68 @@ class TestFindUnexpectedStaticAnalyzerResults(BuildStepMixinAdditions, unittest.
         self.assertEqual([], next_steps)
         return rc
 
+    def configureResultsDatabase(self, rows_by_test):
+        self.patch(FindUnexpectedStaticAnalyzerResults, 'filter_results_using_results_db', REAL_FILTER_RESULTS_USING_RESULTS_DB)
+        self.patch(FindUnexpectedStaticAnalyzerResults, 'write_unexpected_results_file_to_master', REAL_WRITE_UNEXPECTED_RESULTS_FILE_TO_MASTER)
+        self.patch(ResultsDatabase, 'has_commit', classmethod(lambda cls, commit=None: defer.succeed(True)))
+
+        def fake_get_results(cls, suite, test=None, commit=None, configuration=None, logger=None):
+            if test is None:
+                return defer.succeed([{'results': [{'actual': 'FAIL'}]}])
+            return defer.succeed(rows_by_test.get(test, []))
+
+        self.patch(ResultsDatabase, 'get_results', classmethod(fake_get_results))
+
+    def expectCheckExpectationsCommand(self, stdout):
+        self.expectRemoteCommands(
+            ExpectShell(workdir='wkdir',
+                        log_environ=False,
+                        logfiles={'json': self.jsonFileName},
+                        command=['python3', 'Tools/Scripts/compare-static-analysis-results', 'wkdir/build/new', '--build-output', SCAN_BUILD_OUTPUT_DIR, '--check-expectations', '--platform', 'mac'],
+                        env={'RESULTS_SERVER_API_KEY': 'test-api-key'})
+            .log('stdio', stdout=stdout)
+            .exit(0),
+        )
+
+    @defer.inlineCallbacks
+    def test_no_results_db_data_rebuilds_without_change(self):
+        self.configureStep(True)
+        FindUnexpectedStaticAnalyzerResults.decode_results_data = lambda self: {'passes': {'WebCore': {'UncountedCallArgsChecker': []}}, 'failures': {'WebCore': {'UncountedCallArgsChecker': ['Modules/webtransport/DatagramSink.cpp']}}}
+        self.configureResultsDatabase({})
+        next_steps = []
+        self.patch(self.build, 'addStepsAfterCurrentStep', lambda s: next_steps.extend(s))
+        self.expectCheckExpectationsCommand('Total unexpected issues: 1\nTotal unexpected failing files: 1\n')
+        self.expect_outcome(result=SUCCESS, state_string='1 new issue 1 failing file ')
+        with current_hostname(EWS_BUILD_HOSTNAMES[0]):
+            yield self.run_step()
+        self.assertEqual([ValidateChange(verifyBugClosed=False, addURLs=False), RevertAppliedChanges(exclude=['new*', 'scan-build-output*']), ScanBuildWithoutChange()], next_steps)
+
+    @defer.inlineCallbacks
+    def test_no_results_db_data_for_failures_escalates_despite_empty_passes(self):
+        self.configureStep(True)
+        FindUnexpectedStaticAnalyzerResults.decode_results_data = lambda self: {'passes': {}, 'failures': {'WebCore': {'UncountedCallArgsChecker': ['Modules/webtransport/DatagramSink.cpp']}}}
+        self.configureResultsDatabase({})
+        next_steps = []
+        self.patch(self.build, 'addStepsAfterCurrentStep', lambda s: next_steps.extend(s))
+        self.expectCheckExpectationsCommand('Total unexpected issues: 1\nTotal unexpected failing files: 1\n')
+        self.expect_outcome(result=SUCCESS, state_string='1 new issue 1 failing file ')
+        with current_hostname(EWS_BUILD_HOSTNAMES[0]):
+            yield self.run_step()
+        self.assertEqual([ValidateChange(verifyBugClosed=False, addURLs=False), RevertAppliedChanges(exclude=['new*', 'scan-build-output*']), ScanBuildWithoutChange()], next_steps)
+
+    @defer.inlineCallbacks
+    def test_pre_existing_failure_is_filtered_without_rebuilding(self):
+        self.configureStep(True)
+        FindUnexpectedStaticAnalyzerResults.decode_results_data = lambda self: {'passes': {'WebCore': {'UncountedCallArgsChecker': []}}, 'failures': {'WebCore': {'UncountedCallArgsChecker': ['Modules/webtransport/DatagramSink.cpp']}}}
+        self.configureResultsDatabase({'WebCore/Modules/webtransport/DatagramSink.cpp/UncountedCallArgsChecker': [{'results': [{'actual': 'FAIL'}]}]})
+        next_steps = []
+        self.patch(self.build, 'addStepsAfterCurrentStep', lambda s: next_steps.extend(s))
+        self.expectCheckExpectationsCommand('Total unexpected issues: 1\nTotal unexpected failing files: 1\n')
+        self.expect_outcome(result=SUCCESS, state_string='Found no unexpected results')
+        with current_hostname(EWS_BUILD_HOSTNAMES[0]):
+            yield self.run_step()
+        self.assertEqual([], next_steps)
+
 
 class TestDownloadUnexpectedResultsfromMaster(BuildStepMixinAdditions, unittest.TestCase):
     READ_LIMIT = 1000
@@ -11909,23 +12413,113 @@ class TestResultsDatabaseFailureHandling(unittest.TestCase):
             result = yield ResultsDatabase.make_request('results-summary', suite='layout-tests', test='foo')
         self.assertEqual(result, {'pass': 95})
 
+    COMPLETE_CONFIGURATION = {'platform': 'mac', 'version': '14.6.1', 'is_simulator': False, 'architecture': 'arm64'}
+    REPORTED_RESULTS = {'fast/b.html': {'actual': 'TEXT'}, 'fast/a.html': {'actual': 'CRASH'}}
+    REPORTED_COMMITS = [{'repository_id': 'webkit', 'hash': 'def456', 'branch': 'main', 'timestamp': 1599000000}]
+
     @defer.inlineCallbacks
-    def test_does_result_match_returns_none_on_request_failure_even_with_default(self):
+    def report_ews(self, response, flaky_type='WithinStepDirtyTree'):
+        logs = []
+        with self._mock_twisted_request(response):
+            reported = yield ResultsDatabase.report_ews(
+                suite='layout-tests', results=self.REPORTED_RESULTS, flaky_type=flaky_type,
+                configuration=self.COMPLETE_CONFIGURATION, commits=self.REPORTED_COMMITS,
+                timestamp=1600000000, details={'stage': 'first-run'},
+                logger=lambda log: logs.append(log),
+            )
+        return (reported, ''.join(logs))
+
+    @defer.inlineCallbacks
+    def test_report_ews_labels_non_flaky_failures(self):
+        reported, logs = yield self.report_ews(
+            self._ok_response({'status': 'ok', 'tests': ['fast/a.html', 'fast/b.html']}),
+            flaky_type=None,
+        )
+        self.assertTrue(reported)
+        self.assertIn('Reported failed tests: fast/a.html, fast/b.html', logs)
+
+    @defer.inlineCallbacks
+    def test_report_ews_logs_the_request_without_the_api_key(self):
+        with patch.dict(os.environ, {'RESULTS_SERVER_API_KEY': 'super-secret'}):
+            reported, logs = yield self.report_ews(self._ok_response({
+                'status': 'ok', 'tests': ['fast/a.html', 'fast/b.html'],
+            }))
+        self.assertTrue(reported)
+        self.assertIn('"api_key": "<redacted>"', logs)
+        self.assertNotIn('super-secret', logs)
+        self.assertIn('"suite": "layout-tests"', logs)
+        self.assertIn('(200):', logs)
+
+    @defer.inlineCallbacks
+    def test_report_ews_logs_the_tests_the_server_stored(self):
+        reported, logs = yield self.report_ews(self._ok_response({
+            'status': 'ok', 'tests': ['fast/b.html', 'fast/a.html'],
+        }))
+        self.assertTrue(reported)
+        self.assertIn('Reported WithinStepDirtyTree flaky tests: fast/a.html, fast/b.html', logs)
+
+    @defer.inlineCallbacks
+    def test_report_ews_reports_tests_the_server_dropped(self):
+        reported, logs = yield self.report_ews(self._ok_response({'status': 'ok', 'tests': ['fast/a.html']}))
+        self.assertFalse(reported)
+        self.assertIn('Reported WithinStepDirtyTree flaky tests: fast/a.html', logs)
+        self.assertIn('did not store fast/b.html', logs)
+
+    @defer.inlineCallbacks
+    def test_report_ews_does_not_raise_on_a_body_that_is_not_json(self):
+        reported, logs = yield self.report_ews(TwistedAdditions.Response(status_code=200, content=b''))
+        self.assertFalse(reported)
+        self.assertIn('not JSON', logs)
+
+    @defer.inlineCallbacks
+    def test_report_ews_does_not_claim_a_write_a_silent_server_cannot_confirm(self):
+        reported, logs = yield self.report_ews(self._ok_response({'status': 'ok'}))
+        self.assertTrue(reported)
+        self.assertIn('does not report which tests', logs)
+        self.assertNotIn('Reported WithinStepDirtyTree flaky tests:', logs)
+
+    @defer.inlineCallbacks
+    def test_report_ews_does_not_claim_success_when_the_server_rejects_the_write(self):
+        reported, logs = yield self.report_ews(TwistedAdditions.Response(
+            status_code=400,
+            content=json.dumps({
+                'description': 'Cannot insert to ews_flakes_by_start_time with a partial configuration',
+                'error': 'Bad Request', 'status': 'error',
+            }).encode('utf-8'),
+        ))
+        self.assertFalse(reported)
+        self.assertIn('Failed to report WithinStepDirtyTree flaky tests (status 400)', logs)
+        self.assertIn('Cannot insert to ews_flakes_by_start_time', logs)
+        self.assertNotIn('Reported WithinStepDirtyTree flaky tests:', logs)
+
+    @defer.inlineCallbacks
+    def test_does_result_match_returns_none_on_request_failure(self):
         with self._mock_twisted_request(None):
             result = yield ResultsDatabase.does_result_match(
                 'JavaScriptCore/b3/air/AirAllocateStackByGraphColoring.cpp/NoDeleteChecker',
-                result_type='FAIL', suite='safer-cpp-checks', default='PASS',
+                result_type='FAIL', suite='safer-cpp-checks',
             )
         self.assertIsNone(result)
 
     @defer.inlineCallbacks
-    def test_does_result_match_uses_default_on_empty_success(self):
+    def test_does_result_match_returns_none_when_there_is_no_result_for_the_test(self):
         with self._mock_twisted_request(self._ok_response([])):
             result = yield ResultsDatabase.does_result_match(
-                'foo.cpp/Checker', result_type='FAIL', suite='safer-cpp-checks', default='PASS',
+                'foo.cpp/Checker', result_type='FAIL', suite='safer-cpp-checks',
             )
-        self.assertIsNotNone(result)
-        self.assertFalse(result['does_result_match'])
+        self.assertIsNone(result)
+
+    @defer.inlineCallbacks
+    def test_does_result_match_compares_a_real_result(self):
+        with self._mock_twisted_request(self._ok_response([{'results': [{'actual': 'FAIL'}]}])):
+            failing = yield ResultsDatabase.does_result_match(
+                'foo.cpp/Checker', result_type='FAIL', suite='safer-cpp-checks',
+            )
+            passing = yield ResultsDatabase.does_result_match(
+                'foo.cpp/Checker', result_type='PASS', suite='safer-cpp-checks',
+            )
+        self.assertTrue(failing['does_result_match'])
+        self.assertFalse(passing['does_result_match'])
 
     @defer.inlineCallbacks
     def test_is_test_pre_existing_failure_flags_request_failure(self):
@@ -11944,3 +12538,390 @@ class TestResultsDatabaseFailureHandling(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestIsTestFlakyClassifier(unittest.TestCase):
+    def _response(self, rows=None):
+        # rows=None simulates the find endpoint's 404 (no results for this test in that table).
+        if rows is None:
+            return TwistedAdditions.Response(status_code=404)
+        payload = [{'test': 'layout/test.html', 'configuration': {}, 'results': rows}]
+        return TwistedAdditions.Response(status_code=200, content=json.dumps(payload).encode('utf-8'))
+
+    def _flaky_row(self, flaky_type, build_url=None, pr_number=None, authors=None):
+        return {'flaky_type': flaky_type, 'details': {
+            'build_url': build_url, 'pr_number': pr_number, 'authors': authors or [],
+        }}
+
+    def _failed_row(self, pr_number=None, authors=None, build_url=None):
+        return {'details': {'pr_number': pr_number, 'authors': authors or [], 'build_url': build_url}}
+
+    def _mock(self, flaky_response, failed_response):
+        # The flaky table is asked first, then the failed one; route on which table was requested.
+        def fake_request(*args, **kwargs):
+            params = kwargs.get('params') or {}
+            return defer.succeed(flaky_response if params.get('flaky') == 'true' else failed_response)
+        return patch('ews-build.results_db.TwistedAdditions.request', fake_request)
+
+    @defer.inlineCallbacks
+    def test_a_clean_tree_flake_is_flaky(self):
+        flaky = self._response(rows=[self._flaky_row('WithinStepCleanTree', build_url='https://build/1/builds/7')])
+        with self._mock(flaky, self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            result = verdicts['layout/test.html']
+            self.assertEqual(result.flaky_type, 'CleanTree')
+            self.assertEqual(result.build_urls, {'https://build/1/builds/7'})
+
+    @defer.inlineCallbacks
+    def test_two_dirty_tree_pull_requests_is_flaky(self):
+        rows = [
+            self._flaky_row('WithinStepDirtyTree', build_url=f'https://build/1/builds/{n}', pr_number=n, authors=[author])
+            for n, author in enumerate(['alice', 'bob'], start=1)
+        ]
+        with self._mock(self._response(rows=rows), self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            result = verdicts['layout/test.html']
+            self.assertEqual(result.flaky_type, 'DirtyTree')
+            self.assertEqual(result.pr_numbers, {1, 2})
+            self.assertEqual(result.authors, {'alice', 'bob'})
+            self.assertEqual(result.build_urls, {'https://build/1/builds/1', 'https://build/1/builds/2'})
+
+    @defer.inlineCallbacks
+    def test_retrying_one_pull_request_does_not_excuse_its_own_failure(self):
+        # build_url carries the build number, so an EWS retry is a distinct build.
+        rows = [
+            self._flaky_row('WithinStepDirtyTree', build_url=f'https://build/1/builds/{n}', pr_number=99, authors=['alice'])
+            for n in range(1, 6)
+        ]
+        with self._mock(self._response(rows=rows), self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            self.assertFalse(verdicts['layout/test.html'].is_flaky)
+
+    @defer.inlineCallbacks
+    def test_a_missing_pull_request_is_not_a_second_pull_request(self):
+        rows = [
+            self._flaky_row('WithinStepDirtyTree', build_url='https://build/1/builds/1', pr_number=1, authors=['alice']),
+            self._flaky_row('WithinStepDirtyTree', build_url='https://build/1/builds/2', authors=['bob']),
+        ]
+        with self._mock(self._response(rows=rows), self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            self.assertFalse(verdicts['layout/test.html'].is_flaky)
+
+    @defer.inlineCallbacks
+    def test_a_single_author_across_two_pull_requests_is_not_flaky(self) -> Generator[Any, Any, None]:
+        # A stack of pull requests is one author's work, so the parent commit's own regression must
+        # not excuse itself: a build's first run writes rows its own re-run then reads.
+        rows = [
+            self._flaky_row('WithinStepDirtyTree', build_url=f'https://build/1/builds/{n}', pr_number=n, authors=['alice'])
+            for n in range(1, 4)
+        ]
+        with self._mock(self._response(rows=rows), self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            self.assertFalse(verdicts['layout/test.html'].is_flaky)
+
+    @defer.inlineCallbacks
+    def test_dirty_tree_pull_requests_with_no_author_not_flaky(self):
+        rows = [
+            self._flaky_row('WithinStepDirtyTree', build_url=f'https://build/1/builds/{n}', pr_number=n)
+            for n in range(1, 4)
+        ]
+        with self._mock(self._response(rows=rows), self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            self.assertFalse(verdicts['layout/test.html'].is_flaky)
+
+    @defer.inlineCallbacks
+    def test_a_row_recording_no_flakiness_at_all_is_ignored(self):
+        # flaky_type is required in the flaky table, so a null means malformed data.
+        rows = [
+            self._flaky_row(None, build_url='https://build/1/builds/1'),
+            self._flaky_row('SomethingNewerReports', build_url='https://build/1/builds/2'),
+        ]
+        with self._mock(self._response(rows=rows), self._response()):
+            verdicts, logs = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+
+        self.assertFalse(verdicts['layout/test.html'].is_flaky)
+        self.assertIn('SomethingNewerReports', logs)
+
+    @defer.inlineCallbacks
+    def test_flakiness_recorded_under_an_unknown_name_is_reported(self):
+        # A results database holding a value this EWS does not know counts the row for nothing, which
+        # is what deploying the two halves out of order looks like.
+        rows = [self._flaky_row('SomethingNewerReports', build_url='https://build/1/builds/7')]
+        with self._mock(self._response(rows=rows), self._response()):
+            verdicts, logs = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+
+        self.assertFalse(verdicts['layout/test.html'].is_flaky)
+        self.assertIn('SomethingNewerReports', logs)
+
+    @defer.inlineCallbacks
+    def test_dirty_tree_same_build_deduped_not_flaky(self):
+        rows = [
+            self._flaky_row('WithinStepDirtyTree', build_url='https://build/1/builds/42', pr_number=7, authors=['alice'])
+            for _ in range(3)
+        ]
+        with self._mock(self._response(rows=rows), self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            result = verdicts['layout/test.html']
+            self.assertFalse(result.is_flaky)
+
+    @defer.inlineCallbacks
+    def test_a_verdict_records_whether_any_build_saw_the_flakiness(self):
+        failed = [self._failed_row(pr_number=n, authors=[a]) for n, a in enumerate(['alice', 'bob', 'alice'], start=1)]
+        with self._mock(self._response(), self._response(rows=failed)):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+        self.assertFalse(verdicts['layout/test.html'].intra_build_evidence)
+
+        short_of_a_verdict = [self._flaky_row('WithinStepDirtyTree', build_url='https://build/1/builds/1', pr_number=9)]
+        with self._mock(self._response(rows=short_of_a_verdict), self._response(rows=failed)):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+        self.assertTrue(verdicts['layout/test.html'].intra_build_evidence)
+
+    @defer.inlineCallbacks
+    def test_a_conviction_keeps_its_evidence_when_a_later_query_fails(self):
+        convicted = [{'test': 'a.html', 'configuration': {}, 'results': [
+            self._flaky_row('WithinStepDirtyTree', build_url='https://build/1/builds/1', pr_number=1, authors=['alice']),
+            self._flaky_row('WithinStepDirtyTree', build_url='https://build/1/builds/2', pr_number=2, authors=['bob']),
+        ]}]
+        flaky = TwistedAdditions.Response(status_code=200, content=json.dumps(convicted).encode('utf-8'))
+
+        def fake_request(*args, **kwargs):
+            if (kwargs.get('params') or {}).get('flaky') == 'true':
+                return defer.succeed(flaky)
+            return defer.succeed(TwistedAdditions.Response(status_code=500))
+
+        with patch('ews-build.results_db.TwistedAdditions.request', fake_request):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['a.html', 'b.html'], suite='layout-tests')
+
+        self.assertEqual(verdicts['a.html'].flaky_type, 'DirtyTree')
+        self.assertTrue(verdicts['a.html'].intra_build_evidence)
+        self.assertTrue(verdicts['b.html'].request_failed)
+
+    @defer.inlineCallbacks
+    def test_between_builds_reports_whether_any_build_saw_the_flakiness(self):
+        failed = [
+            self._failed_row(pr_number=n, authors=[author])
+            for n, author in enumerate(['alice', 'bob', 'alice'], start=1)
+        ]
+
+        with self._mock(self._response(), self._response(rows=failed)):
+            verdicts, logs = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+        self.assertEqual(verdicts['layout/test.html'].flaky_type, 'BetweenBuilds')
+        self.assertIn('BetweenBuilds with no within-build flakiness recorded', logs)
+        self.assertIn('layout/test.html', logs)
+
+        # One dirty-tree row is short of a verdict on its own, but it is still an inconsistency
+        # some build observed, so this conviction is not the between-builds rule acting alone.
+        short_of_a_verdict = [self._flaky_row('WithinStepDirtyTree', build_url='https://build/1/builds/1', pr_number=9)]
+        with self._mock(self._response(rows=short_of_a_verdict), self._response(rows=failed)):
+            verdicts, logs = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+        self.assertEqual(verdicts['layout/test.html'].flaky_type, 'BetweenBuilds')
+        self.assertNotIn('BetweenBuilds with no within-build flakiness recorded', logs)
+
+    @defer.inlineCallbacks
+    def test_between_builds_three_prs_two_authors_is_flaky(self):
+        rows = [
+            self._failed_row(pr_number=1, authors=['alice'], build_url='https://build/1/builds/1'),
+            self._failed_row(pr_number=2, authors=['bob'], build_url='https://build/1/builds/2'),
+            self._failed_row(pr_number=3, authors=['alice'], build_url='https://build/1/builds/3'),
+        ]
+        with self._mock(self._response(), self._response(rows=rows)):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            result = verdicts['layout/test.html']
+            self.assertEqual(result.flaky_type, 'BetweenBuilds')
+            self.assertEqual(result.pr_numbers, {1, 2, 3})
+            self.assertEqual(result.build_urls, {
+                'https://build/1/builds/1', 'https://build/1/builds/2', 'https://build/1/builds/3',
+            })
+
+    @defer.inlineCallbacks
+    def test_between_builds_too_few_prs_not_flaky(self):
+        rows = [
+            self._failed_row(pr_number=1, authors=['alice']),
+            self._failed_row(pr_number=2, authors=['bob']),
+        ]
+        with self._mock(self._response(), self._response(rows=rows)):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            result = verdicts['layout/test.html']
+            self.assertFalse(result.is_flaky)
+
+    @defer.inlineCallbacks
+    def test_between_builds_single_author_not_flaky(self):
+        # 3 PRs but all from one author-set -> fails the >=2 distinct author-sets floor.
+        rows = [self._failed_row(pr_number=n, authors=['alice']) for n in range(1, 4)]
+        with self._mock(self._response(), self._response(rows=rows)):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            result = verdicts['layout/test.html']
+            self.assertFalse(result.is_flaky)
+
+    @defer.inlineCallbacks
+    def test_no_history_not_flaky(self):
+        with self._mock(self._response(), self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+            result = verdicts['layout/test.html']
+            self.assertFalse(result.is_flaky)
+
+    @defer.inlineCallbacks
+    def test_a_body_that_is_not_a_list_of_entries_is_a_failed_query(self):
+        for content, expected in (
+            (b'<html>502 Bad Gateway</html>', 'not json'),
+            (b'{"tests": []}', 'unexpected shape'),
+            (b'["a.html"]', 'unexpected shape'),
+        ):
+            malformed = TwistedAdditions.Response(status_code=200, content=content)
+            with self._mock(malformed, self._response()):
+                verdicts, logs = yield ResultsDatabase.flaky_verdicts_for(['a.html'], suite='layout-tests')
+
+            self.assertTrue(verdicts['a.html'].request_failed, content)
+            self.assertFalse(verdicts['a.html'].is_flaky, content)
+            self.assertIn(expected, logs, content)
+
+    @defer.inlineCallbacks
+    def test_asking_about_no_tests_does_not_query(self):
+        # Every failure being pre-existing leaves nothing to classify, and the endpoint rejects a
+        # query naming no test.
+        def fail_if_called(*args, **kwargs):
+            self.fail('queried the results database with no tests')
+
+        with patch('ews-build.results_db.TwistedAdditions.request', fail_if_called):
+            verdicts, logs = yield ResultsDatabase.flaky_verdicts_for([], suite='layout-tests')
+
+        self.assertEqual(verdicts, {})
+        self.assertEqual(logs, '')
+
+    @defer.inlineCallbacks
+    def test_an_entry_naming_no_test_is_a_failed_query(self):
+        # A results database predating the batched endpoint answers without naming the test. Matching
+        # nothing, those entries would otherwise be dropped and every test would read as not flaky.
+        payload = [{'configuration': {}, 'results': [self._flaky_row('WithinStepCleanTree', build_url='build/1')]}]
+        nameless = TwistedAdditions.Response(status_code=200, content=json.dumps(payload).encode('utf-8'))
+        with self._mock(nameless, self._response()):
+            verdicts, logs = yield ResultsDatabase.flaky_verdicts_for(['a.html'], suite='layout-tests')
+
+        self.assertTrue(verdicts['a.html'].request_failed)
+        self.assertFalse(verdicts['a.html'].is_flaky)
+        self.assertIn('naming no test', logs)
+
+    @defer.inlineCallbacks
+    def test_a_batch_classifies_every_test_it_asked_about(self):
+        # Two of the three are convicted by the first table. Dropping them from the list while
+        # iterating it would skip the one in between, which would then read as not flaky.
+        rows = [
+            {'test': 'a.html', 'configuration': {}, 'results': [self._flaky_row('WithinStepCleanTree', build_url='build/1')]},
+            {'test': 'b.html', 'configuration': {}, 'results': [self._flaky_row('WithinStepCleanTree', build_url='build/2')]},
+        ]
+        flaky = TwistedAdditions.Response(status_code=200, content=json.dumps(rows).encode('utf-8'))
+        with self._mock(flaky, self._response()):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(
+                ['a.html', 'b.html', 'c.html'], suite='layout-tests',
+            )
+
+        self.assertEqual(verdicts['a.html'].flaky_type, 'CleanTree')
+        self.assertEqual(verdicts['b.html'].flaky_type, 'CleanTree')
+        self.assertFalse(verdicts['c.html'].is_flaky)
+
+    @defer.inlineCallbacks
+    def test_a_large_batch_is_split_across_requests(self):
+        tests = [f'imported/w3c/web-platform-tests/css/very/long/path/test-{n}.html' for n in range(45)]
+        captured = []
+
+        def fake_request(*args, **kwargs):
+            params = kwargs.get('params') or {}
+            captured.append(params)
+            asked = params['tests']
+            rows = [
+                {'test': test, 'configuration': {}, 'results': [self._flaky_row('WithinStepCleanTree', build_url=f'build/{test}')]}
+                for test in asked
+            ] if params.get('flaky') == 'true' else []
+            if not rows:
+                return defer.succeed(TwistedAdditions.Response(status_code=404))
+            return defer.succeed(TwistedAdditions.Response(status_code=200, content=json.dumps(rows).encode('utf-8')))
+
+        with patch('ews-build.results_db.TwistedAdditions.request', fake_request):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(tests, suite='layout-tests')
+
+        for params in captured:
+            self.assertLessEqual(len(params['tests']), ResultsDatabase.TESTS_PER_FLAKY_QUERY)
+        self.assertGreater(len(captured), 2)
+        self.assertLess(max(len(params['tests']) for params in captured), len(tests))
+        self.assertEqual(sorted(test for params in captured for test in params['tests']), sorted(tests))
+        self.assertEqual(sorted(verdicts), sorted(tests))
+        for test in tests:
+            self.assertEqual(verdicts[test].flaky_type, 'CleanTree', test)
+
+    @defer.inlineCallbacks
+    def test_a_chunk_with_no_history_does_not_stop_the_rest(self):
+        tests = [f'test-{n}.html' for n in range(45)]
+        answered = []
+
+        def fake_request(*args, **kwargs):
+            params = kwargs.get('params') or {}
+            answered.append(params['tests'])
+            if params.get('flaky') != 'true' or len(answered) == 1:
+                return defer.succeed(TwistedAdditions.Response(status_code=404))
+            rows = [
+                {'test': test, 'configuration': {}, 'results': [self._flaky_row('WithinStepCleanTree', build_url='build/1')]}
+                for test in params['tests']
+            ]
+            return defer.succeed(TwistedAdditions.Response(status_code=200, content=json.dumps(rows).encode('utf-8')))
+
+        with patch('ews-build.results_db.TwistedAdditions.request', fake_request):
+            verdicts, _ = yield ResultsDatabase.flaky_verdicts_for(tests, suite='layout-tests')
+
+        first_chunk = answered[0]
+        self.assertTrue(all(not verdicts[test].is_flaky for test in first_chunk))
+        self.assertTrue(any(verdicts[test].is_flaky for test in tests if test not in first_chunk))
+
+    @defer.inlineCallbacks
+    def test_one_failed_chunk_fails_the_whole_query(self):
+        tests = [f'test-{n}.html' for n in range(45)]
+        responses = []
+
+        def fake_request(*args, **kwargs):
+            responses.append(None)
+            if len(responses) == 2:
+                return defer.succeed(TwistedAdditions.Response(status_code=414))
+            return defer.succeed(self._response())
+
+        with patch('ews-build.results_db.TwistedAdditions.request', fake_request):
+            verdicts, logs = yield ResultsDatabase.flaky_verdicts_for(tests, suite='layout-tests')
+
+        self.assertIn('414', logs)
+        for test in tests:
+            self.assertTrue(verdicts[test].request_failed, test)
+            self.assertFalse(verdicts[test].is_flaky, test)
+
+    @defer.inlineCallbacks
+    def test_a_chunk_gets_longer_than_the_default_timeout(self):
+        captured = []
+
+        def fake_request(*args, **kwargs):
+            captured.append(kwargs.get('timeout'))
+            return defer.succeed(self._response())
+
+        with patch('ews-build.results_db.TwistedAdditions.request', fake_request):
+            yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+
+        self.assertTrue(captured)
+        for timeout in captured:
+            self.assertEqual(timeout, ResultsDatabase.FLAKY_QUERY_TIMEOUT_SECONDS)
+            self.assertGreater(timeout, 10)
+
+    @defer.inlineCallbacks
+    def test_both_queries_are_bounded_to_the_flaky_window(self):
+        captured = []
+
+        def fake_request(*args, **kwargs):
+            captured.append(kwargs.get('params') or {})
+            return defer.succeed(self._response())
+
+        with patch('ews-build.results_db.TwistedAdditions.request', fake_request):
+            yield ResultsDatabase.flaky_verdicts_for(['layout/test.html'], suite='layout-tests')
+
+            self.assertEqual(ResultsDatabase.FLAKY_WINDOW_SECONDS, 3 * 24 * 60 * 60)
+            self.assertEqual([params.get('flaky') for params in captured], ['true', 'false'])
+            for params in captured:
+                self.assertEqual(params['suite'], 'layout-tests')
+                self.assertEqual(params['limit'], ResultsDatabase.FLAKY_QUERY_LIMIT)
+                # A list, so request() renders it as a repeated key rather than one comma-joined value.
+                self.assertEqual(params['tests'], ['layout/test.html'])
+                self.assertLessEqual(abs(params['after_time'] - (time.time() - 3 * 24 * 60 * 60)), 60)

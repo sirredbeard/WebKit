@@ -466,7 +466,7 @@ dfg/DFGVirtualRegisterAllocationPhase.cpp
 disassembler/ARM64Disassembler.cpp
 disassembler/CapstoneDisassembler.cpp
 disassembler/Disassembler.cpp
-disassembler/RISCV64Disassembler.cpp
+disassembler/RISCV64Disassembler.cpp @no-unify // Instruction names like OR and AND collide with JSTokenType enumerators.
 disassembler/X86Disassembler.cpp
 
 disassembler/ARM64/A64DOpcode.cpp
@@ -528,6 +528,7 @@ heap/FastMallocAlignedMemoryAllocator.cpp
 heap/FullGCActivityCallback.cpp
 heap/FreeList.cpp
 heap/GCActivityCallback.cpp
+heap/GCCompletionCallback.cpp
 heap/GCConductor.cpp
 heap/GCLogging.cpp
 heap/GCOwnedDataScope.cpp
@@ -537,7 +538,6 @@ heap/GigacageAlignedMemoryAllocator.cpp
 heap/Heap.cpp
 heap/HeapCell.cpp
 heap/HeapCellType.cpp
-heap/HeapFinalizerCallback.cpp
 heap/HeapHelperPool.cpp
 heap/HeapProfiler.cpp
 heap/HeapSnapshot.cpp
@@ -645,7 +645,6 @@ jit/ExecutableAllocator.cpp
 jit/ExecutableMemoryHandle.cpp
 jit/GCAwareJITStubRoutine.cpp
 jit/GdbJIT.cpp
-jit/GPRInfo.cpp
 jit/ICStats.cpp
 jit/JIT.cpp
 jit/JITAddGenerator.cpp

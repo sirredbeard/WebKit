@@ -30,6 +30,7 @@
 #include "GraphicsContext.h"
 #include "ImageBuffer.h"
 #include "RenderingMode.h"
+#include <wtf/Locker.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebCore {
@@ -72,8 +73,9 @@ NativeImage::~NativeImage()
         observer->willDestroyNativeImage(*this);
 }
 
-const PlatformImagePtr& NativeImage::platformImage() const
+PlatformImagePtr NativeImage::platformImage() const
 {
+    Locker locker { m_lock };
     return m_platformImage;
 }
 
@@ -90,8 +92,9 @@ bool NativeImage::hasHDRContent() const
 void NativeImage::replacePlatformImage(PlatformImagePtr&& platformImage) const
 {
     ASSERT(platformImage);
+    Locker locker { m_lock };
     m_platformImage = WTF::move(platformImage);
-    computeHeadroom();
+    // Intention is that the contents do not change, so properties are not recomputed.
 }
 
 #if !USE(CG)
@@ -103,6 +106,22 @@ size_t NativeImage::sizeInBytes() const
 void NativeImage::computeHeadroom() const
 {
 }
+
+RefPtr<NativeImage> NativeImage::rotatedImage(ImageOrientation orientation)
+{
+    IntSize sizeForRotation = orientation.usesWidthAsHeight() ? size().transposedSize() : size();
+
+    // FIXME: This preserves neither the pixelFormat nor the colorSapace of the original NativeImage.
+    RefPtr buffer = ImageBuffer::create(sizeForRotation, RenderingMode::Unaccelerated, RenderingPurpose::Unspecified, 1, DestinationColorSpace::SRGB(), PixelFormat::BGRA8);
+    if (!buffer)
+        return nullptr;
+
+    GraphicsContext& context = buffer->context();
+    context.drawNativeImage(*this, { { }, sizeForRotation }, { { }, sizeForRotation }, { orientation });
+
+    return ImageBuffer::sinkIntoNativeImage(WTF::move(buffer));
+}
+
 #endif
 
 } // namespace WebCore

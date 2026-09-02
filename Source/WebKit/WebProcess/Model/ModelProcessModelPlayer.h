@@ -38,6 +38,7 @@
 #import <WebCore/NodeIdentifier.h>
 #import <WebCore/StageModeOperations.h>
 #import <wtf/Compiler.h>
+#import <wtf/HashMap.h>
 
 namespace WebKit {
 
@@ -71,6 +72,15 @@ private:
     template<typename T, typename C> void sendWithAsyncReply(T&& message, C&& completionHandler);
 
     bool modelProcessEnabled() const;
+
+    struct NodeAnimationState {
+        WebCore::ModelPlayerAnimationState playbackState;
+        std::optional<Seconds> pendingCurrentTime;
+        std::optional<MonotonicTime> clockTimestampOfLastCurrentTimeSet;
+    };
+    NodeAnimationState& ensureAnimationState(WebCore::NodeIdentifier);
+    NodeAnimationState* animationStateIfExists(WebCore::NodeIdentifier);
+    const NodeAnimationState* animationStateIfExists(WebCore::NodeIdentifier) const;
 
     // Messages
     void didCreateLayer(WebCore::LayerHostingContextIdentifier);
@@ -125,6 +135,7 @@ private:
     void setHasPortal(bool) final;
 #if ENABLE(SPATIAL_PORTAL)
     void setPortalTransform(WebCore::PortalTransformKind) final;
+    void setPortalAction(WebCore::PortalActionKind) final;
 #endif
     void setStageMode(WebCore::StageModeOperation) final;
     void beginStageModeTransform(const WebCore::TransformationMatrix&) final;
@@ -150,12 +161,10 @@ private:
     bool m_hasPortal { true };
 #if ENABLE(SPATIAL_PORTAL)
     WebCore::PortalTransformKind m_portalTransform { WebCore::PortalTransformKind::Auto };
+    WebCore::PortalActionKind m_portalAction { WebCore::PortalActionKind::None };
 #endif
     WebCore::StageModeOperation m_stageModeOperation { WebCore::StageModeOperation::None };
-    double m_requestedPlaybackRate { 1.0 };
-    std::optional<Seconds> m_pendingCurrentTime;
-    std::optional<MonotonicTime> m_clockTimestampOfLastCurrentTimeSet;
-    WebCore::ModelPlayerAnimationState m_animationState;
+    HashMap<WebCore::NodeIdentifier, NodeAnimationState> m_animationStates;
     SharedPreferencesForWebProcess m_sharedPreferencesForWebProcess;
 };
 

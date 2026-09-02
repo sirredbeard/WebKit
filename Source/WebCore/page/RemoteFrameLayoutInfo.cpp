@@ -28,18 +28,31 @@
 
 #include "FloatRect.h"
 #include <wtf/TZoneMallocInlines.h>
+#include <wtf/text/TextStream.h>
 
 namespace WebCore {
 
 WTF_MAKE_TZONE_ALLOCATED_IMPL(RemoteFrameLayoutInfo);
 
-Ref<RemoteFrameLayoutInfo> RemoteFrameLayoutInfo::create(std::optional<LayoutRect> visibleRectInParent, TransformationMatrix childFrameOwnerToRootContentTransform, TransformationMatrix absoluteToChildFrameOwnerLocalTransform, float usedZoom, LayoutPoint contentBoxLocation, OptionSet<FrameOwnerElementAppearance> ownerElementAppearance)
-{
-    return adoptRef(*new RemoteFrameLayoutInfo(visibleRectInParent, WTF::move(childFrameOwnerToRootContentTransform), WTF::move(absoluteToChildFrameOwnerLocalTransform), usedZoom, contentBoxLocation, ownerElementAppearance));
-}
-
-RemoteFrameLayoutInfo::RemoteFrameLayoutInfo(std::optional<LayoutRect> visibleRectInParent, TransformationMatrix childFrameOwnerToRootContentTransform, TransformationMatrix absoluteToChildFrameOwnerLocalTransform, float usedZoom, LayoutPoint contentBoxLocation, OptionSet<FrameOwnerElementAppearance> ownerElementAppearance)
-    : m_visibleRectInParent(visibleRectInParent)
+RemoteFrameLayoutInfo::RemoteFrameLayoutInfo(
+    LayoutRect windowClipRectInParent,
+    std::optional<LayoutRect> visibleRectInParent,
+#if PLATFORM(IOS_FAMILY)
+    std::optional<LayoutRect> exposedContentRectInParent,
+#endif
+    bool ownerHasRenderer,
+    TransformationMatrix childFrameOwnerToRootContentTransform,
+    TransformationMatrix absoluteToChildFrameOwnerLocalTransform,
+    float usedZoom,
+    LayoutPoint contentBoxLocation,
+    OptionSet<FrameOwnerElementAppearance> ownerElementAppearance
+)
+    : m_windowClipRectInParent(windowClipRectInParent)
+    , m_visibleRectInParent(visibleRectInParent)
+#if PLATFORM(IOS_FAMILY)
+    , m_exposedContentRectInParent(exposedContentRectInParent)
+#endif
+    , m_ownerHasRenderer(ownerHasRenderer)
     , m_childFrameOwnerToRootContentTransform(WTF::move(childFrameOwnerToRootContentTransform))
     , m_absoluteToChildFrameOwnerLocalTransform(WTF::move(absoluteToChildFrameOwnerLocalTransform))
     , m_usedZoom(usedZoom)
@@ -48,21 +61,53 @@ RemoteFrameLayoutInfo::RemoteFrameLayoutInfo(std::optional<LayoutRect> visibleRe
 {
 }
 
-std::optional<FloatRect> RemoteFrameLayoutInfo::projectVisibleRectToChildContent() const
+std::optional<FloatRect> RemoteFrameLayoutInfo::mapParentContentsToChildWindow(const LayoutRect& rectInParent) const
 {
-    if (!m_visibleRectInParent)
+    // A non-affine owner transform (a 3D transform, say) has no meaningful rect inverse, so report
+    // that the rect is unknown.
+    if (!m_absoluteToChildFrameOwnerLocalTransform.isAffine())
         return std::nullopt;
 
-    ASSERT(m_absoluteToChildFrameOwnerLocalTransform.isAffine());
     // Inverse of LocalFrameView::visibleRectOfChild(): visibleRectInParent is in the parent document's
     // coordinates. Map it into the iframe owner element's local space, subtract the owner content-box
     // offset so the rect is relative to the iframe content origin, and undo the owner's used CSS zoom so
     // the result is in the child frame's unzoomed root-content coordinates (its RenderView space).
-    auto ownerLocal = m_absoluteToChildFrameOwnerLocalTransform.mapRect(FloatRect { *m_visibleRectInParent });
+    auto ownerLocal = m_absoluteToChildFrameOwnerLocalTransform.mapRect(FloatRect { rectInParent });
     ownerLocal.moveBy(-FloatPoint { m_contentBoxLocation });
     if (m_usedZoom > 0)
         ownerLocal.scale(1.0f / m_usedZoom);
     return ownerLocal;
+}
+
+WTF::TextStream& operator<<(WTF::TextStream& ts, FrameOwnerElementAppearance appearance)
+{
+    switch (appearance) {
+    case FrameOwnerElementAppearance::IsDark:
+        ts << "IsDark"_s;
+        break;
+    case FrameOwnerElementAppearance::ExplicitlySet:
+        ts << "ExplicitlySet"_s;
+        break;
+    }
+    return ts;
+}
+
+WTF::TextStream& operator<<(WTF::TextStream& ts, const RemoteFrameLayoutInfo& info)
+{
+    WTF::TextStream::GroupScope scope(ts);
+    ts << "RemoteFrameLayoutInfo"_s;
+    ts.dumpProperty("windowClipRectInParent"_s, info.windowClipRectInParent());
+    ts.dumpProperty("visibleRectInParent"_s, info.visibleRectInParent());
+#if PLATFORM(IOS_FAMILY)
+    ts.dumpProperty("exposedContentRectInParent"_s, info.exposedContentRectInParent());
+#endif
+    ts.dumpProperty("ownerHasRenderer"_s, info.ownerHasRenderer());
+    ts.dumpProperty("childFrameOwnerToRootContentTransform"_s, info.childFrameOwnerToRootContentTransform());
+    ts.dumpProperty("absoluteToChildFrameOwnerLocalTransform"_s, info.absoluteToChildFrameOwnerLocalTransform());
+    ts.dumpProperty("usedZoom"_s, info.usedZoom());
+    ts.dumpProperty("contentBoxLocation"_s, info.contentBoxLocation());
+    ts.dumpProperty("ownerElementAppearance"_s, info.ownerElementAppearance());
+    return ts;
 }
 
 } // namespace WebCore

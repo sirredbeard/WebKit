@@ -32,6 +32,7 @@
 
 #include "ButterflyInlines.h"
 #include "FrameTracers.h"
+#include "GCMemoryOperations.h"
 #include "IteratorOperations.h"
 #include "JITExceptions.h"
 #include "JSArrayBufferViewInlines.h"
@@ -55,7 +56,10 @@
 #include "WasmOSREntryPlan.h"
 #include "WasmOperationsInlines.h"
 #include "WasmWorklist.h"
+#include <algorithm>
 #include <bit>
+#include <span>
+#include <string.h>
 #include <wtf/DataLog.h>
 #include <wtf/Locker.h>
 #include <wtf/StdLibExtras.h>
@@ -128,7 +132,7 @@ JSC_DEFINE_JIT_OPERATION(operationJSToWasmEntryWrapperBuildFrame, JSToWasmCallee
             if (wasmFrameConvention.params[i].location.isFPR())
                 dst = GPRInfo::numberOfArgumentRegisters * sizeof(UCPURegister) + FPRInfo::toArgumentIndex(wasmFrameConvention.params[i].location.fpr()) * bytesForWidth(Width::Width64);
             else
-                dst = GPRInfo::toArgumentIndex(wasmFrameConvention.params[i].location.jsr().payloadGPR()) * sizeof(UCPURegister);
+                dst = GPRInfo::toArgumentIndex(wasmFrameConvention.params[i].location.gpr()) * sizeof(UCPURegister);
             ASSERT(dst >= 0);
 
             dataLogLnIf(WasmOperationsInternal::verbose, "* Register Arg ", i, " ", dst);
@@ -232,10 +236,10 @@ JSC_DEFINE_JIT_OPERATION(operationJSToWasmEntryWrapperBuildReturnFrame, EncodedJ
         if (loc.isGPR() || loc.isFPR()) {
             switch (type.kind()) {
             case TypeKind::I32:
-                result = jsNumber(*access.operator()<int32_t>(registerSpace, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) * sizeof(UCPURegister)));
+                result = jsNumber(*access.operator()<int32_t>(registerSpace, GPRInfo::toArgumentIndex(loc.gpr()) * sizeof(UCPURegister)));
                 break;
             case TypeKind::I64:
-                result = JSBigInt::makeHeapBigIntOrBigInt32(globalObject, *access.operator()<int64_t>(registerSpace, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) * sizeof(UCPURegister)));
+                result = JSBigInt::makeHeapBigIntOrBigInt32(globalObject, *access.operator()<int64_t>(registerSpace, GPRInfo::toArgumentIndex(loc.gpr()) * sizeof(UCPURegister)));
                 OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
                 break;
             case TypeKind::F32:
@@ -245,7 +249,7 @@ JSC_DEFINE_JIT_OPERATION(operationJSToWasmEntryWrapperBuildReturnFrame, EncodedJ
                 result = jsNumber(purifyNaN(*access.operator()<double>(registerSpace, GPRInfo::numberOfArgumentRegisters * sizeof(UCPURegister) + FPRInfo::toArgumentIndex(loc.fpr()) * bytesForWidth(Width::Width64))));
                 break;
             default:
-                result = *access.operator()<JSValue>(registerSpace, GPRInfo::toArgumentIndex(loc.jsr().payloadGPR()) * sizeof(UCPURegister));
+                result = *access.operator()<JSValue>(registerSpace, GPRInfo::toArgumentIndex(loc.gpr()) * sizeof(UCPURegister));
                 break;
             }
         } else {
@@ -332,10 +336,7 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalArguments, void, (void* sp,
 
         switch (argType.kind()) {
         case TypeKind::Void:
-        case TypeKind::Func:
-        case TypeKind::Struct:
         case TypeKind::Structref:
-        case TypeKind::Array:
         case TypeKind::Arrayref:
         case TypeKind::Eqref:
         case TypeKind::Anyref:
@@ -344,9 +345,6 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalArguments, void, (void* sp,
         case TypeKind::Nofuncref:
         case TypeKind::Noexternref:
         case TypeKind::I31ref:
-        case TypeKind::Rec:
-        case TypeKind::Sub:
-        case TypeKind::Subfinal:
         case TypeKind::V128:
             RELEASE_ASSERT_NOT_REACHED();
         case TypeKind::RefNull:
@@ -362,7 +360,7 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalArguments, void, (void* sp,
                 else
                     *access.operator()<uint64_t>(calleeFrame, dst) = raw;
             } else {
-                auto raw = *access.operator()<UCPURegister>(argumentRegisters, GPRInfo::toArgumentIndex(wasmParam.jsr().payloadGPR()) * sizeof(UCPURegister));
+                auto raw = *access.operator()<UCPURegister>(argumentRegisters, GPRInfo::toArgumentIndex(wasmParam.gpr()) * sizeof(UCPURegister));
                 if (argType.isI32())
                     *access.operator()<uint64_t>(calleeFrame, dst) = static_cast<uint32_t>(raw) | JSValue::NumberTag;
                 else
@@ -376,7 +374,7 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalArguments, void, (void* sp,
                 OPERATION_RETURN_IF_EXCEPTION(scope);
                 *access.operator()<uint64_t>(calleeFrame, dst) = JSValue::encode(result);
             } else {
-                auto result = JSBigInt::makeHeapBigIntOrBigInt32(globalObject, *access.operator()<int64_t>(argumentRegisters, GPRInfo::toArgumentIndex(wasmParam.jsr().payloadGPR()) * sizeof(UCPURegister)));
+                auto result = JSBigInt::makeHeapBigIntOrBigInt32(globalObject, *access.operator()<int64_t>(argumentRegisters, GPRInfo::toArgumentIndex(wasmParam.gpr()) * sizeof(UCPURegister)));
                 OPERATION_RETURN_IF_EXCEPTION(scope);
                 *access.operator()<uint64_t>(calleeFrame, dst) = JSValue::encode(result);
             }
@@ -423,6 +421,8 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalArguments, void, (void* sp,
 ALWAYS_INLINE void assertCalleeIsReferenced(CallFrame* frame, JSWebAssemblyInstance* instance)
 {
 #if ASSERT_ENABLED
+    if (!frame->callee().isNativeCallee())
+        return;
     CalleeGroup& calleeGroup = *instance->calleeGroup();
     Wasm::Callee* callee = uncheckedDowncast<Wasm::Callee>(frame->callee().asNativeCallee());
     TriState status;
@@ -652,7 +652,7 @@ JSC_DEFINE_JIT_OPERATION(operationWasmToJSExitMarshalReturnValues, void, (void* 
 
         auto rep = wasmCC.results[index];
         if (rep.location.isGPR()) {
-            auto offset = GPRInfo::toArgumentIndex(rep.location.jsr().payloadGPR()) * sizeof(UCPURegister);
+            auto offset = GPRInfo::toArgumentIndex(rep.location.gpr()) * sizeof(UCPURegister);
             *access.operator()<uint64_t>(registerSpace, offset) = unboxedValue;
         } else if (rep.location.isFPR()) {
             auto offset = GPRInfo::numberOfArgumentRegisters * sizeof(UCPURegister) + FPRInfo::toArgumentIndex(rep.location.fpr()) * bytesForWidth(Width::Width64);
@@ -1409,7 +1409,7 @@ JSC_DEFINE_JIT_OPERATION(operationIterateResults, void, (JSWebAssemblyInstance* 
 
         auto rep = wasmCallInfo.results[index];
         if (rep.location.isGPR())
-            registerResults[registerResultOffsets.find(rep.location.jsr().payloadGPR())->offset() / sizeof(uint64_t)] = unboxedValue;
+            registerResults[registerResultOffsets.find(rep.location.gpr())->offset() / sizeof(uint64_t)] = unboxedValue;
         else if (rep.location.isFPR())
             registerResults[registerResultOffsets.find(rep.location.fpr())->offset() / sizeof(uint64_t)] = unboxedValue;
         else
@@ -1445,7 +1445,7 @@ JSC_DEFINE_JIT_OPERATION(operationAllocateResultsArray, JSArray*, (JSWebAssembly
         ValueLocation loc = wasmCallInfo.results[i].location;
         JSValue value;
         if (loc.isGPR()) {
-            value = stackPointerFromCallee[(registerResults.find(loc.jsr().payloadGPR())->offset() + wasmCallInfo.headerAndArgumentStackSizeInBytes) / sizeof(JSValue)];
+            value = stackPointerFromCallee[(registerResults.find(loc.gpr())->offset() + wasmCallInfo.headerAndArgumentStackSizeInBytes) / sizeof(JSValue)];
         } else if (loc.isFPR())
             value = stackPointerFromCallee[(registerResults.find(loc.fpr())->offset() + wasmCallInfo.headerAndArgumentStackSizeInBytes) / sizeof(JSValue)];
         else
@@ -1753,27 +1753,61 @@ JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayNewEmpty, EncodedJSValue, (J
     return JSValue::encode(array);
 }
 
-JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayFill, UCPUStrictInt32, (JSWebAssemblyInstance* instance, EncodedJSValue arrayValue, uint32_t offset, uint64_t value, uint32_t size))
+template<typename Element>
+static ALWAYS_INLINE void fillArrayElements(void* payload, Element element, size_t elementCount)
 {
-    CallFrame* callFrame = DECLARE_WASM_CALL_FRAME(instance);
-    assertCalleeIsReferenced(callFrame, instance);
-    VM& vm = instance->vm();
-    WasmOperationPrologueCallFrameTracer tracer(vm, callFrame, OUR_RETURN_ADDRESS);
-    return toUCPUStrictInt32(arrayFill(vm, arrayValue, offset, value, size));
+#if OS(DARWIN)
+    // memset_pattern* truncates a trailing partial instance of the pattern, so widening a narrow
+    // element to a wider pattern never writes past the end.
+    // https://developer.apple.com/library/archive/documentation/System/Conceptual/ManPages_iPhoneOS/man3/memset_pattern4.3.html
+    size_t byteCount = elementCount * sizeof(Element);
+    if constexpr (sizeof(Element) == sizeof(uint16_t)) {
+        uint32_t pattern = (static_cast<uint32_t>(element) << 16) | element;
+        memset_pattern4(payload, &pattern, byteCount);
+    } else if constexpr (sizeof(Element) == sizeof(uint32_t))
+        memset_pattern4(payload, &element, byteCount);
+    else if constexpr (sizeof(Element) == sizeof(uint64_t))
+        memset_pattern8(payload, &element, byteCount);
+    else {
+        static_assert(sizeof(Element) == 16);
+        memset_pattern16(payload, &element, byteCount);
+    }
+#else
+    std::ranges::fill(std::span { static_cast<Element*>(payload), elementCount }, element);
+#endif
 }
 
-JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayFillVector, UCPUStrictInt32, (JSWebAssemblyInstance* instance, EncodedJSValue arrayValue, uint32_t offset, uint64_t lane0, uint64_t lane1, uint32_t size))
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayFill2B, void, (void* payload, uint64_t value, size_t elementCount))
 {
-    CallFrame* callFrame = DECLARE_WASM_CALL_FRAME(instance);
-    assertCalleeIsReferenced(callFrame, instance);
-    VM& vm = instance->vm();
-    WasmOperationPrologueCallFrameTracer tracer(vm, callFrame, OUR_RETURN_ADDRESS);
-    return toUCPUStrictInt32(arrayFill(vm, arrayValue, offset, v128_t { lane0, lane1 }, size));
+    fillArrayElements(payload, static_cast<uint16_t>(value), elementCount);
 }
 
-JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayCopy, UCPUStrictInt32, (JSWebAssemblyInstance* instance, EncodedJSValue dst, uint32_t dstOffset, EncodedJSValue src, uint32_t srcOffset, uint32_t size))
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayFill4B, void, (void* payload, uint64_t value, size_t elementCount))
 {
-    return toUCPUStrictInt32(arrayCopy(instance, dst, dstOffset, src, srcOffset, size));
+    fillArrayElements(payload, static_cast<uint32_t>(value), elementCount);
+}
+
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayFill8B, void, (void* payload, uint64_t value, size_t elementCount))
+{
+    fillArrayElements(payload, value, elementCount);
+}
+
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayFill16B, void, (void* payload, uint64_t lane0, uint64_t lane1, size_t elementCount))
+{
+    fillArrayElements(payload, v128_t { lane0, lane1 }, elementCount);
+}
+
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayFillRefs, void, (uint64_t* payload, uint64_t value, size_t elementCount))
+{
+    // A reference is stored whole so the concurrent collector cannot observe a torn JSValue.
+    volatile uint64_t* cursor = payload;
+    for (size_t i = 0; i < elementCount; ++i)
+        cursor[i] = value;
+}
+
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayCopyRefs, void, (uint64_t* dst, const uint64_t* src, size_t byteCount))
+{
+    gcSafeMemmove(dst, src, byteCount);
 }
 
 JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationWasmArrayInitElem, UCPUStrictInt32, (JSWebAssemblyInstance* instance, EncodedJSValue dst, uint32_t dstOffset, uint32_t srcElementIndex, uint32_t srcOffset, uint32_t size))

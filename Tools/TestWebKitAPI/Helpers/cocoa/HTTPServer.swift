@@ -21,7 +21,7 @@
 // ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF
 // THE POSSIBILITY OF SUCH DAMAGE.
 
-#if ENABLE_CXX_INTEROP
+#if ENABLE_CXX_INTEROP && compiler(>=6.4) && !SWIFT_WEBKIT_TOOLCHAIN
 
 import Foundation
 private import TestWebKitAPILibrary.Helpers.cocoa.HTTPServer
@@ -53,6 +53,7 @@ import struct Swift.String
 public struct Route: Sendable {
     fileprivate struct Storage: Sendable {
         let pathComponents: [String]
+        let headerFields: [String: String]
         let response: String
     }
 
@@ -62,8 +63,8 @@ public struct Route: Sendable {
         self.children = children
     }
 
-    fileprivate init(path: String, response: String) {
-        self.children = [Storage(pathComponents: [path], response: response)]
+    fileprivate init(path: String, headerFields: [String: String], response: String) {
+        self.children = [Storage(pathComponents: [path], headerFields: headerFields, response: response)]
     }
 
     /// Creates a Route from a group of child Routes.
@@ -74,7 +75,7 @@ public struct Route: Sendable {
     public init(_ path: String, @RouteBuilder _ route: () -> Route) {
         self.children = route().children
             .map {
-                Storage(pathComponents: [path] + $0.pathComponents, response: $0.response)
+                Storage(pathComponents: [path] + $0.pathComponents, headerFields: $0.headerFields, response: $0.response)
             }
     }
 
@@ -82,9 +83,10 @@ public struct Route: Sendable {
     ///
     /// - Parameters:
     ///   - path: The path of this route. If this value is non-empty, it must start with `/`.
+    ///   - headerFields: The header fields of the response.
     ///   - response: The response to be used.
-    public init(_ path: String, _ response: () -> String) {
-        self.init(path: path, response: response())
+    public init(_ path: String, headerFields: [String: String] = [:], _ response: () -> String) {
+        self.init(path: path, headerFields: headerFields, response: response())
     }
 }
 
@@ -111,8 +113,14 @@ public struct HTTPServer: ~Copyable {
         /// The HTTPS protocol, using a legacy version of TLS.
         case httpsWithLegacyTLS
 
+        /// The HTTP2 protocol without framing, using raw bytes instead.
+        case http2Raw
+
         /// The HTTP2 protocol.
         case http2
+
+        /// The HTTP3 protocol.
+        case http3
 
         /// The HTTPS proxy protocol.
         case httpsProxy
@@ -165,7 +173,11 @@ public struct HTTPServer: ~Copyable {
         let routes = route().children
         for child in routes {
             let path = child.pathComponents.joined()
-            let response = unsafe TestWebKitAPI.HTTPResponse(WTF.String(child.response))
+            var response = unsafe TestWebKitAPI.HTTPResponse(WTF.String(child.response))
+
+            for (name, value) in child.headerFields {
+                unsafe response.setHeaderField(consuming: .init(name), consuming: .init(value))
+            }
 
             unsafe hashMapSet(&entries, consuming: .init(path), consuming: response)
         }
@@ -182,14 +194,7 @@ public struct HTTPServer: ~Copyable {
         _ body: (Configuration) async throws(E) -> sending Result
     ) async throws(E) -> sending Result where E: Error, Result: ~Copyable {
         await withCheckedContinuation { continuation in
-            unsafe self.storage.pointee.startListening(
-                consuming: .init(
-                    {
-                        continuation.resume()
-                    },
-                    WTF.ThreadLikeAssertion(WTF.CurrentThreadLike())
-                )
-            )
+            unsafe self.storage.pointee.startListening(consuming: .init(continuation))
         }
 
         let port = unsafe Int(storage.pointee.port())
@@ -198,14 +203,7 @@ public struct HTTPServer: ~Copyable {
         let result = try await body(configuration)
 
         await withCheckedContinuation { continuation in
-            unsafe self.storage.pointee.cancel(
-                consuming: .init(
-                    {
-                        continuation.resume()
-                    },
-                    WTF.ThreadLikeAssertion(WTF.CurrentThreadLike())
-                )
-            )
+            unsafe self.storage.pointee.cancel(consuming: .init(continuation))
         }
 
         return result
@@ -219,7 +217,9 @@ extension TestWebKitAPI.__CxxHTTPServer.`Protocol` {
             case .http: .Http
             case .https: .Https
             case .httpsWithLegacyTLS: .HttpsWithLegacyTLS
+            case .http2Raw: .Http2Raw
             case .http2: .Http2
+            case .http3: .Http3
             case .httpsProxy: .HttpsProxy
             case .httpsProxyWithAuthentication: .HttpsProxyWithAuthentication
             }
@@ -239,4 +239,4 @@ extension HTTPServer {
     }
 }
 
-#endif // ENABLE_CXX_INTEROP
+#endif // ENABLE_CXX_INTEROP && compiler(>=6.4) && !SWIFT_WEBKIT_TOOLCHAIN

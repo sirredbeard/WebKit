@@ -42,6 +42,7 @@
 #include "GraphicsLayerEnums.h"
 #include "ImageBitmap.h"
 #include "InspectorInstrumentation.h"
+#include "NativeImage.h"
 #include "Page.h"
 #include "PlatformCALayerDelegatedContents.h"
 #include "PlatformScreen.h"
@@ -339,6 +340,7 @@ void GPUCanvasContextCocoa::didUpdateCanvasSizeProperties(bool)
         m_currentTexture = nullptr;
     }
     m_readDisplayBuffer = nullptr;
+    m_readDisplayBufferImage = nullptr;
     updateMemoryCost();
     auto newSize = canvasBase().size();
     auto newWidth = static_cast<GPUIntegerCoordinate>(newSize.width());
@@ -367,6 +369,18 @@ void GPUCanvasContextCocoa::didUpdateCanvasSizeProperties(bool)
     }
 }
 
+static PixelFormat readbackPixelFormat(PixelFormat format)
+{
+    // ImageBufferCGBitmapBackend only supports BGRA8 and RGBA16F.
+#if ENABLE(PIXEL_FORMAT_RGBA16F)
+    if (format == PixelFormat::RGBA16F)
+        return format;
+#else
+    UNUSED_PARAM(format);
+#endif
+    return PixelFormat::BGRA8;
+}
+
 RefPtr<ImageBuffer> GPUCanvasContextCocoa::surfaceBufferToImageBuffer(SurfaceBuffer sourceBuffer)
 {
     RefPtr scriptExecutionContext = protect(canvasBase())->scriptExecutionContext();
@@ -376,7 +390,7 @@ RefPtr<ImageBuffer> GPUCanvasContextCocoa::surfaceBufferToImageBuffer(SurfaceBuf
     if (size.isEmpty())
         return nullptr;
     if (!m_readDisplayBuffer) {
-        m_readDisplayBuffer = ImageBuffer::create(size, RenderingMode::Accelerated, RenderingPurpose::Canvas, 1, DestinationColorSpace::SRGB(), PixelFormat::BGRA8, scriptExecutionContext->graphicsClient());
+        m_readDisplayBuffer = ImageBuffer::create(size, RenderingMode::Accelerated, RenderingPurpose::Canvas, 1, colorSpace(), readbackPixelFormat(pixelFormat()), scriptExecutionContext->graphicsClient());
         updateMemoryCost();
     }
     RefPtr<ImageBuffer> buffer = m_readDisplayBuffer;
@@ -389,7 +403,7 @@ RefPtr<ImageBuffer> GPUCanvasContextCocoa::surfaceBufferToImageBuffer(SurfaceBuf
     updateScreenHeadroomFromScreenPropertiesIfNeeded();
 #endif
 
-    if (sourceBuffer == SurfaceBuffer::DisplayBufferForInspector && m_configuration->lastPresentedFrameIndex) {
+    if (m_configuration->lastPresentedFrameIndex && (sourceBuffer == SurfaceBuffer::DisplayBufferForInspector || !m_compositingResultsNeedsUpdating)) {
         if (buffer) {
             buffer->flushDrawingContext();
             m_compositorIntegration->paintCompositedResultsToCanvas(*buffer, *m_configuration->lastPresentedFrameIndex);
@@ -413,6 +427,27 @@ RefPtr<ImageBuffer> GPUCanvasContextCocoa::surfaceBufferToImageBuffer(SurfaceBuf
     return buffer;
 }
 
+RefPtr<NativeImage> GPUCanvasContextCocoa::surfaceBufferToNativeImage(SurfaceBuffer sourceBuffer)
+{
+    // The inspector reads the last presented frame instead of the current contents, so it does not
+    // use the cached image of the read buffer.
+    bool useCache = sourceBuffer != SurfaceBuffer::DisplayBufferForInspector;
+    if (useCache && m_readDisplayBufferImage)
+        return m_readDisplayBufferImage;
+    RefPtr imageBuffer = surfaceBufferToImageBuffer(sourceBuffer);
+    if (!imageBuffer)
+        return nullptr;
+    // The copy is what GraphicsContext::drawImageBuffer would make for each individual draw of a
+    // deferred context. It is cached here, as the read buffer is discarded whenever the contents
+    // of the canvas change.
+    RefPtr image = imageBuffer->copyNativeImage();
+    if (!useCache)
+        return image;
+    m_readDisplayBufferImage = WTF::move(image);
+    updateMemoryCost();
+    return m_readDisplayBufferImage;
+}
+
 RefPtr<ImageBuffer> GPUCanvasContextCocoa::transferToImageBuffer()
 {
     RefPtr scriptExecutionContext = protect(canvasBase())->scriptExecutionContext();
@@ -421,7 +456,7 @@ RefPtr<ImageBuffer> GPUCanvasContextCocoa::transferToImageBuffer()
     const auto size = canvasBase().size();
     if (size.isEmpty())
         return nullptr;
-    RefPtr buffer = ImageBuffer::create(size, RenderingMode::Accelerated, RenderingPurpose::Canvas, 1, DestinationColorSpace::SRGB(), PixelFormat::BGRA8, scriptExecutionContext->graphicsClient());
+    RefPtr buffer = ImageBuffer::create(size, RenderingMode::Accelerated, RenderingPurpose::Canvas, 1, colorSpace(), readbackPixelFormat(pixelFormat()), scriptExecutionContext->graphicsClient());
     if (!buffer)
         return nullptr;
     Ref<ImageBuffer> bufferRef = buffer.releaseNonNull();
@@ -431,6 +466,7 @@ RefPtr<ImageBuffer> GPUCanvasContextCocoa::transferToImageBuffer()
         m_presentationContext->present(m_configuration->frameCount, true);
         m_configuration->lastPresentedFrameIndex = std::nullopt;
         m_readDisplayBuffer = nullptr;
+        m_readDisplayBufferImage = nullptr;
         updateMemoryCost();
     }
     return bufferRef;
@@ -569,6 +605,7 @@ void GPUCanvasContextCocoa::unconfigure()
     auto configuration = std::exchange(m_configuration, std::nullopt);
     m_currentTexture = nullptr;
     m_readDisplayBuffer = nullptr;
+    m_readDisplayBufferImage = nullptr;
     updateMemoryCost();
     ASSERT(!isConfigured());
 
@@ -603,7 +640,7 @@ ExceptionOr<Ref<GPUTexture>> GPUCanvasContextCocoa::getCurrentTexture()
     if (currentTexture)
         return currentTexture.releaseNonNull();
 
-    markContextChangedAndNotifyCanvasObservers();
+    willUpdateDisplayBufferContents();
     m_currentTexture = m_presentationContext->getCurrentTexture(m_configuration->frameCount);
     currentTexture = m_currentTexture;
     return currentTexture.releaseNonNull();
@@ -657,6 +694,7 @@ void GPUCanvasContextCocoa::prepareForDisplay()
     if (!isConfigured())
         return;
     m_readDisplayBuffer = nullptr;
+    m_readDisplayBufferImage = nullptr;
     updateMemoryCost();
     ASSERT(m_configuration->frameCount < m_configuration->renderBuffers.size());
 
@@ -710,14 +748,15 @@ std::optional<FramesPerSecond> GPUCanvasContextCocoa::preferredRenderingUpdateFr
     return m_framePacer.preferredFramesPerSecond(MonotonicTime::now());
 }
 
-void GPUCanvasContextCocoa::markContextChangedAndNotifyCanvasObservers()
+void GPUCanvasContextCocoa::willUpdateDisplayBufferContents()
 {
     m_compositingResultsNeedsUpdating = true;
-    if (m_readDisplayBuffer) {
+    if (m_readDisplayBuffer || m_readDisplayBufferImage) {
         m_readDisplayBuffer = nullptr;
+        m_readDisplayBufferImage = nullptr;
         updateMemoryCost();
     }
-    markCanvasChanged();
+    willUpdateCanvasContents();
 }
 
 void GPUCanvasContextCocoa::updateMemoryCost() const
@@ -726,8 +765,10 @@ void GPUCanvasContextCocoa::updateMemoryCost() const
     size_t newMemoryCost = 0;
     if (m_readDisplayBuffer)
         newMemoryCost += m_readDisplayBuffer->memoryCost();
+    if (RefPtr image = m_readDisplayBufferImage)
+        newMemoryCost += image->sizeInBytes();
     if (m_currentTexture)
-        newMemoryCost += m_width * m_height * 4;
+        newMemoryCost += m_currentTexture->memoryCost();
     CanvasRenderingContext::updateMemoryCost(newMemoryCost);
 }
 

@@ -83,6 +83,10 @@ Shared/API/glib/WebKitUserMessage.cpp @no-unify
 Shared/Extensions/gtk/WebExtensionUtilitiesGtk.cpp
 
 Shared/glib/ArgumentCodersGLib.cpp
+Shared/glib/CoreIPCGByteArray.cpp
+Shared/glib/CoreIPCGTlsCertificate.cpp
+Shared/glib/CoreIPCGUnixFDList.cpp
+Shared/glib/CoreIPCGVariant.cpp
 Shared/glib/InputMethodState.cpp
 Shared/glib/JavaScriptEvaluationResultGLib.cpp
 Shared/glib/ProcessExecutablePathGLib.cpp
@@ -90,7 +94,7 @@ Shared/glib/UserMessage.cpp
 Shared/glib/WebContextMenuItemGlib.cpp
 Shared/glib/WebKitContextMenuGAction.cpp @no-unify
 
-Shared/gtk/ArgumentCodersGtk.cpp
+Shared/gtk/CoreIPCGtkPrint.cpp
 Shared/gtk/NativeWebKeyboardEventGtk.cpp
 Shared/gtk/NativeWebMouseEventGtk.cpp
 Shared/gtk/NativeWebTouchEventGtk.cpp
@@ -233,6 +237,7 @@ UIProcess/Automation/gtk/WebAutomationSessionGtk.cpp @no-unify
 UIProcess/CoordinatedGraphics/DrawingAreaProxyCoordinatedGraphics.cpp
 
 UIProcess/Extensions/glib/WebExtensionGLib.cpp
+UIProcess/Extensions/glib/WebExtensionContextGLib.cpp
 
 UIProcess/Extensions/gtk/WebExtensionGTK.cpp
 
@@ -357,7 +362,7 @@ WebProcess/WebPage/CoordinatedGraphics/CoordinatedSceneState.cpp
 WebProcess/WebPage/CoordinatedGraphics/DrawingAreaCoordinatedGraphicsGLib.cpp
 WebProcess/WebPage/CoordinatedGraphics/FrameRenderer.cpp
 WebProcess/WebPage/CoordinatedGraphics/LayerTreeHost.cpp
-WebProcess/WebPage/CoordinatedGraphics/NonCompositedFrameRenderer.cpp
+WebProcess/WebPage/CoordinatedGraphics/NonCompositedFrameRenderer.cpp @no-unify
 WebProcess/WebPage/CoordinatedGraphics/ScrollbarsControllerCoordinated.cpp
 WebProcess/WebPage/CoordinatedGraphics/ScrollingCoordinatorCoordinated.cpp
 WebProcess/WebPage/CoordinatedGraphics/ThreadedCompositor.cpp @no-unify

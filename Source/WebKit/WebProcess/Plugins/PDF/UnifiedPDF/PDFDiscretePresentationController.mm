@@ -1194,13 +1194,13 @@ void PDFDiscretePresentationController::updateLayersOnLayoutChange(FloatSize doc
 
     auto updateRowPageContainerLayers = [&](const RowData& row, const FloatRect& rowBounds) {
         auto leftPageIndex = row.pages.pages[0];
-        updatePageContainerLayerBounds(row.leftPageContainerLayer.get(), leftPageIndex, rowBounds);
+        updatePageContainerLayerBounds(protect(row.leftPageContainerLayer), leftPageIndex, rowBounds);
 
         if (row.pages.numPages() == 1)
             return;
 
         auto rightPageIndex = row.pages.pages[1];
-        updatePageContainerLayerBounds(row.rightPageContainerLayer.get(), rightPageIndex, rowBounds);
+        updatePageContainerLayerBounds(protect(row.rightPageContainerLayer), rightPageIndex, rowBounds);
     };
 
     TransformationMatrix transform;
@@ -1322,9 +1322,11 @@ void PDFDiscretePresentationController::updateDebugBorders(bool showDebugBorders
         asyncRenderer->setShowDebugBorders(showDebugBorders);
 }
 
-void PDFDiscretePresentationController::updateForAccessibilityDisplayModeChange(PDFAccessibilityDisplayMode accessibilityDisplayMode)
+void PDFDiscretePresentationController::updateLayersForAccessibilityDisplayModeChange()
 {
-    auto applyToBackgroundLayer = [backgroundColor = pdfPageBackgroundColor(accessibilityDisplayMode)](GraphicsLayer& layer) {
+    auto displayMode = accessibilityDisplayMode();
+
+    auto applyToBackgroundLayer = [backgroundColor = pdfPageBackgroundColor(displayMode)](GraphicsLayer& layer) {
         layer.setBackgroundColor(backgroundColor);
         layer.setNeedsDisplay();
     };
@@ -1336,8 +1338,13 @@ void PDFDiscretePresentationController::updateForAccessibilityDisplayModeChange(
         if (RefPtr rightPageBackgroundLayer = row.rightPageBackgroundLayer())
             applyToBackgroundLayer(*rightPageBackgroundLayer);
 
-        if (RefPtr selectionLayer = row.selectionLayer)
-            selectionLayer->setBlendMode(pdfSelectionBlendMode(accessibilityDisplayMode));
+        if (RefPtr contentsLayer = row.contentsLayer)
+            contentsLayer->setNeedsDisplay();
+
+        if (RefPtr selectionLayer = row.selectionLayer) {
+            selectionLayer->setBlendMode(pdfSelectionBlendMode(displayMode));
+            selectionLayer->setNeedsDisplay();
+        }
     }
 }
 

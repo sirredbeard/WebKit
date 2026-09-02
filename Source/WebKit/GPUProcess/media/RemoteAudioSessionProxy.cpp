@@ -186,6 +186,19 @@ RemoteAudioSessionProxyManager& RemoteAudioSessionProxy::audioSessionManager()
     return m_gpuConnection.get()->gpuProcess().audioSessionManager();
 }
 
+void RemoteAudioSessionProxy::systemCategoryForTesting(CompletionHandler<void(WebCore::AudioSessionCategory)>&& completionHandler)
+{
+    // The category the GPU process applied to the real session, after reconciling what every web
+    // process reported. Each process's own AudioSession only knows the value it asked for.
+    completionHandler(AudioSession::singleton().category());
+}
+
+void RemoteAudioSessionProxy::systemActivationCountForTesting(CompletionHandler<void(uint64_t)>&& completionHandler)
+{
+    // How many times the GPU process made the real session active..
+    completionHandler(AudioSession::singleton().activationCountForTesting());
+}
+
 void RemoteAudioSessionProxy::triggerBeginInterruptionForTesting()
 {
     AudioSession::singleton().beginInterruptionForTesting();

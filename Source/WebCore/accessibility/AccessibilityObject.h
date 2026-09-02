@@ -64,6 +64,7 @@ WTF_ALLOW_COMPACT_POINTERS_TO_INCOMPLETE_TYPE(WebCore::AXObjectRareData);
 
 namespace WebCore {
 
+class HTMLTextFormControlElement;
 class IntPoint;
 class IntSize;
 class ScrollableArea;
@@ -140,7 +141,9 @@ public:
 
     bool isSecureField() const override { return false; }
     bool isContainedBySecureField() const;
-    bool isNativeTextControl() const override { return false; }
+    bool isNativeTextControl() const final { return nativeTextControl(); }
+    // The <textarea> or text <input> whose value this object exposes, or null.
+    HTMLTextFormControlElement* nativeTextControl() const;
     virtual bool isSearchField() const { return false; }
     bool isAttachment() const override { return false; }
 #if ENABLE(ATTACHMENT_ELEMENT)
@@ -439,6 +442,9 @@ public:
     virtual AXTextRuns textRuns() { return { }; }
     bool hasTextRuns() final { return textRuns().size(); }
     TextEmissionBehavior textEmissionBehavior() const override { return TextEmissionBehavior::None; }
+    bool isReplacedElementForTextEmission() const final;
+    bool isInUserAgentShadowTree() const final;
+    bool isInsideNativeTextControl() const final;
     AXTextRunLineID listMarkerLineID() const override { return { }; }
     String listMarkerText() const override { return { }; }
     FontOrientation fontOrientation() const final;
@@ -942,8 +948,11 @@ public:
     private:
         void ensureContentsParentValidity()
         {
-            RefPtr contentsParent = m_current ? m_current->displayContentsParent() : nullptr;
-            if (contentsParent && m_displayContentsParent && contentsParent.get() != m_displayContentsParent.get())
+            if (!m_current || !m_displayContentsParent)
+                return;
+            // The objects after a display: contents element's last child are its own siblings, since a
+            // display:contents element has no box for them to hang off. Stop rather than walking into them.
+            if (m_current->parentObject() != m_displayContentsParent.get())
                 m_current = nullptr;
         }
 

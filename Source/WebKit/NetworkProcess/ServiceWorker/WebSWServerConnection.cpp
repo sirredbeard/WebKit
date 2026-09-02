@@ -39,6 +39,7 @@
 #include "RemoteWorkerType.h"
 #include "SharedBufferReference.h"
 #include "SharedPreferencesForWebProcess.h"
+#include "WebFrameProxyFromNetworkProcessMessages.h"
 #include "WebProcess.h"
 #include "WebProcessMessages.h"
 #include "WebResourceLoaderMessages.h"
@@ -663,7 +664,7 @@ void WebSWServerConnection::updateThrottleState()
     }
 }
 
-void WebSWServerConnection::subscribeToPushService(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, Vector<uint8_t>&& applicationServerKey, CompletionHandler<void(Expected<PushSubscriptionData, ExceptionData>&&)>&& completionHandler)
+void WebSWServerConnection::subscribeToPushService(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, Vector<uint8_t>&& applicationServerKey, CompletionHandler<void(std::expected<PushSubscriptionData, ExceptionData>&&)>&& completionHandler)
 {
 #if !ENABLE(WEB_PUSH_NOTIFICATIONS)
     UNUSED_PARAM(registrationIdentifier);
@@ -688,7 +689,7 @@ void WebSWServerConnection::subscribeToPushService(WebCore::ServiceWorkerRegistr
         return;
     }
 
-    session->notificationManager().subscribeToPushService(registration->scopeURLWithoutFragment(), WTF::move(applicationServerKey), [weakThis = WeakPtr { *this }, completionHandler = WTF::move(completionHandler), registrableDomain = RegistrableDomain(registration->data().scopeURL)] (Expected<PushSubscriptionData, ExceptionData>&& result) mutable {
+    session->notificationManager().subscribeToPushService(registration->scopeURLWithoutFragment(), WTF::move(applicationServerKey), [weakThis = WeakPtr { *this }, completionHandler = WTF::move(completionHandler), registrableDomain = RegistrableDomain(registration->data().scopeURL)] (std::expected<PushSubscriptionData, ExceptionData>&& result) mutable {
         if (RefPtr resourceLoadStatistics = weakThis && weakThis->session() ? weakThis->session()->resourceLoadStatistics() : nullptr; result && resourceLoadStatistics) {
             return resourceLoadStatistics->setMostRecentWebPushInteractionTime(WTF::move(registrableDomain), [result = WTF::move(result), completionHandler = WTF::move(completionHandler)] () mutable {
                 completionHandler(WTF::move(result));
@@ -699,7 +700,7 @@ void WebSWServerConnection::subscribeToPushService(WebCore::ServiceWorkerRegistr
 #endif
 }
 
-void WebSWServerConnection::unsubscribeFromPushService(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, WebCore::PushSubscriptionIdentifier subscriptionIdentifier, CompletionHandler<void(Expected<bool, ExceptionData>&&)>&& completionHandler)
+void WebSWServerConnection::unsubscribeFromPushService(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, WebCore::PushSubscriptionIdentifier subscriptionIdentifier, CompletionHandler<void(std::expected<bool, ExceptionData>&&)>&& completionHandler)
 {
 #if !ENABLE(WEB_PUSH_NOTIFICATIONS)
     UNUSED_PARAM(registrationIdentifier);
@@ -729,7 +730,7 @@ void WebSWServerConnection::unsubscribeFromPushService(WebCore::ServiceWorkerReg
 #endif
 }
 
-void WebSWServerConnection::getPushSubscription(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, CompletionHandler<void(Expected<std::optional<PushSubscriptionData>, ExceptionData>&&)>&& completionHandler)
+void WebSWServerConnection::getPushSubscription(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, CompletionHandler<void(std::expected<std::optional<PushSubscriptionData>, ExceptionData>&&)>&& completionHandler)
 {
 #if !ENABLE(WEB_PUSH_NOTIFICATIONS)
     UNUSED_PARAM(registrationIdentifier);
@@ -758,7 +759,7 @@ void WebSWServerConnection::getPushSubscription(WebCore::ServiceWorkerRegistrati
 #endif
 }
 
-void WebSWServerConnection::getPushPermissionState(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, CompletionHandler<void(Expected<uint8_t, ExceptionData>&&)>&& completionHandler)
+void WebSWServerConnection::getPushPermissionState(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, CompletionHandler<void(std::expected<uint8_t, ExceptionData>&&)>&& completionHandler)
 {
 #if !ENABLE(WEB_PUSH_NOTIFICATIONS)
     UNUSED_PARAM(registrationIdentifier);
@@ -847,6 +848,31 @@ void WebSWServerConnection::fetchTaskTimedOut(ServiceWorkerIdentifier serviceWor
 
     worker->setHasTimedOutAnyFetchTasks();
     worker->terminate();
+}
+
+void WebSWServerConnection::fetchTaskReceivedMainResourceResponse(std::optional<ServiceWorkerIdentifier> serviceWorkerIdentifier, const ResourceResponse& response, FrameIdentifier frameID)
+{
+    RefPtr networkProcess = this->networkProcess();
+    if (!networkProcess)
+        return;
+
+    auto sendCertificateInfo = [&](const CertificateInfo& certificateInfo) {
+        protect(networkProcess->parentProcessConnection())->send(Messages::WebFrameProxyFromNetworkProcess::ReceivedMainResourceResponseWithCertificateInfo(response.url().hostAndPort(), certificateInfo), frameID);
+    };
+
+    if (serviceWorkerIdentifier) {
+        if (RefPtr server = this->server()) {
+            if (RefPtr worker = server->workerByID(*serviceWorkerIdentifier)) {
+                if (const auto& certificateInfo = worker->certificateInfo(); !certificateInfo.isEmpty()) {
+                    sendCertificateInfo(certificateInfo);
+                    return;
+                }
+            }
+        }
+    }
+
+    if (const auto& certificateInfo = response.certificateInfo(); certificateInfo && !certificateInfo->isEmpty())
+        sendCertificateInfo(*certificateInfo);
 }
 
 void WebSWServerConnection::enableNavigationPreload(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, ExceptionOrVoidCallback&& callback)
@@ -1008,7 +1034,7 @@ void WebSWServerConnection::cookieChangeSubscriptions(WebCore::ServiceWorkerRegi
     callback(registration->cookieChangeSubscriptions());
 }
 
-void WebSWServerConnection::addRoutes(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, Vector<WebCore::ServiceWorkerRoute>&& routes, CompletionHandler<void(Expected<void, WebCore::ExceptionData>&&)>&& callback)
+void WebSWServerConnection::addRoutes(WebCore::ServiceWorkerRegistrationIdentifier registrationIdentifier, Vector<WebCore::ServiceWorkerRoute>&& routes, CompletionHandler<void(std::expected<void, WebCore::ExceptionData>&&)>&& callback)
 {
     RefPtr server = this->server();
     if (!server) {
@@ -1019,7 +1045,7 @@ void WebSWServerConnection::addRoutes(WebCore::ServiceWorkerRegistrationIdentifi
 }
 
 #if ENABLE(WEB_PUSH_NOTIFICATIONS)
-void WebSWServerConnection::getNotifications(const URL& registrationURL, const String& tag, CompletionHandler<void(Expected<Vector<WebCore::NotificationData>, WebCore::ExceptionData>&&)>&& completionHandler)
+void WebSWServerConnection::getNotifications(const URL& registrationURL, const String& tag, CompletionHandler<void(std::expected<Vector<WebCore::NotificationData>, WebCore::ExceptionData>&&)>&& completionHandler)
 {
     CheckedPtr session = this->session();
     if (!session) {

@@ -666,24 +666,20 @@ public:
             } else
                 ch = term.matchDirection() == Forward ? input.readCheckedDontAdvance(negativeInputOffset) : input.tryReadBackward(negativeInputOffset);
 
-            if (oldCh == errorCodePoint || ch == errorCodePoint) {
-                if (term.matchDirection() == Backward)
-                    input.setPos(savedPos);
-                return false;
-            }
-
-            if (oldCh == ch)
-                continue;
-
-            if (term.ignoreCase()) {
-                // See ES 6.0, 21.2.2.8.2 for the definition of Canonicalize(). For non-Unicode
-                // patterns, Unicode values are never allowed to match against ASCII ones.
-                // For Unicode, we need to check all canonical equivalents of a character.
-                if (isLegacyCompilation() && (isASCII(oldCh) || isASCII(ch))) {
-                    if (toASCIIUpper(oldCh) == toASCIIUpper(ch))
-                        continue;
-                } else if (areCanonicallyEquivalent(oldCh, ch, isEitherUnicodeCompilation() ? CanonicalMode::Unicode : CanonicalMode::UCS2))
+            if (oldCh != errorCodePoint && ch != errorCodePoint) {
+                if (oldCh == ch)
                     continue;
+
+                if (term.ignoreCase()) {
+                    // See ES 6.0, 21.2.2.8.2 for the definition of Canonicalize(). For non-Unicode
+                    // patterns, Unicode values are never allowed to match against ASCII ones.
+                    // For Unicode, we need to check all canonical equivalents of a character.
+                    if (isLegacyCompilation() && (isASCII(oldCh) || isASCII(ch))) {
+                        if (toASCIIUpper(oldCh) == toASCIIUpper(ch))
+                            continue;
+                    } else if (areCanonicallyEquivalent(oldCh, ch, isEitherUnicodeCompilation() ? CanonicalMode::Unicode : CanonicalMode::UCS2))
+                        continue;
+                }
             }
 
             if (term.matchDirection() == Forward)
@@ -1733,6 +1729,13 @@ public:
         UNUSED_PARAM(term);
 
         if (term.dotAll()) {
+            // In dotAll mode, .* can match line terminators. A non-multiline ^ matches only if the
+            // search begins at the start of the input (offset 0). A multiline ^ needs to check
+            // every line and is never optimized to a DotStarEnclosure.
+            ASSERT(!(term.anchors.m_bol && term.multiline()));
+            if (startOffset && term.anchors.m_bol && !term.multiline())
+                return false;
+
             context->matchBegin = startOffset;
             context->matchEnd = input.end();
             return true;
@@ -2161,8 +2164,14 @@ public:
 
             context->matchBegin = input.getPos();
 
-            if (currentTerm().alternative.onceThrough)
-                context->term += currentTerm().alternative.next;
+            while (currentTerm().alternative.onceThrough) {
+                int next = currentTerm().alternative.next;
+                if (next <= 0) {
+                    DUMP_EXTRA("- Return NoMatch\n");
+                    return JSRegExpResult::NoMatch;
+                }
+                context->term += next;
+            }
 
             MATCH_NEXT();
         }

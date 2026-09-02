@@ -90,6 +90,7 @@
 #include <gst/video/gstvideometa.h>
 #include <limits>
 #include <wtf/FileSystem.h>
+#include <wtf/HexNumber.h>
 #include <wtf/glib/WTFGType.h>
 #include <wtf/MathExtras.h>
 #include <wtf/MediaTime.h>
@@ -125,7 +126,7 @@
 #include "CoordinatedPlatformLayerBufferHolePunch.h"
 #include "CoordinatedPlatformLayerBufferProxy.h"
 #include "CoordinatedPlatformLayerBufferVideo.h"
-#endif // USE(TEXTURE_MAPPER)
+#endif // USE(COORDINATED_GRAPHICS)
 
 #if USE(EXTERNAL_HOLEPUNCH)
 #include "MediaPlayerPrivateHolePunch.h"
@@ -201,10 +202,6 @@ MediaPlayerPrivateGStreamer::MediaPlayerPrivateGStreamer(MediaPlayer& player)
         m_quirksManagerForTesting = GStreamerQuirksManager::createForTesting();
         m_quirksManagerForTesting->setHolePunchEnabledForTesting(true);
     }
-
-#if USE(COORDINATED_GRAPHICS)
-    m_contentsBufferProxy = CoordinatedPlatformLayerBufferProxy::create();
-#endif
 
     ensureGStreamerInitialized();
     m_audioSink = createAudioSink();
@@ -1747,6 +1744,14 @@ MediaTime MediaPlayerPrivateGStreamer::playbackPosition() const
         playbackPosition = MediaTime(gstreamerPosition, GST_SECOND);
     else if (m_canFallBackToLastFinishedSeekPosition)
         playbackPosition = m_seekTarget.time;
+
+    // Avoid exceeding the reported duration even by minuscule amounts.
+    // The multiplatform layer could degrade us to HaveMetadata if we let that happen (e.g. in MSE monitorSourceBuffers()).
+    // Don't apply this condition in the special zero duration case, since zero is a special value used when the duration
+    // is unknown, and applying the condition in that case may have undesired effects.
+    // See: MediaPlayerPrivateGStreamer::duration(), MediaPlayerPrivateGStreamerMSE::duration().
+    if (duration() != MediaTime::zeroTime() && playbackPosition > duration())
+        playbackPosition = duration();
 
     setCachedPosition(playbackPosition);
     invalidateCachedPositionOnNextIteration();
@@ -3756,9 +3761,7 @@ void MediaPlayerPrivateGStreamer::configureVideoDecoder(GstElement* decoder)
     if (gstObjectHasProperty(decoder, "max-errors"_s))
         g_object_set(decoder, "max-errors", 0, nullptr);
 
-#if USE(TEXTURE_MAPPER)
     updateTextureMapperFlags();
-#endif
 
     setupCodecProbe(decoder);
 
@@ -3840,12 +3843,22 @@ void MediaPlayerPrivateGStreamer::isLoopingChanged()
 }
 
 #if USE(COORDINATED_GRAPHICS)
-PlatformLayer* MediaPlayerPrivateGStreamer::platformLayer() const
+void MediaPlayerPrivateGStreamer::setPlatformLayerBufferProxy(Ref<CoordinatedPlatformLayerBufferProxy>&& proxy)
 {
-    return m_contentsBufferProxy.get();
+    m_contentsBufferProxy = WTF::move(proxy);
+    // Push any pending frame if needed.
+    if (isHolePunchRenderingEnabled())
+        pushNextHolePunchBuffer(IsInitialBuffer::Yes);
+    else
+        pushTextureToCompositor(IsDuplicateSample::Yes, IsInitialBuffer::Yes);
 }
 
-void MediaPlayerPrivateGStreamer::pushTextureToCompositor(bool isDuplicateSample)
+RefPtr<CoordinatedPlatformLayerBufferProxy> MediaPlayerPrivateGStreamer::platformLayerBufferProxy() const
+{
+    return m_contentsBufferProxy;
+}
+
+void MediaPlayerPrivateGStreamer::pushTextureToCompositor(IsDuplicateSample isDuplicateSample, IsInitialBuffer isInitialBuffer)
 {
     Locker sampleLocker { m_sampleMutex };
     if (!GST_IS_SAMPLE(m_sample.get()))
@@ -3854,8 +3867,12 @@ void MediaPlayerPrivateGStreamer::pushTextureToCompositor(bool isDuplicateSample
     // The GL video appsink reports the sample following a preroll with the same buffer, so don't
     // account for this scenario, this is important for rvfc, ensuring timestamps in metadata
     // increase monotonically during playback.
-    if (!isDuplicateSample)
+    if (isDuplicateSample == IsDuplicateSample::No)
         ++m_sampleCount;
+
+    RefPtr proxy = m_contentsBufferProxy;
+    if (!proxy || !proxy->isValid())
+        return;
 
     if (!m_videoInfo)
         m_videoInfo = VideoFrameGStreamer::infoFromCaps(GRefPtr(gst_sample_get_caps(m_sample.get())));
@@ -3864,7 +3881,15 @@ void MediaPlayerPrivateGStreamer::pushTextureToCompositor(bool isDuplicateSample
     options.info = m_videoInfo;
     auto frame = VideoFrameGStreamer::createWrappedSample(m_sample, options);
 
-    m_contentsBufferProxy->setDisplayBuffer(CoordinatedPlatformLayerBufferVideo::create(WTF::move(frame), m_videoDecoderPlatform, !m_isUsingFallbackVideoSink, m_textureMapperFlags));
+#if USE(TEXTURE_MAPPER)
+    auto buffer = CoordinatedPlatformLayerBufferVideo::create(WTF::move(frame), m_videoDecoderPlatform, !m_isUsingFallbackVideoSink, m_textureMapperFlags, nullptr);
+#else
+    auto buffer = CoordinatedPlatformLayerBufferVideo::create(WTF::move(frame), m_videoDecoderPlatform, !m_isUsingFallbackVideoSink, m_textureMapperFlags, proxy->threadSafeGrContext());
+#endif
+    if (isInitialBuffer == IsInitialBuffer::Yes)
+        proxy->setInitialDisplayBuffer(WTF::move(buffer));
+    else
+        proxy->setDisplayBuffer(WTF::move(buffer));
 }
 #endif // USE(COORDINATED_GRAPHICS)
 
@@ -4057,14 +4082,14 @@ void MediaPlayerPrivateGStreamer::triggerRepaint(GRefPtr<GstSample>&& sample)
     }
 
     bool shouldTriggerResize;
-    bool isDuplicateSample = false;
+    IsDuplicateSample isDuplicateSample = IsDuplicateSample::No;
     {
         Locker sampleLocker { m_sampleMutex };
         shouldTriggerResize = !m_sample;
         if (!shouldTriggerResize) {
             auto previousBuffer = gst_sample_get_buffer(m_sample.get());
             // We're omitting a !previousBuffer assert here because on some embedded platforms the buffer can't be deep copied by flushCurrentBuffer().
-            isDuplicateSample = buffer == previousBuffer;
+            isDuplicateSample = buffer == previousBuffer ? IsDuplicateSample::Yes : IsDuplicateSample::No;
         }
         m_sample = WTF::move(sample);
     }
@@ -4156,9 +4181,13 @@ void MediaPlayerPrivateGStreamer::flushCurrentBuffer()
     }
 
 #if USE(COORDINATED_GRAPHICS)
+    RefPtr proxy = m_contentsBufferProxy;
+    if (!proxy)
+        return;
+
     auto shouldWait = m_videoDecoderPlatform == GstVideoDecoderPlatform::Video4Linux ? CoordinatedPlatformLayerBufferProxy::ShouldWait::Yes : CoordinatedPlatformLayerBufferProxy::ShouldWait::No;
     GST_DEBUG_OBJECT(pipeline(), "Flushing video sample %s", shouldWait == CoordinatedPlatformLayerBufferProxy::ShouldWait::Yes ? "synchronously" : "");
-    m_contentsBufferProxy->dropCurrentBufferWhilePreservingTexture(shouldWait);
+    proxy->dropCurrentBufferWhilePreservingTexture(shouldWait);
 #endif
 }
 #endif
@@ -4304,13 +4333,11 @@ bool MediaPlayerPrivateGStreamer::setVideoSourceOrientation(ImageOrientation ori
         return false;
 
     m_videoSourceOrientation = orientation;
-#if USE(TEXTURE_MAPPER)
     updateTextureMapperFlags();
-#endif
+
     return true;
 }
 
-#if USE(TEXTURE_MAPPER)
 void MediaPlayerPrivateGStreamer::updateTextureMapperFlags()
 {
     switch (m_videoSourceOrientation.orientation()) {
@@ -4335,7 +4362,6 @@ void MediaPlayerPrivateGStreamer::updateTextureMapperFlags()
         break;
     }
 }
-#endif
 
 bool MediaPlayerPrivateGStreamer::supportsFullscreen() const
 {
@@ -4419,11 +4445,21 @@ GstElement* MediaPlayerPrivateGStreamer::createHolePunchVideoSink()
     return sink;
 }
 
-void MediaPlayerPrivateGStreamer::pushNextHolePunchBuffer()
+void MediaPlayerPrivateGStreamer::pushNextHolePunchBuffer(IsInitialBuffer isInitialBuffer)
 {
     ASSERT(isHolePunchRenderingEnabled());
 #if USE(COORDINATED_GRAPHICS)
-    m_contentsBufferProxy->setDisplayBuffer(CoordinatedPlatformLayerBufferHolePunch::create(m_size, m_videoSink.get(), m_quirksManagerForTesting ? m_quirksManagerForTesting.copyRef() : protect(&GStreamerQuirksManager::singleton())));
+    RefPtr proxy = m_contentsBufferProxy;
+    if (!proxy)
+        return;
+
+    auto buffer = CoordinatedPlatformLayerBufferHolePunch::create(m_size, m_videoSink.get(), m_quirksManagerForTesting ? m_quirksManagerForTesting.copyRef() : protect(&GStreamerQuirksManager::singleton()));
+    if (isInitialBuffer == IsInitialBuffer::Yes)
+        proxy->setInitialDisplayBuffer(WTF::move(buffer));
+    else
+        proxy->setDisplayBuffer(WTF::move(buffer));
+#else
+    UNUSED_PARAM(isInitialBuffer);
 #endif
 }
 

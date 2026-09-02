@@ -500,15 +500,14 @@ void RecorderImpl::setURLForRect(const URL& link, const FloatRect& destRect)
 
 void RecorderImpl::appendStateChangeItemIfNecessary()
 {
-    auto& state = currentState().state;
-    auto changes = state.changes();
+    auto& state = m_state;
+    auto changes = computeStateChanges();
     if (!changes)
         return;
 
     auto recordFullItem = [&] {
         m_items.append(SetState(state));
-        state.didApplyChanges();
-        currentState().lastDrawingState = state;
+        commitStateChanges(changes);
     };
 
     if (!changes.containsOnly({ GraphicsContextState::Change::FillBrush, GraphicsContextState::Change::StrokeBrush, GraphicsContextState::Change::StrokeThickness })) {
@@ -540,8 +539,7 @@ void RecorderImpl::appendStateChangeItemIfNecessary()
     if (strokeColor || strokeThickness)
         m_items.append(SetInlineStroke(strokeColor, strokeThickness));
 
-    state.didApplyChanges();
-    currentState().lastDrawingState = state;
+    commitStateChanges(changes);
 }
 
 void RecorderImpl::drawPlaceholder(Function<void(GraphicsContext&)>&& function)

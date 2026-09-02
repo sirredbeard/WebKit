@@ -463,7 +463,7 @@ bool WebChromeClient::testProcessIncomingSyncMessagesWhenWaitingForSyncReply()
 
     IPC::UnboundedSynchronousIPCScope unboundedSynchronousIPCScope;
 
-    auto sendResult = WebProcess::singleton().ensureNetworkProcessConnection().connection().sendSync(Messages::NetworkConnectionToWebProcess::TestProcessIncomingSyncMessagesWhenWaitingForSyncReply(m_page->webPageProxyIdentifier()), 0);
+    auto sendResult = protect(WebProcess::singleton().ensureNetworkProcessConnection().connection())->sendSync(Messages::NetworkConnectionToWebProcess::TestProcessIncomingSyncMessagesWhenWaitingForSyncReply(m_page->webPageProxyIdentifier()), 0);
     auto [handled] = sendResult.takeReplyOr(false);
     return handled;
 }
@@ -838,6 +838,15 @@ IntRect WebChromeClient::rootViewToAccessibilityScreen(const IntRect& rect) cons
     return page ? page->rootViewToAccessibilityScreen(rect) : IntRect();
 }
 
+void WebChromeClient::translateAccessibilityAnnouncementStrings(const Vector<String>& strings, const String& targetLocaleIdentifier, CompletionHandler<void(Vector<String>&&)>&& completion)
+{
+    RefPtr page = m_page.get();
+    if (!page)
+        return completion({ });
+
+    page->sendWithAsyncReply(Messages::WebPageProxy::TranslateAccessibilityAnnouncementStrings(strings, targetLocaleIdentifier), WTF::move(completion));
+}
+
 #if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
 void WebChromeClient::requestFrameScreenPosition(FrameIdentifier frameID) const
 {
@@ -1051,6 +1060,17 @@ void WebChromeClient::runOpenPanel(LocalFrame& frame, FileChooser& fileChooser)
     ASSERT(webFrame);
     page->send(Messages::WebPageProxy::RunOpenPanel(webFrame->frameID(), webFrame->info(), fileChooser.settings()));
 }
+
+void WebChromeClient::transcodeChosenFiles(Vector<String>&& transcodingPaths, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&& completion)
+{
+    RefPtr page = m_page.get();
+    if (!page) {
+        completion({ });
+        return;
+    }
+
+    page->sendWithAsyncReply(Messages::WebPageProxy::TranscodeChosenFiles(transcodingPaths, destinationUTI, destinationExtension), WTF::move(completion));
+}
     
 void WebChromeClient::showShareSheet(ShareDataWithParsedURL&& shareData, CompletionHandler<void(bool)>&& callback)
 {
@@ -1065,7 +1085,7 @@ void WebChromeClient::showContactPicker(WebCore::ContactsRequestData&& requestDa
 }
 
 #if ENABLE(WEB_AUTHN)
-void WebChromeClient::showDigitalCredentialsChooser(const WebCore::DigitalCredentialsRequestData& requestData, WTF::CompletionHandler<void(Expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&& callback)
+void WebChromeClient::showDigitalCredentialsChooser(const WebCore::DigitalCredentialsRequestData& requestData, WTF::CompletionHandler<void(std::expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&& callback)
 {
     if (RefPtr page = m_page.get())
         page->showDigitalCredentialsChooser(std::nullopt, requestData, WTF::move(callback));
@@ -1358,7 +1378,7 @@ unsigned WebChromeClient::remoteImagesCountForTesting() const
 
 void WebChromeClient::registerBlobPathForTesting(const String& path, CompletionHandler<void()>&& completionHandler)
 {
-    WebProcess::singleton().ensureNetworkProcessConnection().connection().sendWithAsyncReply(Messages::NetworkConnectionToWebProcess::RegisterBlobPathForTesting(path), WTF::move(completionHandler));
+    protect(WebProcess::singleton().ensureNetworkProcessConnection().connection())->sendWithAsyncReply(Messages::NetworkConnectionToWebProcess::RegisterBlobPathForTesting(path), WTF::move(completionHandler));
 }
 
 
@@ -2050,18 +2070,13 @@ void WebChromeClient::removePlaybackTargetPickerClient(PlaybackTargetClientConte
         page->send(Messages::WebPageProxy::RemovePlaybackTargetPickerClient(contextId));
 }
 
-void WebChromeClient::showPlaybackTargetPicker(PlaybackTargetClientContextIdentifier contextId, const IntPoint& position, bool isVideo)
+void WebChromeClient::showPlaybackTargetPicker(PlaybackTargetClientContextIdentifier contextId, FrameIdentifier frameID, const IntPoint& position, bool isVideo)
 {
     RefPtr page = m_page.get();
     if (!page)
         return;
 
-    RefPtr frameView = page->localMainFrameView();
-    if (!frameView)
-        return;
-
-    FloatRect rect(frameView->contentsToRootView(frameView->windowToContents(position)), FloatSize());
-    page->send(Messages::WebPageProxy::ShowPlaybackTargetPicker(contextId, rect, isVideo));
+    page->send(Messages::WebPageProxy::ShowPlaybackTargetPicker(contextId, frameID, FloatRect(position, FloatSize()), isVideo));
 }
 
 void WebChromeClient::playbackTargetPickerClientStateDidChange(PlaybackTargetClientContextIdentifier contextId, MediaProducerMediaStateFlags state)
@@ -2086,6 +2101,15 @@ void WebChromeClient::mockMediaPlaybackTargetPickerDismissPopup()
 {
     if (RefPtr page = m_page.get())
         page->send(Messages::WebPageProxy::MockMediaPlaybackTargetPickerDismissPopup());
+}
+
+void WebChromeClient::mockMediaPlaybackTargetPickerRect(CompletionHandler<void(FloatRect)>&& completionHandler)
+{
+    RefPtr page = m_page.get();
+    if (!page)
+        return completionHandler({ });
+
+    page->sendWithAsyncReply(Messages::WebPageProxy::MockMediaPlaybackTargetPickerRect(), WTF::move(completionHandler));
 }
 #endif
 

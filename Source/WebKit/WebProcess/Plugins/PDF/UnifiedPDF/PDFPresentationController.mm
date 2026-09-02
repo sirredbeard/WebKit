@@ -36,6 +36,7 @@
 #include <WebCore/GraphicsLayer.h>
 #include <WebCore/GraphicsLayerFactory.h>
 #include <WebCore/LocalFrameView.h>
+#include <WebCore/LocalFrameViewInlines.h>
 #include <WebCore/Path.h>
 #include <WebCore/PathSegment.h>
 #include <WebCore/PathSegmentData.h>
@@ -156,10 +157,12 @@ void PDFPresentationController::releaseMemory()
         asyncRenderer->releaseMemory();
 }
 
-void PDFPresentationController::invalidateRenderedContentForAccessibilityDisplayModeChange()
+void PDFPresentationController::updateForAccessibilityDisplayModeChange()
 {
     if (RefPtr asyncRenderer = asyncRendererIfExists())
         asyncRenderer->invalidateAllRenderedContent();
+
+    updateLayersForAccessibilityDisplayModeChange();
 }
 
 RetainPtr<PDFDocument> PDFPresentationController::pluginPDFDocument() const

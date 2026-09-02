@@ -44,9 +44,11 @@
 #include <WebCore/LocalFrameLoaderClient.h>
 #include <WebCore/MarkupExclusionRule.h>
 #include <WebCore/ProcessIdentifier.h>
+#include <WebCore/ScriptExecutionContextIdentifier.h>
 #include <WebCore/ShareableBitmap.h>
 #include <wtf/Forward.h>
 #include <wtf/HashMap.h>
+#include <wtf/Markable.h>
 #include <wtf/RefPtr.h>
 #include <wtf/RetainPtr.h>
 #include <wtf/WeakPtr.h>
@@ -57,6 +59,7 @@ class Array;
 
 namespace WebCore {
 class CertificateInfo;
+class DocumentLoader;
 class FloatRect;
 class Frame;
 class FrameTreeSyncData;
@@ -153,7 +156,10 @@ public:
     WebCore::FrameIdentifier frameID() const { return m_frameID; }
 
     enum class ForNavigationAction : bool { No, Yes };
-    uint64_t setUpPolicyListener(WebCore::FramePolicyFunction&&, ForNavigationAction);
+    // A non-null initiating document marks this as a download attribute check. Such a check outlives the
+    // navigation that started it, so it also carries the load it was made for: the frame's policy document
+    // loader at the time, which a newer navigation can replace before the decision arrives.
+    uint64_t setUpPolicyListener(WebCore::FramePolicyFunction&&, ForNavigationAction, Markable<WebCore::ScriptExecutionContextIdentifier> downloadAttributeInitiatingDocument = { }, SingleThreadWeakPtr<WebCore::DocumentLoader>&& downloadAttributePolicyDocumentLoader = { });
     void invalidatePolicyListeners();
     void didReceivePolicyDecision(uint64_t listenerID, PolicyDecision&&);
 
@@ -276,6 +282,7 @@ public:
     String frameTextForTesting(bool);
 
     std::optional<std::pair<Ref<WebCore::WebKitJSHandle>, JSHandleInfo>> createAndPrepareToSendJSHandle(WebCore::Node&) const;
+    std::optional<std::pair<Ref<WebCore::WebKitJSHandle>, JSHandleInfo>> createAndPrepareToSendJSHandle(WebCore::Node&, InjectedBundleScriptWorld&) const;
 
     void markAsRemovedInAnotherProcess() { m_wasRemovedInAnotherProcess = true; }
     bool wasRemovedInAnotherProcess() const { return m_wasRemovedInAnotherProcess; }
@@ -294,7 +301,7 @@ public:
     void sendMessageToInspectorTarget(const String& message);
 
     void requestTextExtraction(WebCore::TextExtraction::Request&&, CompletionHandler<void(WebCore::TextExtraction::Result&&)>&&);
-    void handleTextExtractionInteraction(WebCore::TextExtraction::Interaction&&, CompletionHandler<void(bool, String&&, WebCore::FloatRect)>&&);
+    void handleTextExtractionInteraction(WebCore::TextExtraction::Interaction&&, CompletionHandler<void(bool, String&&, Vector<String>&&, WebCore::FloatRect)>&&);
     void describeTextExtractionInteraction(WebCore::TextExtraction::Interaction&&, CompletionHandler<void(WebCore::TextExtraction::InteractionDescription&&)>&&);
     void takeSnapshotOfExtractedText(WebCore::TextExtraction::ExtractedText&&, CompletionHandler<void(RefPtr<WebCore::TextIndicator>&&)>&&);
     void requestJSHandleForExtractedText(WebCore::TextExtraction::ExtractedText&&, CompletionHandler<void(std::optional<JSHandleInfo>&&)>&&);
@@ -333,9 +340,14 @@ private:
 
     struct PolicyCheck {
         ForNavigationAction forNavigationAction { ForNavigationAction::No };
+        Markable<WebCore::ScriptExecutionContextIdentifier> downloadAttributeInitiatingDocument;
+        SingleThreadWeakPtr<WebCore::DocumentLoader> downloadAttributePolicyDocumentLoader;
         WebCore::FramePolicyFunction policyFunction;
     };
     HashMap<uint64_t, PolicyCheck> m_pendingPolicyChecks;
+
+    bool shouldHonorDownloadAttributePolicyCheck(const PolicyCheck&) const;
+    bool newerNavigationOwnsDownloadAttributePolicyCheckLoad(const PolicyCheck&) const;
 
     std::optional<DownloadID> m_policyDownloadID;
 

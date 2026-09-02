@@ -509,6 +509,27 @@ void BitmapImageSource::cacheNativeImageAtIndex(unsigned index, SubsamplingLevel
     decodedSizeIncreased(destination.sizeInBytes());
 }
 
+void BitmapImageSource::drawNativeImage(GraphicsContext& context, NativeImage& nativeImage, const FloatRect& destinationRect, const FloatRect& sourceRect, ImagePaintingOptions options)
+{
+    Ref protectedNativeImage { nativeImage };
+    auto sizeBeforeDrawing = protectedNativeImage->sizeInBytes();
+    context.drawNativeImage(protectedNativeImage, destinationRect, sourceRect, options);
+    auto sizeAfterDrawing = protectedNativeImage->sizeInBytes();
+
+    if (sizeBeforeDrawing == sizeAfterDrawing)
+        return;
+
+    // Only fold the change while the frame still owns this NativeImage.
+    auto& frame = frameAtIndex(currentFrameIndex());
+    if (!frame.hasNativeImage(protectedNativeImage))
+        return;
+
+    if (sizeAfterDrawing > sizeBeforeDrawing)
+        decodedSizeIncreased(static_cast<unsigned>(sizeAfterDrawing - sizeBeforeDrawing));
+    else
+        decodedSizeDecreased(static_cast<unsigned>(sizeBeforeDrawing - sizeAfterDrawing));
+}
+
 const ImageFrame& BitmapImageSource::frameAtIndex(unsigned index) const
 {
     if (index >= m_frames.size())
@@ -556,7 +577,7 @@ DecodingStatus BitmapImageSource::requestNativeImageAtIndex(unsigned index, Subs
     return DecodingStatus::Decoding;
 }
 
-Expected<DecodingDestination, DecodingStatus> BitmapImageSource::requestNativeImageAtIndexIfNeeded(unsigned index, SubsamplingLevel subsamplingLevel, ImageAnimatingState animatingState, const DecodingOptions& options)
+std::expected<DecodingDestination, DecodingStatus> BitmapImageSource::requestNativeImageAtIndexIfNeeded(unsigned index, SubsamplingLevel subsamplingLevel, ImageAnimatingState animatingState, const DecodingOptions& options)
 {
     if (index >= m_frames.size())
         return makeUnexpected(DecodingStatus::Invalid);
@@ -575,7 +596,7 @@ Expected<DecodingDestination, DecodingStatus> BitmapImageSource::requestNativeIm
     return makeUnexpected(requestNativeImageAtIndex(index, subsamplingLevel, animatingState, options));
 }
 
-Expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndexCacheIfNeeded(unsigned index, SubsamplingLevel subsamplingLevel, const DecodingOptions& options)
+std::expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndexCacheIfNeeded(unsigned index, SubsamplingLevel subsamplingLevel, const DecodingOptions& options)
 {
     if (!m_decoder)
         return makeUnexpected(DecodingStatus::Invalid);
@@ -615,7 +636,7 @@ Expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndex
     return makeUnexpected(DecodingStatus::Invalid);
 }
 
-Expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndexRequestIfNeeded(unsigned index, SubsamplingLevel subsamplingLevel, const DecodingOptions& options)
+std::expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndexRequestIfNeeded(unsigned index, SubsamplingLevel subsamplingLevel, const DecodingOptions& options)
 {
     if (!m_decoder)
         return makeUnexpected(DecodingStatus::Invalid);
@@ -633,7 +654,7 @@ Expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndex
     return makeUnexpected(DecodingStatus::Invalid);
 }
 
-Expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndexForDrawing(unsigned index, SubsamplingLevel subsamplingLevel, const DecodingOptions& options)
+std::expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndexForDrawing(unsigned index, SubsamplingLevel subsamplingLevel, const DecodingOptions& options)
 {
     // If this is an animated image and the frame is not available, we have no
     // choice but to decode it synchronously. Otherwise, a flicker will happen.
@@ -642,7 +663,7 @@ Expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::nativeImageAtIndex
     return nativeImageAtIndexCacheIfNeeded(index, subsamplingLevel, options);
 }
 
-Expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::currentNativeImageForDrawing(SubsamplingLevel subsamplingLevel, const DecodingOptions& options)
+std::expected<Ref<NativeImage>, DecodingStatus> BitmapImageSource::currentNativeImageForDrawing(SubsamplingLevel subsamplingLevel, const DecodingOptions& options)
 {
     startAnimation(subsamplingLevel, options);
 

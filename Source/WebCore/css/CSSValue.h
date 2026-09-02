@@ -95,6 +95,7 @@ public:
     bool isEasingFunctionValue() const { return m_classType == ClassType::EasingFunction; }
     bool isFilterImageValue() const { return m_classType == ClassType::FilterImage; }
     bool isFilterValue() const { return m_classType == ClassType::Filter; }
+    bool isFlexWrapValue() const { return m_classType == ClassType::FlexWrap; }
     bool isFontFaceSrcLocalValue() const { return m_classType == ClassType::FontFaceSrcLocal; }
     bool isFontFaceSrcResourceValue() const { return m_classType == ClassType::FontFaceSrcResource; }
     bool isFontFamilyNameValue() const { return m_classType == ClassType::FontFamilyName; }
@@ -123,6 +124,7 @@ public:
     bool isOffsetRotateValue() const { return m_classType == ClassType::OffsetRotate; }
     bool isPaintImageValue() const { return m_classType == ClassType::PaintImage; }
     bool isPair() const { return m_classType == ClassType::ValuePair; }
+    bool isParamValue() const { return m_classType == ClassType::Param; }
     bool isPath() const { return m_classType == ClassType::Path; }
     bool isShorthandSubstitutionValue() const { return m_classType == ClassType::ShorthandSubstitution; }
     bool isPositionValue() const { return m_classType == ClassType::Position; }
@@ -164,9 +166,6 @@ public:
     // What properties does this value rely on (eg, font-size for em units)
     ComputedStyleDependencies computedStyleDependencies() const;
     void collectComputedStyleDependencies(ComputedStyleDependencies&) const;
-
-    // Checks to see if the provided conversion data is sufficient to resolve the dependencies of the CSSValue.
-    bool canResolveDependenciesWithConversionData(const CSSToLengthConversionData&) const;
 
     bool equals(const CSSValue&) const;
     bool operator==(const CSSValue& other) const { return equals(other); }
@@ -234,6 +233,7 @@ protected:
         DynamicRangeLimit,
         EasingFunction,
         Filter,
+        FlexWrap,
         Font,
         FontFaceSrcLocal,
         FontFaceSrcResource,
@@ -254,6 +254,7 @@ protected:
         MaskBorderSource,
         MaskBorderWidth,
         OffsetRotate,
+        Param,
         Path,
         ShorthandSubstitution,
         Position,
@@ -311,11 +312,12 @@ protected:
 
     // CSSPrimitiveValue:
     uint8_t m_primitiveUnitType : 7 { 0 }; // CSSUnitType
-    mutable uint8_t m_hasCachedCSSText : 1 { false };
     uint8_t m_isImplicitInitialValue : 1 { false };
 
     // CSSValueList and CSSValuePair:
     ValueSeparator m_valueSeparator : ValueSeparatorBits { ValueSeparator::Space };
+
+    mutable uint8_t m_hasCachedCSSText { false };
 
 private:
     ClassType m_classType : ClassTypeBits;

@@ -99,11 +99,11 @@ JS_EXPORT_PRIVATE std::optional<int32_t> calendarYearOfWeek(CalendarID, const IS
 
 JS_EXPORT_PRIVATE bool isValidMonthCodeForCalendar(CalendarID, ParsedMonthCode);
 
-JS_EXPORT_PRIVATE bool yearContainsMonthCode(CalendarID, int32_t year, ParsedMonthCode);
+JS_EXPORT_PRIVATE TemporalResult<bool> yearContainsMonthCode(CalendarID, int32_t year, ParsedMonthCode);
 
 JS_EXPORT_PRIVATE TemporalResult<ParsedMonthCode> constrainMonthCode(CalendarID, int32_t year, ParsedMonthCode, TemporalOverflow);
 
-JS_EXPORT_PRIVATE int32_t monthCodeOrdinalInYear(CalendarID, ParsedMonthCode, int32_t year);
+JS_EXPORT_PRIVATE TemporalResult<int32_t> monthCodeOrdinalInYear(CalendarID, ParsedMonthCode, int32_t year);
 
 JS_EXPORT_PRIVATE TemporalResult<std::optional<String>> calendarEra(CalendarID, const ISO8601::PlainDate& isoDate);
 
@@ -132,9 +132,7 @@ enum class EcmaReferenceYearError : uint8_t {
     UseRegularIfConstrain,
 };
 
-Expected<int32_t, EcmaReferenceYearError> ecmaReferenceYear(CalendarID, uint8_t monthNumber, bool isLeapMonth, uint8_t day);
-
-JS_EXPORT_PRIVATE int32_t lunarCalendarExtendedYearFor1972(CalendarID);
+std::expected<int32_t, EcmaReferenceYearError> ecmaReferenceYear(CalendarID, uint8_t monthNumber, bool isLeapMonth, uint8_t day);
 
 JS_EXPORT_PRIVATE std::optional<ASCIILiteral> canonicalizeEraInCalendar(CalendarID, StringView era);
 

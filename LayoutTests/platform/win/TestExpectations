@@ -108,12 +108,16 @@ imported/w3c/web-platform-tests/digital-credentials/ [ Skip ]
 
 # WEB_CODECS is disabled
 fast/webcodecs/audio-data-copy-to-crash.html [ Skip ]
+fast/webcodecs/audio-data-copy-to-zero-frames-crash.html [ Skip ]
 
 # WebGPU is disabled
 http/tests/webgpu [ Skip ]
 fast/webgpu [ Skip ]
+inspector/canvas/console-record-webgpu.html [ Skip ]
 inspector/canvas/create-context-webgpu.html [ Skip ]
-inspector/canvas/recording-webgpu.html [ Skip ]
+inspector/canvas/recording-webgpu-frameCount.html [ Skip ]
+inspector/canvas/recording-webgpu-full.html [ Skip ]
+inspector/canvas/recording-webgpu-memoryLimit.html [ Skip ]
 inspector/canvas/requestClientNodes-webgpu.html [ Skip ]
 inspector/canvas/requestContent-webgpu.html [ Skip ]
 inspector/canvas/requestShaderSource-webgpu.html [ Skip ]
@@ -561,6 +565,8 @@ css3/masking/clip-path-border-radius-fill-box-001.html [ ImageOnlyFailure ]
 css3/masking/clip-path-border-radius-padding-box-001.html [ ImageOnlyFailure ]
 css3/masking/clip-path-inset.html [ ImageOnlyFailure ]
 css3/masking/mask-repeat-space-padding.html [ ImageOnlyFailure ]
+# The caret-color legibility adjustment is only built where HAVE(REDESIGNED_TEXT_CURSOR) is enabled.
+editing/caret/caret-color-legibility-after-paste.html [ Skip ]
 editing/caret/caret-in-empty-cell.html [ ImageOnlyFailure ]
 fast/clip/overflow-hidden-with-border-radius-overflow-clipping-parent.html [ ImageOnlyFailure ]
 fast/css-generated-content/initial-letter-pagination-sunken-rl.html [ ImageOnlyFailure ]
@@ -1808,6 +1814,7 @@ fast/canvas/webgl/texImage2D-video-flipY-true.html [ Skip ]
 webgl/1.0.x/conformance/extensions/oes-texture-float-with-video.html [ Skip ]
 webgl/1.0.x/conformance/extensions/oes-texture-half-float-with-video.html [ Skip ]
 webgl/1.0.x/conformance/textures/image_bitmap_from_video [ Skip ]
+webkit.org/b/292182 webgl/1.0.x/conformance/textures/misc/tex-video-using-tex-unit-non-zero.html [ Failure Pass ]
 webgl/1.0.x/conformance/textures/misc/texture-npot-video.html [ Skip ]
 webgl/1.0.x/conformance/textures/misc/texture-upload-size.html [ Skip ]
 webgl/1.0.x/conformance/textures/misc/video-rotation.html [ Skip ]
@@ -2185,7 +2192,6 @@ fast/xmlhttprequest [ Skip ]
 fast/xpath [ Skip ]
 fast/xsl [ Skip ]
 fullscreen [ Skip ]
-html5lib [ Skip ]
 http/wpt/audio-output [ Skip ]
 http/wpt/beacon [ Skip ]
 http/wpt/cache-storage [ Skip ]
@@ -2618,11 +2624,6 @@ fast/dynamic/float-from-empty-line.html [ Failure ]
 
 imported/w3c/web-platform-tests/resource-timing/cross-origin-redirects.html [ Pass Failure ]
 imported/w3c/web-platform-tests/resource-timing/cross-origin-start-end-time-with-redirects.html [ Pass ]
-imported/w3c/web-platform-tests/resource-timing/resource_reuse.sub.html [ Pass ]
-imported/w3c/web-platform-tests/resource-timing/resource_TAO_cross_origin_redirect_chain.html [ Pass ]
-imported/w3c/web-platform-tests/resource-timing/resource_TAO_match_origin.htm [ Pass ]
-imported/w3c/web-platform-tests/resource-timing/resource_timing_same_origin_redirect.html [ Pass ]
-imported/w3c/web-platform-tests/resource-timing/resource_timing_TAO_cross_origin_redirect.html [ Pass ]
 webkit.org/b/197473 imported/w3c/web-platform-tests/resource-timing/resource-timing-level1.sub.html [ Pass Failure ]
 
 
@@ -4682,7 +4683,7 @@ imported/w3c/web-platform-tests/trusted-types/TrustedTypePolicyFactory-getAttrib
 imported/w3c/web-platform-tests/trusted-types/set-event-handlers-content-attributes.tentative.html [ Failure ]
 
 # Expected localhost URLs but got web-platform.test URLs
-imported/w3c/web-platform-tests/css/css-mixins/function-attr.html [ Failure ]
+imported/w3c/web-platform-tests/css/css-mixins/functions/function-attr.html [ Failure ]
 
 # Flaky crash due to running out of commit space due to 4GB wasm memory
 webgl/2.0.y/conformance2/wasm/teximage2d-2gb-in-4gb-wasm-memory.html [ Skip ]
@@ -4808,3 +4809,32 @@ http/wpt/web-locks/back-forward-cache-suspend-test.https.html [ Skip ] # Flaky C
 imported/w3c/web-platform-tests/largest-contentful-paint/contracted-image.html [ Pass Failure ]
 imported/w3c/web-platform-tests/largest-contentful-paint/observe-image.html [ Pass Failure ]
 imported/w3c/web-platform-tests/largest-contentful-paint/repeated-image.html [ Pass Failure ]
+
+# Gardening: unexpected results on the last 20 Win-Tests-EWS runs (98613-98655, 319581@main-319601@main).
+
+# Consistent image failures, in every run. These are all reftests, so they cannot be
+# rebaselined; corner-shape is not applied through the composited path on Windows.
+compositing/corner-shape-ancestor-clip.html [ ImageOnlyFailure ]
+compositing/corner-shape-mask-layer-offset.html [ ImageOnlyFailure ]
+http/tests/canvas/canvas-tainted-image-capture-video-frame.html [ ImageOnlyFailure ]
+imported/w3c/web-platform-tests/css/css-borders/corner-shape/corner-shape-bevel-overflow-composite.html [ ImageOnlyFailure ]
+imported/w3c/web-platform-tests/css/css-borders/corner-shape/corner-shape-notch-mixed.html [ ImageOnlyFailure ]
+imported/w3c/web-platform-tests/css/css-borders/corner-shape/corner-shape-superellipse-negative-100.html [ ImageOnlyFailure ]
+
+# Consistent text failures, in every run
+compositing/geometry/composited-bounds-single-axis-clip-taller-than-document.html [ Failure ]
+compositing/geometry/composited-bounds-with-single-axis-clip.html [ Failure ]
+editing/input/compositionend-after-clicking-outside-editable.html [ Failure ]
+editing/input/compositionend-data-after-aborting-composition.html [ Failure ]
+fast/dom/navigator-detached-no-crash.html [ Failure ]
+fast/quirks/active-quirks-by-domain.html [ Failure ]
+imported/w3c/web-platform-tests/css/selectors/invalidation/media-loading-pseudo-classes-in-has.sub.html [ Failure ]
+
+# Consistent timeouts, in every run
+fast/canvas/offscreen-isPointInStroke-svg-stroke-bounds-race-crash.html [ Skip ] # Timeout, like offscreen-worker-unsafe-isPointInStroke-call.html above
+fast/text/font-face/css-font-face-setstatus-reentrancy-crash.html [ Skip ] # Timeout
+
+# Crashes
+http/wpt/user-activation/bless-edge-cases.sub.html [ Skip ] # Crash, in 17 of the 20 runs
+http/wpt/user-activation/bless-nested.sub.html [ Skip ] # Crash, unmasked once bless-edge-cases.sub.html above is skipped
+http/wpt/web-locks/lock-name-length-restriction.https.html [ Skip ] # Flaky Crash

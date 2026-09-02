@@ -62,6 +62,7 @@
 #include <wtf/HashCountedSet.h>
 #include <wtf/OptionSet.h>
 #include <wtf/RefCounted.h>
+#include <wtf/SHA1.h>
 #include <wtf/URLHash.h>
 
 #if ENABLE(IPC_TESTING_API)
@@ -303,7 +304,7 @@ private:
     void testProcessIncomingSyncMessagesWhenWaitingForSyncReply(WebPageProxyIdentifier, CompletionHandler<void(bool)>&&);
     void loadPing(NetworkResourceLoadParameters&&);
     void prefetchDNS(const String&);
-    void sendH2Ping(URL&&, WebPageProxyIdentifier, WebCore::PageIdentifier, WebCore::FrameIdentifier, std::optional<NavigatingToAppBoundDomain>, CompletionHandler<void(Expected<WTF::Seconds, WebCore::ResourceError>&&)>&&);
+    void sendH2Ping(URL&&, WebPageProxyIdentifier, WebCore::PageIdentifier, WebCore::FrameIdentifier, std::optional<NavigatingToAppBoundDomain>, CompletionHandler<void(std::expected<WTF::Seconds, WebCore::ResourceError>&&)>&&);
     void preconnectTo(PreconnectRequest&&);
     void isResourceLoadFinished(WebCore::ResourceLoaderIdentifier, CompletionHandler<void(bool)>&&);
 #if ENABLE(IPC_TESTING_API)
@@ -319,9 +320,12 @@ private:
 
     void registerURLSchemesAsCORSEnabled(Vector<String>&& schemes);
 
+    enum class CookieAccess : uint8_t { Disallow, Allow, Terminate };
+    CookieAccess validateCookieAccess(ASCIILiteral messageName, const URL& firstParty, const URL&, const WebCore::SameSiteInfo*);
+
     void cookiesForDOM(const URL& firstParty, const WebCore::SameSiteInfo&, const URL&, WebCore::FrameIdentifier, WebCore::PageIdentifier, WebCore::IncludeSecureCookies, WebPageProxyIdentifier, CompletionHandler<void(String cookieString, bool secureCookiesAccessed)>&&);
     void setCookiesFromDOM(const URL& firstParty, const WebCore::SameSiteInfo&, const URL&, WebCore::FrameIdentifier, WebCore::PageIdentifier, const String& cookieString, WebCore::RequiresScriptTrackingPrivacy, WebPageProxyIdentifier);
-    void cookieRequestHeaderFieldValue(const URL& firstParty, const WebCore::SameSiteInfo&, const URL&, std::optional<WebCore::FrameIdentifier>, std::optional<WebCore::PageIdentifier>, WebCore::IncludeSecureCookies, std::optional<WebPageProxyIdentifier>, CompletionHandler<void(String cookieString, bool secureCookiesAccessed)>&&);
+    void cookieRequestHeaderFieldValueDigest(const URL& firstParty, const WebCore::SameSiteInfo&, const URL&, WebCore::IncludeSecureCookies, CompletionHandler<void(std::optional<SHA1::Digest> digest)>&&);
     void getRawCookies(const URL& firstParty, const WebCore::SameSiteInfo&, const URL&, std::optional<WebCore::FrameIdentifier>, std::optional<WebCore::PageIdentifier>, std::optional<WebPageProxyIdentifier>, CompletionHandler<void(Vector<WebCore::Cookie>&&)>&&);
     void setRawCookie(const URL& firstParty, const URL&, const WebCore::Cookie&, WebCore::ShouldPartitionCookie);
     void deleteCookie(const URL& firstParty, const URL&, const String& cookieName, CompletionHandler<void()>&&);
@@ -376,6 +380,8 @@ private:
     void takeAllMessagesForPort(const WebCore::MessagePortIdentifier&, CompletionHandler<void(Vector<WebCore::MessageWithMessagePorts>&&, std::optional<MessageBatchIdentifier>)>&&);
     void postMessageToRemote(WebCore::MessageWithMessagePorts&&, const WebCore::MessagePortIdentifier&);
     void didDeliverMessagePortMessages(MessageBatchIdentifier);
+
+    void closeAllEntangledMessagePorts();
 
 #if PLATFORM(MAC)
     void updateActivePages(String&& name, const Vector<String>& activePagesOrigins, CoreIPCAuditToken&&);
@@ -440,13 +446,13 @@ private:
     void cookieEnabledStateMayHaveChanged() final;
 
 #if ENABLE(DECLARATIVE_WEB_PUSH)
-    void navigatorSubscribeToPushService(URL&& scopeURL, Vector<uint8_t>&& applicationServerKey, CompletionHandler<void(Expected<WebCore::PushSubscriptionData, WebCore::ExceptionData>&&)>&&);
-    void navigatorUnsubscribeFromPushService(URL&& scopeURL, const WebCore::PushSubscriptionIdentifier&, CompletionHandler<void(Expected<bool, WebCore::ExceptionData>&&)>&&);
-    void navigatorGetPushSubscription(URL&& scopeURL, CompletionHandler<void(Expected<std::optional<WebCore::PushSubscriptionData>, WebCore::ExceptionData>&&)>&&);
-    void navigatorGetPushPermissionState(URL&& scopeURL, CompletionHandler<void(Expected<uint8_t, WebCore::ExceptionData>&&)>&&);
+    void navigatorSubscribeToPushService(URL&& scopeURL, Vector<uint8_t>&& applicationServerKey, CompletionHandler<void(std::expected<WebCore::PushSubscriptionData, WebCore::ExceptionData>&&)>&&);
+    void navigatorUnsubscribeFromPushService(URL&& scopeURL, const WebCore::PushSubscriptionIdentifier&, CompletionHandler<void(std::expected<bool, WebCore::ExceptionData>&&)>&&);
+    void navigatorGetPushSubscription(URL&& scopeURL, CompletionHandler<void(std::expected<std::optional<WebCore::PushSubscriptionData>, WebCore::ExceptionData>&&)>&&);
+    void navigatorGetPushPermissionState(URL&& scopeURL, CompletionHandler<void(std::expected<uint8_t, WebCore::ExceptionData>&&)>&&);
 #endif
 
-    void initializeWebTransportSession(WebTransportSessionIdentifier, URL&&, WebCore::WebTransportOptions&&, WebPageProxyIdentifier&&, WebCore::ClientOrigin&&, CompletionHandler<void(std::optional<WebCore::WebTransportConnectionInfo>&&)>&&);
+    void initializeWebTransportSession(WebTransportSessionIdentifier, URL&&, WebCore::WebTransportOptions&&, Vector<KeyValuePair<String, String>>&&, WebPageProxyIdentifier&&, WebCore::ClientOrigin&&, CompletionHandler<void(std::optional<WebCore::WebTransportConnectionInfo>&&)>&&);
     void destroyWebTransportSession(WebTransportSessionIdentifier);
 
     struct ResourceNetworkActivityTracker {
@@ -480,7 +486,7 @@ private:
 
     void hasUploadStateChanged(bool);
 
-    void loadImageForDecoding(WebCore::ResourceRequest&&, WebPageProxyIdentifier, uint64_t, CompletionHandler<void(Expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&&);
+    void loadImageForDecoding(WebCore::ResourceRequest&&, WebPageProxyIdentifier, uint64_t, CompletionHandler<void(std::expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&&);
 
     void setResourceLoadSchedulingMode(WebCore::PageIdentifier, WebCore::LoadSchedulingMode);
     void prioritizeResourceLoads(const Vector<WebCore::ResourceLoaderIdentifier>&);

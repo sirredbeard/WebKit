@@ -101,6 +101,7 @@ class HTMLImageElement;
 class ImageData;
 class IntSize;
 class KHRParallelShaderCompile;
+class NativeImage;
 class NVShaderNoperspectiveInterpolation;
 class OESDrawBuffersIndexed;
 class OESElementIndexUint;
@@ -444,6 +445,7 @@ public:
     void didUpdateCanvasSizeProperties(bool) override;
 
     RefPtr<ImageBuffer> surfaceBufferToImageBuffer(SurfaceBuffer) final;
+    RefPtr<NativeImage> surfaceBufferToNativeImage(SurfaceBuffer) final;
     bool isSurfaceBufferTransparentBlack(SurfaceBuffer) const final { return false; }
 
     RefPtr<ByteArrayPixelBuffer> drawingBufferToPixelBuffer();
@@ -465,6 +467,7 @@ public:
     // GraphicsContextGL::Client
     void forceContextLost() final;
     void addDebugMessage(GCGLenum, GCGLenum, GCGLenum, const CString&) final;
+    void didChangeMemoryCost() final;
 
     void recycleContext();
 
@@ -560,7 +563,7 @@ protected:
         CallerTypeOther,
     };
 
-    void markContextChangedAndNotifyCanvasObserver(CallerType = CallerTypeDrawOrClear);
+    void willUpdateDrawingBufferContents(CallerType = CallerTypeDrawOrClear);
 
     void addActivityStateChangeObserverIfNecessary();
     void removeActivityStateChangeObserver();
@@ -601,6 +604,7 @@ protected:
     virtual void uncacheDeletedBuffer(const AbstractLocker&, WebGLBuffer*);
     bool needsPreparationForDisplay() const final { return true; }
     void NODELETE updateActiveOrdinal();
+    void scheduleMemoryCostUpdate();
     void updateMemoryCost() const;
 
     struct ContextLostState {
@@ -721,8 +725,22 @@ protected:
     int m_numGLErrorsToConsoleAllowed;
 
     bool m_compositingResultsNeedUpdating { false };
-    RefPtr<ImageBuffer> m_readDrawingBuffer;
-    RefPtr<ImageBuffer> m_readDisplayBuffer;
+    bool m_memoryCostUpdateScheduled { false };
+
+    // Temporary holder for both ImageBuffer and NativeImage requests.
+    // Once ImageBuffer requests have been removed, this will be reverted to RefPtr<NativeImage>.
+    struct ReadSurfaceBuffer {
+        RefPtr<NativeImage> image;
+        RefPtr<ImageBuffer> buffer;
+
+        bool isEmpty() const { return !image && !buffer; }
+        void clear();
+        size_t memoryCost() const;
+    };
+    ReadSurfaceBuffer& readSurfaceBuffer(SurfaceBuffer);
+
+    ReadSurfaceBuffer m_readDrawingBuffer;
+    ReadSurfaceBuffer m_readDisplayBuffer;
 
     // Enabled extension objects.
     // FIXME: Move some of these to WebGLRenderingContext, the ones not needed for WebGL2

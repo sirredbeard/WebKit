@@ -300,6 +300,34 @@ std::string emit_uniforms_from_storage_buffer(const char* indexVariableName,
     return result;
 }
 
+std::string emit_step_storage_buffer(const ResourceBindingRequirements& bindingReqs,
+                                     const RenderStep* step) {
+    // NOTE: currently no renderstep declares fsUsesStorage() = true. Only gradients use fragment
+    // shader storage, but they emit their storage buffer declaration directly inside
+    // generateFragmentSkSL(). This is redundant and will be fixed in a follow-on patch.
+    SkASSERT(!step->fsUsesStorage());
+
+    SkASSERT(step->numStorageUniforms() > 0);
+    std::string fields;
+    for (auto a : step->storageUniforms()) {
+        SkSL::String::appendf(&fields, "%s %s", SkSLTypeString(a.type()), a.name());
+        if (a.count()) {
+            fields.append("[");
+            fields.append(std::to_string(a.count()));
+            fields.append("]");
+        }
+        fields.append(";\n");
+    }
+    return SkSL::String::printf(
+            "struct StepStorageData {\n%s};\n"
+            "layout (set=%d, binding=%d) readonly buffer StepStorageBuffer {\n"
+            "    StepStorageData stepStorageData[];\n"
+            "};\n",
+            fields.c_str(),
+            bindingReqs.fUniformsSetIdx,
+            bindingReqs.fStorageBufferBinding);
+}
+
 void append_sampler_descs(const SkSpan<const uint32_t> samplerData,
                           skia_private::TArray<SamplerDesc>& outDescs) {
     // Sampler data consists of variable-length SamplerDesc representations which can differ based
@@ -756,6 +784,7 @@ static constexpr skgpu::BlendInfo gBlendTable[kSkBlendModeCount] = {
 struct ShaderInfo::SharedGeneratorData {
     SharedGeneratorData(const Caps* caps,
                         const ShaderCodeDictionary* dict,
+                        const RuntimeEffectDictionary* rteDict,
                         SkArenaAlloc* alloc,
                         const RenderStep* step,
                         UniquePaintParamsID paintID,
@@ -771,7 +800,7 @@ struct ShaderInfo::SharedGeneratorData {
             const int availableVaryings =
                     caps->maxVaryings() - kFixedVaryings - step->varyings().size();
 
-            fRootsInfo = key.getRootNodes(caps, dict, alloc, availableVaryings);
+            fRootsInfo = key.getRootNodes(caps, dict, rteDict, alloc, availableVaryings);
 
             fNeedsLocalCoords = fRootsInfo.fSrcColor &&
                                 SkToBool(fRootsInfo.fSrcColor->requiredFlags() &
@@ -883,7 +912,7 @@ std::unique_ptr<ShaderInfo> ShaderInfo::Make(const Caps* caps,
     // rootNodes span is valid when passed to helpers.
     SkArenaAlloc shaderNodeAlloc{256};
     SharedGeneratorData sharedData(
-            caps, dict, &shaderNodeAlloc, step, paintID, result->uniformSsboIndex());
+            caps, dict, rteDict, &shaderNodeAlloc, step, paintID, result->uniformSsboIndex());
     result->fHasCombinedUniforms = sharedData.fHasStepUniforms || sharedData.fHasPaintUniforms;
 
     SkString paintLabel = dict->idToString(caps, paintID);
@@ -964,7 +993,7 @@ void ShaderInfo::generateFragmentSkSL(const Caps* caps,
                                       const SharedGeneratorData& sharedData) {
 #if defined(SK_DEBUG)
     // Validate the root count of the key.
-    SkASSERT(sharedData.fRootsInfo.fRoots.size() == 2 || sharedData.fRootsInfo.fRoots.size() == 3);
+    SkASSERT(sharedData.fRootsInfo.fRoots.size() >= 2 && sharedData.fRootsInfo.fRoots.size() <= 4);
     // With source color node all snippets return a half4, so we just require that its signature
     // takes no extra args or just local coords.
     SkASSERT(sharedData.fRootsInfo.fSrcColor && sharedData.fRootsInfo.fFinalBlend);
@@ -985,8 +1014,8 @@ void ShaderInfo::generateFragmentSkSL(const Caps* caps,
 #endif
 
     // Check for unexpected corruption / illegal instructions occurring in the wild.
-    SkASSERTF_RELEASE((sharedData.fRootsInfo.fRoots.size() == 2 ||
-                       sharedData.fRootsInfo.fRoots.size() == 3) &&
+    SkASSERTF_RELEASE((sharedData.fRootsInfo.fRoots.size() >= 2 &&
+                       sharedData.fRootsInfo.fRoots.size() <= 4) &&
                       sharedData.fRootsInfo.fSrcColor && sharedData.fRootsInfo.fFinalBlend,
                       "root node size = %zu, label = %s",
                       sharedData.fRootsInfo.fRoots.size(), label);
@@ -1068,6 +1097,11 @@ void ShaderInfo::generateFragmentSkSL(const Caps* caps,
         fStorageBufferStages |= PipelineStageFlags::kFragmentShader;
     }
 
+    if (caps->storageBufferSupport() && step->fsUsesStorage() && step->numStorageUniforms() > 0) {
+        fsPreamble += emit_step_storage_buffer(bindingReqs, step);
+        fStorageBufferStages |= PipelineStageFlags::kFragmentShader;
+    }
+
     const bool useDstSampler = fDstReadStrategy == DstReadStrategy::kTextureCopy ||
                                fDstReadStrategy == DstReadStrategy::kTextureSample;
     {
@@ -1120,7 +1154,7 @@ void ShaderInfo::generateFragmentSkSL(const Caps* caps,
     if (srcColorRoot->requiredFlags() & SnippetRequirementFlags::kPrimitiveColor) {
         SkASSERT(step->emitsPrimitiveColor());
         mainBody += "half4 primitiveColor;";
-        mainBody += step->fragmentColorSkSL();
+        mainBody += step->fragmentColorSkSL(sharedData.fRootsInfo);
     }
     // else the RenderStep may be producing a primitive color but the paint is not consuming it
     // so just skip injecting that SkSL entirely.
@@ -1300,6 +1334,12 @@ void ShaderInfo::generateVertexSkSL(const Caps* caps,
                                 sharedData.fHasSsboIndexVarying,
                                 sharedData.fNeedsLocalCoords);
 
+    // Declare vertex storage buffer if the RenderStep has storage uniforms and uses storage in VS
+    if (caps->storageBufferSupport() && step->vsUsesStorage() && step->numStorageUniforms() > 0) {
+        vsPreamble += emit_step_storage_buffer(bindingReqs, step);
+        fStorageBufferStages |= PipelineStageFlags::kVertexShader;
+    }
+
     // Add vertex attributes
     if (step->numStaticAttributes() > 0 || step->numAppendAttributes() > 0) {
         int attr = 0;
@@ -1341,7 +1381,7 @@ void ShaderInfo::generateVertexSkSL(const Caps* caps,
     }
 
     // Inject RenderStep's main vertex logic
-    mainBody += step->vertexSkSL();
+    mainBody += step->vertexSkSL(sharedData.fRootsInfo);
 
     // Calculate sk_Position
     mainBody +=

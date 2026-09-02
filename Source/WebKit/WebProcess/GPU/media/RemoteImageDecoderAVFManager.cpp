@@ -34,6 +34,7 @@
 #include "RemoteImageDecoderAVFProxyMessages.h"
 #include "SharedBufferReference.h"
 #include "WebProcess.h"
+#include <WebCore/ImageDecoderFactoryAVF.h>
 #include <wtf/TZoneMallocInlines.h>
 
 namespace WebKit {
@@ -49,7 +50,7 @@ std::optional<ImageDecoderIdentifier> RemoteImageDecoderAVFManager::createRemote
     if (!WebProcess::singleton().mediaPlaybackEnabled())
         return std::nullopt;
 
-    auto sendResult = ensureGPUProcessConnection().connection().sendSync(Messages::RemoteImageDecoderAVFProxy::CreateDecoder(IPC::SharedBufferReference(data), mimeType), 0);
+    auto sendResult = protect(ensureGPUProcessConnection().connection())->sendSync(Messages::RemoteImageDecoderAVFProxy::CreateDecoder(IPC::SharedBufferReference(data), mimeType), 0);
 
     auto [imageDecoderIdentifier] = sendResult.takeReplyOr(std::nullopt);
     return imageDecoderIdentifier;
@@ -67,20 +68,6 @@ RefPtr<RemoteImageDecoderAVF> RemoteImageDecoderAVFManager::createImageDecoder(F
 
     m_remoteImageDecoders.add(*imageDecoderIdentifier, remoteImageDecoder);
     return remoteImageDecoder;
-}
-
-RefPtr<AsyncImageDecoder> RemoteImageDecoderAVFManager::createAsyncImageDecoder(FragmentedSharedBuffer& data, const String& mimeType, AlphaOption alphaOption, GammaAndColorProfileOption gammaAndColorProfileOption, ImageDecoderClient& client)
-{
-    auto imageDecoderIdentifier = createRemoteImageDecoder(data, mimeType);
-    if (!imageDecoderIdentifier)
-        return nullptr;
-
-    RefPtr remoteImageDecoder = RemoteImageDecoderAVF::create(*this, *imageDecoderIdentifier, data, mimeType);
-    if (!remoteImageDecoder)
-        return nullptr;
-
-    m_remoteImageDecoders.add(*imageDecoderIdentifier, remoteImageDecoder.get());
-    return AsyncImageDecoder::create(remoteImageDecoder.releaseNonNull(), client);
 }
 
 void RemoteImageDecoderAVFManager::deleteRemoteImageDecoder(const ImageDecoderIdentifier& identifier)
@@ -127,22 +114,17 @@ GPUProcessConnection& RemoteImageDecoderAVFManager::ensureGPUProcessConnection()
 void RemoteImageDecoderAVFManager::setUseGPUProcess(bool useGPUProcess)
 {
     if (!useGPUProcess) {
-        ImageDecoder::resetFactories();
+        ImageDecoderFactoryAVF::singleton().reset();
         return;
     }
 
-    ImageDecoder::clearFactories();
-    ImageDecoder::installFactory({
+    ImageDecoderFactoryAVF::singleton().set({
         RemoteImageDecoderAVF::supportsMediaType,
         RemoteImageDecoderAVF::canDecodeType,
         [weakThis = ThreadSafeWeakPtr { *this }](FragmentedSharedBuffer& data, const String& mimeType, AlphaOption alphaOption, GammaAndColorProfileOption gammaAndColorProfileOption) {
             RefPtr protectedThis = weakThis.get();
             return protectedThis ? protectedThis->createImageDecoder(data, mimeType, alphaOption, gammaAndColorProfileOption) : nullptr;
         },
-        [weakThis = ThreadSafeWeakPtr { *this }](FragmentedSharedBuffer& data, const String& mimeType, AlphaOption alphaOption, GammaAndColorProfileOption gammaAndColorProfileOption, ImageDecoderClient& client) {
-            RefPtr protectedThis = weakThis.get();
-            return protectedThis ? protectedThis->createAsyncImageDecoder(data, mimeType, alphaOption, gammaAndColorProfileOption, client) : nullptr;
-        }
     });
 }
 

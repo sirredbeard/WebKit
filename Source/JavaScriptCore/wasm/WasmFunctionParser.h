@@ -247,7 +247,9 @@ private:
     [[nodiscard]] PartialResult parseUnreachableExpression();
     [[nodiscard]] PartialResult unifyControl(ArgumentList&, unsigned level);
     [[nodiscard]] PartialResult checkLocalInitialized(uint32_t);
-    [[nodiscard]] PartialResult checkExpressionStack(const ControlType&, bool forceSignature = false);
+    [[nodiscard]] PartialResult checkArgumentsAndWiden(const BlockSignature&);
+    [[nodiscard]] PartialResult checkResultsAndWiden(const BlockSignature&);
+    [[nodiscard]] PartialResult endBlockAndCheckResultTypes(ControlEntry&);
 
     enum BranchConditionalityTag {
         Unconditional,
@@ -298,8 +300,8 @@ private:
     [[nodiscard]] PartialResult parseElementIndex(unsigned&);
     [[nodiscard]] PartialResult parseDataSegmentIndex(unsigned&);
     [[nodiscard]] PartialResult parseMemoryIndex(uint8_t&);
-    [[nodiscard]] PartialResult parseMemoryIndexForBulkOp(uint8_t&); // FIXME: when wasm spec tests are updated no need for this
     [[nodiscard]] PartialResult parseMemoryIndexAndFixupAlignment(uint32_t&, uint8_t&);
+    [[nodiscard]] PartialResult parseMemoryOffset(uint8_t memoryIndex, uint64_t&);
 
     [[nodiscard]] PartialResult parseIndexForLocal(uint32_t&);
     [[nodiscard]] PartialResult parseIndexForGlobal(uint32_t&);
@@ -319,6 +321,8 @@ private:
         unsigned dstTableIndex;
     };
     [[nodiscard]] PartialResult parseTableCopyImmediates(TableCopyImmediates&);
+
+    [[nodiscard]] PartialResult parseCallIndirectImmediates(uint32_t& signatureIndex, uint32_t& tableIndex);
 
     struct AnnotatedSelectImmediates {
         unsigned sizeOfAnnotationVector;
@@ -455,7 +459,7 @@ auto FunctionParser<Context>::parseBlockSignatureAndNotifySIMDUseIfNeeded(BlockS
 }
 
 template<typename ControlType>
-static bool isTryOrCatch(ControlType& data)
+bool isTryOrCatch(ControlType& data)
 {
     return ControlType::isTry(data) || ControlType::isCatch(data);
 }
@@ -650,12 +654,9 @@ auto FunctionParser<Context>::binaryCompareCase(OpType op, BinaryOperationHandle
             BlockSignature inlineSignature;
             WASM_PARSER_FAIL_IF(!parseBlockSignatureAndNotifySIMDUseIfNeeded(inlineSignature), "can't get if's signature"_s);
 
-            const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
             const uint32_t argumentCount = inlineSignature.argumentCount();
-            WASM_VALIDATOR_FAIL_IF(sliceSize < argumentCount, "Too few arguments on stack for if block. If expects ", argumentCount, ", but only ", sliceSize, " were present. If block has signature: ", inlineSignature);
+            WASM_FAIL_IF_HELPER_FAILS(checkArgumentsAndWiden(inlineSignature));
             const uint32_t parentStackHeight = m_expressionStack.size() - argumentCount;
-            for (unsigned i = 0; i < argumentCount; ++i)
-                WASM_VALIDATOR_FAIL_IF(!isSubtype(m_expressionStack[parentStackHeight + i].type(), inlineSignature.argumentType(i)), "Loop expects the argument at index", i, " to be ", inlineSignature.argumentType(i), " but argument has type ", m_expressionStack[parentStackHeight + i].type());
 
             auto args = m_expressionStack.mutableSpan().last(argumentCount);
             ControlType control;
@@ -720,12 +721,9 @@ auto FunctionParser<Context>::unaryCompareCase(OpType op, UnaryOperationHandler 
             BlockSignature inlineSignature;
             WASM_PARSER_FAIL_IF(!parseBlockSignatureAndNotifySIMDUseIfNeeded(inlineSignature), "can't get if's signature"_s);
 
-            const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
             const uint32_t argumentCount = inlineSignature.argumentCount();
-            WASM_VALIDATOR_FAIL_IF(sliceSize < argumentCount, "Too few arguments on stack for if block. If expects ", argumentCount, ", but only ", sliceSize, " were present. If block has signature: ", inlineSignature);
+            WASM_FAIL_IF_HELPER_FAILS(checkArgumentsAndWiden(inlineSignature));
             const uint32_t parentStackHeight = m_expressionStack.size() - argumentCount;
-            for (unsigned i = 0; i < argumentCount; ++i)
-                WASM_VALIDATOR_FAIL_IF(!isSubtype(m_expressionStack[parentStackHeight + i].type(), inlineSignature.argumentType(i)), "Loop expects the argument at index", i, " to be ", inlineSignature.argumentType(i), " but argument has type ", m_expressionStack[parentStackHeight + i].type());
 
             auto args = m_expressionStack.mutableSpan().last(argumentCount);
             ControlType control;
@@ -757,17 +755,11 @@ auto FunctionParser<Context>::load(Type memoryType) -> PartialResult
     WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get load alignment"_s);
 
     uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
 
     WASM_PARSER_FAIL_IF(alignment > memoryLog2Alignment(m_currentOpcode), "byte alignment "_s, 1ull << alignment, " exceeds load's natural alignment "_s, 1ull << memoryLog2Alignment(m_currentOpcode));
 
-    if (m_info.memory(memoryIndex).isMemory64())
-        WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get load offset"_s);
-    else {
-        uint32_t offset32;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get load offset"_s);
-        offset = offset32;
-    }
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
 
     WASM_TRY_POP_EXPRESSION_STACK_INTO(pointer, "load pointer"_s);
 
@@ -790,17 +782,11 @@ auto FunctionParser<Context>::store(Type memoryType) -> PartialResult
     WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get store alignment"_s);
 
     uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
 
     WASM_PARSER_FAIL_IF(alignment > memoryLog2Alignment(m_currentOpcode), "byte alignment "_s, 1ull << alignment, " exceeds store's natural alignment "_s, 1ull << memoryLog2Alignment(m_currentOpcode));
 
-    if (m_info.memory(memoryIndex).isMemory64())
-        WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get store offset"_s);
-    else {
-        uint32_t offset32;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get store offset"_s);
-        offset = offset32;
-    }
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
     WASM_TRY_POP_EXPRESSION_STACK_INTO(value, "store value"_s);
     WASM_TRY_POP_EXPRESSION_STACK_INTO(pointer, "store pointer"_s);
 
@@ -836,16 +822,10 @@ auto FunctionParser<Context>::atomicLoad(ExtAtomicOpType op, Type memoryType) ->
     TypedExpression pointer;
     WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get load alignment"_s);
     uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
     WASM_PARSER_FAIL_IF(alignment != memoryLog2Alignment(op), "byte alignment "_s, 1ull << alignment, " does not match against atomic op's natural alignment "_s, 1ull << memoryLog2Alignment(op));
 
-    if (m_info.memory(memoryIndex).isMemory64())
-        WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get load offset"_s);
-    else {
-        uint32_t offset32;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get load offset"_s);
-        offset = offset32;
-    }
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
     WASM_TRY_POP_EXPRESSION_STACK_INTO(pointer, "load pointer"_s);
 
     WASM_VALIDATOR_FAIL_IF(pointer.type().kind() != m_info.memory(memoryIndex).addressType().asWasmTypeKind(), static_cast<unsigned>(op), " pointer type mismatch"_s);
@@ -867,15 +847,9 @@ auto FunctionParser<Context>::atomicStore(ExtAtomicOpType op, Type memoryType) -
     TypedExpression pointer;
     WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get store alignment"_s);
     uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
     WASM_PARSER_FAIL_IF(alignment != memoryLog2Alignment(op), "byte alignment "_s, 1ull << alignment, " does not match against atomic op's natural alignment "_s, 1ull << memoryLog2Alignment(op));
-    if (m_info.memory(memoryIndex).isMemory64())
-        WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get store offset"_s);
-    else {
-        uint32_t offset32;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get store offset"_s);
-        offset = offset32;
-    }
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
 
     WASM_TRY_POP_EXPRESSION_STACK_INTO(value, "store value"_s);
     WASM_TRY_POP_EXPRESSION_STACK_INTO(pointer, "store pointer"_s);
@@ -898,15 +872,9 @@ auto FunctionParser<Context>::atomicBinaryRMW(ExtAtomicOpType op, Type memoryTyp
     TypedExpression value;
     WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get load alignment"_s);
     uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
     WASM_PARSER_FAIL_IF(alignment != memoryLog2Alignment(op), "byte alignment "_s, 1ull << alignment, " does not match against atomic op's natural alignment "_s, 1ull << memoryLog2Alignment(op));
-    if (m_info.memory(memoryIndex).isMemory64())
-        WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get load offset"_s);
-    else {
-        uint32_t offset32;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get load offset"_s);
-        offset = offset32;
-    }
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
     WASM_TRY_POP_EXPRESSION_STACK_INTO(value, "value"_s);
     WASM_TRY_POP_EXPRESSION_STACK_INTO(pointer, "pointer"_s);
 
@@ -931,15 +899,9 @@ auto FunctionParser<Context>::atomicCompareExchange(ExtAtomicOpType op, Type mem
     TypedExpression value;
     WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get load alignment"_s);
     uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
     WASM_PARSER_FAIL_IF(alignment !=  memoryLog2Alignment(op), "byte alignment "_s, 1ull << alignment, " does not match against atomic op's natural alignment "_s, 1ull << memoryLog2Alignment(op));
-    if (m_info.memory(memoryIndex).isMemory64())
-        WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get load offset"_s);
-    else {
-        uint32_t offset32;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get load offset"_s);
-        offset = offset32;
-    }
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
     WASM_TRY_POP_EXPRESSION_STACK_INTO(value, "value"_s);
     WASM_TRY_POP_EXPRESSION_STACK_INTO(expected, "expected"_s);
     WASM_TRY_POP_EXPRESSION_STACK_INTO(pointer, "pointer"_s);
@@ -966,15 +928,9 @@ auto FunctionParser<Context>::atomicWait(ExtAtomicOpType op, Type memoryType) ->
     TypedExpression timeout;
     WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get load alignment"_s);
     uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
     WASM_PARSER_FAIL_IF(alignment != memoryLog2Alignment(op), "byte alignment "_s, 1ull << alignment, " does not match against atomic op's natural alignment "_s, 1ull << memoryLog2Alignment(op));
-    if (m_info.memory(memoryIndex).isMemory64())
-        WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get load offset"_s);
-    else {
-        uint32_t offset32;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get load offset"_s);
-        offset = offset32;
-    }
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
     WASM_TRY_POP_EXPRESSION_STACK_INTO(timeout, "timeout"_s);
     WASM_TRY_POP_EXPRESSION_STACK_INTO(value, "value"_s);
     WASM_TRY_POP_EXPRESSION_STACK_INTO(pointer, "pointer"_s);
@@ -1000,15 +956,9 @@ auto FunctionParser<Context>::atomicNotify(ExtAtomicOpType op) -> PartialResult
     TypedExpression count;
     WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get load alignment"_s);
     uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
     WASM_PARSER_FAIL_IF(alignment != memoryLog2Alignment(op), "byte alignment "_s, 1ull << alignment, " does not match against atomic op's natural alignment "_s, 1ull << memoryLog2Alignment(op));
-    if (m_info.memory(memoryIndex).isMemory64())
-        WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get load offset"_s);
-    else {
-        uint32_t offset32;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get load offset"_s);
-        offset = offset32;
-    }
+    WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
     WASM_TRY_POP_EXPRESSION_STACK_INTO(count, "count"_s);
     WASM_TRY_POP_EXPRESSION_STACK_INTO(pointer, "pointer"_s);
 
@@ -1092,14 +1042,8 @@ auto FunctionParser<Context>::simd(SIMDLaneOperation op, SIMDLane lane, SIMDSign
 
         uint32_t alignment;
         WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get simd memory op alignment"_s);
-        WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get simd memory index"_s);
-        if (m_info.memory(memoryIndex).isMemory64())
-            WASM_PARSER_FAIL_IF(!parseVarUInt64(offset), "can't get simd memory op offset"_s);
-        else {
-            uint32_t offset32;
-            WASM_PARSER_FAIL_IF(!parseVarUInt32(offset32), "can't get simd memory op offset"_s);
-            offset = offset32;
-        }
+        WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
+        WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, offset));
 
         WASM_VALIDATOR_FAIL_IF(alignment > maxAlignment, "alignment: "_s, alignment, " can't be larger than max alignment for simd operation: "_s, maxAlignment);
 
@@ -1744,17 +1688,6 @@ auto FunctionParser<Context>::parseMemoryIndex(uint8_t& result) -> PartialResult
     return { };
 }
 
-// FIXME: some spec tests in binary.wast assert memory index must be a single byte,
-// spec tests will eventually have to be updated
-template<typename Context>
-auto FunctionParser<Context>::parseMemoryIndexForBulkOp(uint8_t& result) -> PartialResult {
-    uint8_t memoryIndex;
-    WASM_PARSER_FAIL_IF(!parseUInt8(memoryIndex), "can't get memory index"_s);
-    WASM_VALIDATOR_FAIL_IF(memoryIndex >= m_info.memoryCount(), "memory index "_s, memoryIndex, " is out of range"_s);
-    result = memoryIndex;
-    return { };
-}
-
 template<typename Context>
 auto FunctionParser<Context>::parseMemoryIndexAndFixupAlignment(uint32_t& alignment, uint8_t& result) -> PartialResult {
     // memarg ::= a:u32 o:u64 (if a < 2^6) | a:u32 x:memidx o:u64 (if 2^6 <= a < 2^7)
@@ -1764,6 +1697,16 @@ auto FunctionParser<Context>::parseMemoryIndexAndFixupAlignment(uint32_t& alignm
     result = 0;
     if (hasMemoryIndex)
         WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndex(result));
+    return { };
+}
+
+template<typename Context>
+auto FunctionParser<Context>::parseMemoryOffset(uint8_t memoryIndex, uint64_t& result) -> PartialResult
+{
+    // The offset is encoded as a u64 whatever the memory's address type is; only its value is
+    // restricted to the range the address type can hold.
+    WASM_PARSER_FAIL_IF(!parseVarUInt64(result), "can't get memory offset"_s);
+    WASM_VALIDATOR_FAIL_IF(!m_info.memory(memoryIndex).isMemory64() && result > UINT32_MAX, "memory offset "_s, result, " is out of range for an i32 memory"_s);
     return { };
 }
 
@@ -1796,6 +1739,19 @@ auto FunctionParser<Context>::parseTableCopyImmediates(TableCopyImmediates& resu
     result.dstTableIndex = dstTableIndex;
     result.srcTableIndex = srcTableIndex;
 
+    return { };
+}
+
+template<typename Context>
+auto FunctionParser<Context>::parseCallIndirectImmediates(uint32_t& signatureIndex, uint32_t& tableIndex) -> PartialResult
+{
+    WASM_PARSER_FAIL_IF(!m_info.tableCount(), "call_indirect is only valid when a table is defined or imported"_s);
+    WASM_PARSER_FAIL_IF(!parseVarUInt32(signatureIndex), "can't get call_indirect's signature index"_s);
+    WASM_PARSER_FAIL_IF(!parseVarUInt32(tableIndex), "can't get call_indirect's table index"_s);
+    WASM_PARSER_FAIL_IF(tableIndex >= m_info.tableCount(), "call_indirect's table index "_s, tableIndex, " invalid, limit is "_s, m_info.tableCount());
+    WASM_PARSER_FAIL_IF(m_info.typeCount() <= signatureIndex, "call_indirect's signature index "_s, signatureIndex, " exceeds known signatures "_s, m_info.typeCount());
+    WASM_PARSER_FAIL_IF(m_info.tables[tableIndex].type() != TableElementType::Funcref, "call_indirect is only valid when a table has type funcref"_s);
+    WASM_VALIDATOR_FAIL_IF(m_info.rtt(TypeSignatureIndex(signatureIndex)).kind() != RTTKind::Function, "invalid type index (not a function signature) for call_indirect, got ", signatureIndex);
     return { };
 }
 
@@ -1940,19 +1896,58 @@ auto FunctionParser<Context>::checkLocalInitialized(uint32_t index) -> PartialRe
 }
 
 template<typename Context>
-auto FunctionParser<Context>::checkExpressionStack(const ControlType& controlData, bool forceSignature) -> PartialResult
+auto FunctionParser<Context>::checkArgumentsAndWiden(const BlockSignature& blockSignature) -> PartialResult
 {
-    const auto& blockSignature = controlData.signature();
+    const uint32_t argumentCount = blockSignature.argumentCount();
+    const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
+    WASM_VALIDATOR_FAIL_IF(sliceSize < argumentCount, "Too few values on stack for block. Block expects "_s, argumentCount, ", but only "_s, sliceSize, " were present. Block has signature: "_s, blockSignature);
+    const uint32_t offset = m_expressionStack.size() - argumentCount;
+    for (unsigned i = 0; i < argumentCount; ++i) {
+        auto& slot = m_expressionStack[offset + i];
+        const auto expectedType = blockSignature.argumentType(i);
+        WASM_VALIDATOR_FAIL_IF(!isSubtype(slot.type(), expectedType), "Block expects the argument at index "_s, i, " to be "_s, expectedType, " but argument has type "_s, slot.type());
+        // Widen the operand to the block's declared parameter type, per the spec's
+        // push_ctrl(op, in, out) doing push_vals(in): the block body must be validated
+        // against its declared parameter types, not the narrower subtype that flowed in.
+        // https://webassembly.github.io/spec/core/bikeshed/#validation-of-opcode-sequences
+        slot.setType(expectedType);
+    }
+
+    return { };
+}
+
+template<typename Context>
+auto FunctionParser<Context>::checkResultsAndWiden(const BlockSignature& blockSignature) -> PartialResult
+{
     const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
     WASM_VALIDATOR_FAIL_IF(blockSignature.returnCount() != sliceSize, " block with type: "_s, blockSignature, " returns: "_s, blockSignature.returnCount(), " but stack has: "_s, sliceSize, " values"_s);
     for (unsigned i = 0; i < blockSignature.returnCount(); ++i) {
-        const auto actualType = m_expressionStack[m_currentStackBegin + i].type();
+        auto& slot = m_expressionStack[m_currentStackBegin + i];
         const auto expectedType = blockSignature.returnType(i);
-        WASM_VALIDATOR_FAIL_IF(!isSubtype(actualType, expectedType), "control flow returns with unexpected type. "_s, actualType, " is not a "_s, expectedType);
-        if (forceSignature)
-            m_expressionStack[m_currentStackBegin + i].setType(expectedType);
+        WASM_VALIDATOR_FAIL_IF(!isSubtype(slot.type(), expectedType), "control flow returns with unexpected type. "_s, slot.type(), " is not a "_s, expectedType);
+        // Widen the operand to the block's declared result type, per the spec's
+        // end doing push_vals(frame.end_types): results leave the block as the
+        // declared type, not the narrower subtype that reached the end.
+        // https://webassembly.github.io/spec/core/bikeshed/#validation-of-opcode-sequences
+        slot.setType(expectedType);
     }
 
+    return { };
+}
+
+template<typename Context>
+auto FunctionParser<Context>::endBlockAndCheckResultTypes(ControlEntry& entry) -> PartialResult
+{
+    // Widen each result to the block signature type before ending the block.
+    // FIXME: mutating the expression stack for the block result is effectful, but there's no
+    // better API yet. See https://bugs.webkit.org/show_bug.cgi?id=164353
+    WASM_FAIL_IF_HELPER_FAILS(checkResultsAndWiden(entry.controlData.signature()));
+    const uint32_t parentBegin = parentEntryBegin();
+    auto enclosedStack = m_expressionStack.mutableSpan().subspan(parentBegin);
+    // We should avoid adding other callsites of endBlock. Since a new block is a sign of a
+    // merge point and it would be a security bug to fail to widen the types.
+    WASM_TRY_ADD_TO_CONTEXT(endBlock(entry, enclosedStack));
+    m_currentStackBegin = parentBegin;
     return { };
 }
 
@@ -3380,16 +3375,9 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
     case CallIndirect: {
         uint32_t signatureIndex;
         uint32_t tableIndex;
-        WASM_PARSER_FAIL_IF(!m_info.tableCount(), "call_indirect is only valid when a table is defined or imported"_s);
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(signatureIndex), "can't get call_indirect's signature index"_s);
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(tableIndex), "can't get call_indirect's table index"_s);
-        WASM_PARSER_FAIL_IF(tableIndex >= m_info.tableCount(), "call_indirect's table index "_s, tableIndex, " invalid, limit is "_s, m_info.tableCount());
-        WASM_PARSER_FAIL_IF(m_info.typeCount() <= signatureIndex, "call_indirect's signature index "_s, signatureIndex, " exceeds known signatures "_s, m_info.typeCount());
-        WASM_PARSER_FAIL_IF(m_info.tables[tableIndex].type() != TableElementType::Funcref, "call_indirect is only valid when a table has type funcref"_s);
+        WASM_FAIL_IF_HELPER_FAILS(parseCallIndirectImmediates(signatureIndex, tableIndex));
 
-        auto index = TypeSignatureIndex(signatureIndex);
-        const auto& calleeSignature = m_info.rtt(index);
-        WASM_VALIDATOR_FAIL_IF(calleeSignature.kind() != RTTKind::Function, "invalid type index (not a function signature) for call_indirect, got ", signatureIndex);
+        const auto& calleeSignature = m_info.rtt(TypeSignatureIndex(signatureIndex));
         size_t argumentCount = calleeSignature.argumentCount() + 1; // Add the callee's index.
         WASM_PARSER_FAIL_IF(argumentCount > m_expressionStack.size() - m_currentStackBegin, "call_indirect expects "_s, argumentCount, " arguments, but the expression stack currently holds "_s, m_expressionStack.size() - m_currentStackBegin, " values"_s);
 
@@ -3511,15 +3499,8 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         BlockSignature inlineSignature;
         WASM_PARSER_FAIL_IF(!parseBlockSignatureAndNotifySIMDUseIfNeeded(inlineSignature), "can't get block's signature"_s);
 
-        const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
         const uint32_t argumentCount = inlineSignature.argumentCount();
-
-        WASM_VALIDATOR_FAIL_IF(sliceSize < argumentCount, "Too few values on stack for block. Block expects ", argumentCount, ", but only ", sliceSize, " were present. Block has inlineSignature: ", inlineSignature);
-        const uint32_t parentStackHeight = m_expressionStack.size() - argumentCount;
-        for (unsigned i = 0; i < argumentCount; ++i) {
-            Type type = m_expressionStack[parentStackHeight + i].type();
-            WASM_VALIDATOR_FAIL_IF(!isSubtype(type, inlineSignature.argumentType(i)), "Block expects the argument at index", i, " to be ", inlineSignature.argumentType(i), " but argument has type ", type);
-        }
+        WASM_FAIL_IF_HELPER_FAILS(checkArgumentsAndWiden(inlineSignature));
 
         auto args = m_expressionStack.mutableSpan().last(argumentCount);
         ControlType block;
@@ -3532,15 +3513,9 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         BlockSignature inlineSignature;
         WASM_PARSER_FAIL_IF(!parseBlockSignatureAndNotifySIMDUseIfNeeded(inlineSignature), "can't get loop's signature"_s);
 
-        const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
         const uint32_t argumentCount = inlineSignature.argumentCount();
-
-        WASM_VALIDATOR_FAIL_IF(sliceSize < argumentCount, "Too few values on stack for loop block. Loop expects ", argumentCount, ", but only ", sliceSize, " were present. Loop has inlineSignature: ", inlineSignature);
+        WASM_FAIL_IF_HELPER_FAILS(checkArgumentsAndWiden(inlineSignature));
         const uint32_t parentStackHeight = m_expressionStack.size() - argumentCount;
-        for (unsigned i = 0; i < argumentCount; ++i) {
-            Type type = m_expressionStack[parentStackHeight + i].type();
-            WASM_VALIDATOR_FAIL_IF(!isSubtype(type, inlineSignature.argumentType(i)), "Loop expects the argument at index", i, " to be ", inlineSignature.argumentType(i), " but argument has type ", type);
-        }
 
         auto args = m_expressionStack.mutableSpan().last(argumentCount);
         ControlType loop;
@@ -3559,13 +3534,9 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         WASM_TRY_POP_EXPRESSION_STACK_INTO(condition, "if condition"_s);
 
         WASM_VALIDATOR_FAIL_IF(!condition.type().isI32(), "if condition must be i32, got ", condition.type());
-        const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
         const uint32_t argumentCount = inlineSignature.argumentCount();
-
-        WASM_VALIDATOR_FAIL_IF(sliceSize < argumentCount, "Too few arguments on stack for if block. If expects ", argumentCount, ", but only ", sliceSize, " were present. If block has signature: ", inlineSignature);
+        WASM_FAIL_IF_HELPER_FAILS(checkArgumentsAndWiden(inlineSignature));
         const uint32_t parentStackHeight = m_expressionStack.size() - argumentCount;
-        for (unsigned i = 0; i < argumentCount; ++i)
-            WASM_VALIDATOR_FAIL_IF(!isSubtype(m_expressionStack[parentStackHeight + i].type(), inlineSignature.argumentType(i)), "Loop expects the argument at index", i, " to be ", inlineSignature.argumentType(i), " but argument has type ", m_expressionStack[parentStackHeight + i].type());
 
         auto args = m_expressionStack.mutableSpan().last(argumentCount);
         ControlType control;
@@ -3586,7 +3557,7 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         ControlEntry& controlEntry = m_controlStack.last();
 
         WASM_VALIDATOR_FAIL_IF(!ControlType::isIf(controlEntry.controlData), "else block isn't associated to an if");
-        WASM_FAIL_IF_HELPER_FAILS(checkExpressionStack(controlEntry.controlData));
+        WASM_FAIL_IF_HELPER_FAILS(checkResultsAndWiden(controlEntry.controlData.signature()));
         auto ifBranchResults = m_expressionStack.mutableSpan().subspan(m_currentStackBegin);
         WASM_TRY_ADD_TO_CONTEXT(addElse(controlEntry.controlData, ifBranchResults));
         m_expressionStack.shrink(m_currentStackBegin);
@@ -3600,13 +3571,9 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         BlockSignature inlineSignature;
         WASM_PARSER_FAIL_IF(!parseBlockSignatureAndNotifySIMDUseIfNeeded(inlineSignature), "can't get try's signature"_s);
 
-        const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
         const uint32_t argumentCount = inlineSignature.argumentCount();
-
-        WASM_VALIDATOR_FAIL_IF(sliceSize < argumentCount, "Too few arguments on stack for try block. Try expects ", argumentCount, ", but only ", sliceSize, " were present. Try block has signature: ", inlineSignature);
+        WASM_FAIL_IF_HELPER_FAILS(checkArgumentsAndWiden(inlineSignature));
         const uint32_t parentStackHeight = m_expressionStack.size() - argumentCount;
-        for (unsigned i = 0; i < argumentCount; ++i)
-            WASM_VALIDATOR_FAIL_IF(!isSubtype(m_expressionStack[parentStackHeight + i].type(), inlineSignature.argumentType(i)), "Try expects the argument at index", i, " to be ", inlineSignature.argumentType(i), " but argument has type ", m_expressionStack[parentStackHeight + i].type());
 
         auto args = m_expressionStack.mutableSpan().last(argumentCount);
         ControlType control;
@@ -3627,7 +3594,7 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
 
         ControlEntry& controlEntry = m_controlStack.last();
         WASM_VALIDATOR_FAIL_IF(!isTryOrCatch(controlEntry.controlData), "catch block isn't associated to a try");
-        WASM_FAIL_IF_HELPER_FAILS(checkExpressionStack(controlEntry.controlData));
+        WASM_FAIL_IF_HELPER_FAILS(checkResultsAndWiden(controlEntry.controlData.signature()));
 
         ResultList results;
         auto preCatchStack = m_expressionStack.mutableSpan().subspan(m_currentStackBegin);
@@ -3653,7 +3620,7 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         ControlEntry& controlEntry = m_controlStack.last();
 
         WASM_VALIDATOR_FAIL_IF(!isTryOrCatch(controlEntry.controlData), "catch block isn't associated to a try");
-        WASM_FAIL_IF_HELPER_FAILS(checkExpressionStack(controlEntry.controlData));
+        WASM_FAIL_IF_HELPER_FAILS(checkResultsAndWiden(controlEntry.controlData.signature()));
 
         auto preCatchStack = m_expressionStack.mutableSpan().subspan(m_currentStackBegin);
         WASM_TRY_ADD_TO_CONTEXT(addCatchAll(preCatchStack, controlEntry.controlData));
@@ -3669,14 +3636,8 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         BlockSignature inlineSignature;
         WASM_PARSER_FAIL_IF(!parseBlockSignatureAndNotifySIMDUseIfNeeded(inlineSignature), "can't get try_table's signature"_s);
 
-        const uint32_t sliceSize = m_expressionStack.size() - m_currentStackBegin;
         const uint32_t argumentCount = inlineSignature.argumentCount();
-        WASM_VALIDATOR_FAIL_IF(sliceSize < argumentCount, "Too few values on stack for block. Block expects ", argumentCount, ", but only ", sliceSize, " were present. Block has inlineSignature: ", inlineSignature);
-        const uint32_t parentStackHeight = m_expressionStack.size() - argumentCount;
-        for (unsigned i = 0; i < argumentCount; ++i) {
-            Type type = m_expressionStack[parentStackHeight + i].type();
-            WASM_VALIDATOR_FAIL_IF(!isSubtype(type, inlineSignature.argumentType(i)), "Block expects the argument at index", i, " to be ", inlineSignature.argumentType(i), " but argument has type ", type);
-        }
+        WASM_FAIL_IF_HELPER_FAILS(checkArgumentsAndWiden(inlineSignature));
 
         uint32_t numberOfCatches;
         Vector<CatchHandler> targets;
@@ -3761,13 +3722,8 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         WASM_VALIDATOR_FAIL_IF(!ControlType::isTry(targetData) && !ControlType::isTopLevel(targetData), "delegate target isn't a try or the top level block");
 
         WASM_TRY_ADD_TO_CONTEXT(addDelegate(targetData, controlEntry.controlData));
-        WASM_FAIL_IF_HELPER_FAILS(checkExpressionStack(controlEntry.controlData));
-
-        const uint32_t parentBegin = parentEntryBegin();
-        auto enclosedStack = m_expressionStack.mutableSpan().subspan(parentBegin);
-        WASM_TRY_ADD_TO_CONTEXT(endBlock(controlEntry, enclosedStack));
-
-        m_currentStackBegin = parentBegin;
+        // Unlike the sibling catch/catch_all arms, delegate ends the try block, so it widens results.
+        WASM_FAIL_IF_HELPER_FAILS(endBlockAndCheckResultTypes(controlEntry));
         resetLocalInitStackToHeight(controlEntry.localInitStackHeight);
         return { };
     }
@@ -3896,25 +3852,13 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
     case End: {
         ControlEntry data = m_controlStack.takeLast();
         if (ControlType::isIf(data.controlData)) {
-            WASM_FAIL_IF_HELPER_FAILS(checkExpressionStack(data.controlData));
+            WASM_FAIL_IF_HELPER_FAILS(checkResultsAndWiden(data.controlData.signature()));
             auto ifBranchResults = m_expressionStack.mutableSpan().subspan(m_currentStackBegin);
             WASM_TRY_ADD_TO_CONTEXT(addElse(data.controlData, ifBranchResults));
             m_expressionStack.shrink(m_currentStackBegin);
             m_expressionStack.append(data.elseBlockStack.span());
         }
-        // When ending an 'if'/'else', including a synthetic 'else' added right above,
-        // the spec requires the output type of 'if' to be the type from the signature.
-        const bool shouldForceSignature = ControlType::isElse(data.controlData);
-        // FIXME: endBlock may modify the expressionStack slice for the result of the block.
-        // That's a little too effectful but we don't have a better API right now.
-        // see: https://bugs.webkit.org/show_bug.cgi?id=164353
-        WASM_FAIL_IF_HELPER_FAILS(checkExpressionStack(data.controlData, shouldForceSignature));
-
-        const uint32_t parentBegin = parentEntryBegin();
-        auto enclosedStack = m_expressionStack.mutableSpan().subspan(parentBegin);
-        WASM_TRY_ADD_TO_CONTEXT(endBlock(data, enclosedStack));
-
-        m_currentStackBegin = parentBegin;
+        WASM_FAIL_IF_HELPER_FAILS(endBlockAndCheckResultTypes(data));
         if (!ControlType::isTopLevel(data.controlData))
             resetLocalInitStackToHeight(data.localInitStackHeight);
         return { };
@@ -3941,7 +3885,7 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         WASM_PARSER_FAIL_IF(!m_info.memoryCount(), "grow_memory is only valid if a memory is defined or imported"_s);
 
         uint8_t memoryIndex;
-        WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexForBulkOp(memoryIndex));
+        WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndex(memoryIndex));
 
         TypedExpression delta;
         bool isMemory64 = m_info.memory(memoryIndex).isMemory64();
@@ -3964,7 +3908,7 @@ FOR_EACH_WASM_MEMORY_STORE_OP(CREATE_CASE)
         WASM_PARSER_FAIL_IF(!m_info.memoryCount(), "current_memory is only valid if a memory is defined or imported"_s);
 
         uint8_t memoryIndex;
-        WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexForBulkOp(memoryIndex));
+        WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndex(memoryIndex));
 
         ExpressionType result;
         WASM_TRY_ADD_TO_CONTEXT(addCurrentMemory(result, memoryIndex));
@@ -4110,12 +4054,7 @@ auto FunctionParser<Context>::parseUnreachableExpression() -> PartialResult
                 WASM_TRY_ADD_TO_CONTEXT(addElseToUnreachable(data.controlData));
                 m_expressionStack.shrink(m_currentStackBegin);
                 m_expressionStack.append(data.elseBlockStack.span());
-                WASM_FAIL_IF_HELPER_FAILS(checkExpressionStack(data.controlData));
-
-                // Reachable End handling: the combined enclosedStack now lives in
-                // m_expressionStack[parentBegin..end].
-                auto enclosedStack = m_expressionStack.mutableSpan().subspan(parentBegin);
-                WASM_TRY_ADD_TO_CONTEXT(endBlock(data, enclosedStack));
+                WASM_FAIL_IF_HELPER_FAILS(endBlockAndCheckResultTypes(data));
             } else {
                 m_expressionStack.shrink(m_currentStackBegin);
                 const auto& sig = data.controlData.signature();
@@ -4182,10 +4121,9 @@ auto FunctionParser<Context>::parseUnreachableExpression() -> PartialResult
         WASM_PARSER_FAIL_IF(!Options::useWasmTailCalls(), "wasm tail calls are not enabled"_s);
         [[fallthrough]];
     case CallIndirect: {
-        uint32_t unused;
-        uint32_t unused2;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(unused), "can't get call_indirect's signature index in unreachable context"_s);
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(unused2), "can't get call_indirect's reserved byte in unreachable context"_s);
+        uint32_t signatureIndex;
+        uint32_t tableIndex;
+        WASM_FAIL_IF_HELPER_FAILS(parseCallIndirectImmediates(signatureIndex, tableIndex));
         return { };
     }
 
@@ -4217,14 +4155,10 @@ auto FunctionParser<Context>::parseUnreachableExpression() -> PartialResult
         uint32_t alignment;
         WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get first immediate for "_s, m_currentOpcode, " in unreachable context"_s);
         uint8_t memoryIndex;
-        WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
-        if (m_info.memory(memoryIndex).isMemory64()) {
-            uint64_t unused64;
-            WASM_PARSER_FAIL_IF(!parseVarUInt64(unused64), "can't get second immediate for "_s, m_currentOpcode, " in unreachable context"_s);
-        } else {
-            uint32_t unused32;
-            WASM_PARSER_FAIL_IF(!parseVarUInt32(unused32), "can't get second immediate for "_s, m_currentOpcode, " in unreachable context"_s);
-        }
+        WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
+        WASM_PARSER_FAIL_IF(alignment > memoryLog2Alignment(m_currentOpcode), "byte alignment "_s, 1ull << alignment, " exceeds "_s, m_currentOpcode, "'s natural alignment "_s, 1ull << memoryLog2Alignment(m_currentOpcode));
+        uint64_t unusedOffset;
+        WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, unusedOffset));
         return { };
     }
 
@@ -4367,9 +4301,10 @@ auto FunctionParser<Context>::parseUnreachableExpression() -> PartialResult
     case TableGet:
     case TableSet: {
         unsigned tableIndex;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(tableIndex), "can't parse table index"_s);
-        [[fallthrough]];
+        WASM_FAIL_IF_HELPER_FAILS(parseTableIndex(tableIndex));
+        return { };
     }
+
     case RefIsNull: {
         return { };
     }
@@ -4381,8 +4316,11 @@ auto FunctionParser<Context>::parseUnreachableExpression() -> PartialResult
     }
 
     case RefFunc: {
-        uint32_t unused;
-        WASM_PARSER_FAIL_IF(!parseVarUInt32(unused), "can't get immediate for "_s, m_currentOpcode, " in unreachable context"_s);
+        FunctionSpaceIndex index;
+        WASM_FAIL_IF_HELPER_FAILS(parseFunctionIndex(index));
+        // Function references don't need to be declared in constant expression contexts.
+        if constexpr (!std::is_same<Context, ConstExprGenerator>())
+            WASM_VALIDATOR_FAIL_IF(!m_info.isDeclaredFunction(index), "ref.func index "_s, index, " isn't declared"_s);
         return { };
     }
 
@@ -4570,7 +4508,7 @@ auto FunctionParser<Context>::parseUnreachableExpression() -> PartialResult
     case CurrentMemory: {
         WASM_PARSER_FAIL_IF(!m_info.memoryCount(), "grow_memory/current_memory is only valid if a memory is defined or imported"_s);
         uint8_t memoryIndex;
-        WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexForBulkOp(memoryIndex));
+        WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndex(memoryIndex));
         return { };
     }
 
@@ -4599,15 +4537,10 @@ auto FunctionParser<Context>::parseUnreachableExpression() -> PartialResult
             uint32_t alignment;
             WASM_PARSER_FAIL_IF(!parseVarUInt32(alignment), "can't get load alignment"_s);
             uint8_t memoryIndex;
-            WASM_PARSER_FAIL_IF(!parseMemoryIndexAndFixupAlignment(alignment, memoryIndex), "can't get memory index");
+            WASM_FAIL_IF_HELPER_FAILS(parseMemoryIndexAndFixupAlignment(alignment, memoryIndex));
             WASM_PARSER_FAIL_IF(alignment != memoryLog2Alignment(op), "byte alignment "_s, 1ull << alignment, " does not match against atomic op's natural alignment "_s, 1ull << memoryLog2Alignment(op));
-            if (m_info.memory(memoryIndex).isMemory64()) {
-                uint64_t unused64;
-                WASM_PARSER_FAIL_IF(!parseVarUInt64(unused64), "can't get first immediate for atomic "_s, static_cast<unsigned>(op), " in unreachable context"_s);
-            } else {
-                uint32_t unused32;
-                WASM_PARSER_FAIL_IF(!parseVarUInt32(unused32), "can't get first immediate for atomic "_s, static_cast<unsigned>(op), " in unreachable context"_s);
-            }
+            uint64_t unusedOffset;
+            WASM_FAIL_IF_HELPER_FAILS(parseMemoryOffset(memoryIndex, unusedOffset));
             break;
         }
         case ExtAtomicOpType::AtomicFence: {

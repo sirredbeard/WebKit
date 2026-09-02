@@ -292,6 +292,11 @@ enum class SpatialType : bool {
     Portal
 };
 
+enum class PortalActionType : bool {
+    None,
+    Orbit
+};
+
 enum class TextCombine : bool {
     None,
     All
@@ -408,14 +413,7 @@ enum class FlexDirection : uint8_t {
     ColumnReverse
 };
 
-enum class FlexWrap : uint8_t {
-    NoWrap,
-    Wrap,
-    Reverse
-};
-
 inline AxisDirection toAxisDirection(FlexDirection direction) { return static_cast<AxisDirection>(direction == FlexDirection::RowReverse || direction == FlexDirection::ColumnReverse); }
-inline AxisDirection toAxisDirection(FlexWrap wrap) { return static_cast<AxisDirection>(wrap == FlexWrap::Reverse); }
 
 enum class ItemPosition : uint8_t {
     Legacy,
@@ -502,7 +500,8 @@ enum class UserDrag : uint8_t {
 enum class UserSelect : uint8_t {
     None,
     Text,
-    All
+    All,
+    Auto
 };
 
 // CSS3 Image Values
@@ -804,11 +803,6 @@ enum class TextEmphasisMark : uint8_t {
     DoubleCircle,
     Triangle,
     Sesame
-};
-
-enum class TextOverflow : bool {
-    Clip,
-    Ellipsis
 };
 
 enum class TextWrapMode : bool {
@@ -1116,9 +1110,6 @@ enum class AlignmentBaseline : uint8_t {
 
 enum class DominantBaseline : uint8_t {
     Auto,
-    UseScript,
-    NoChange,
-    ResetSize,
     Ideographic,
     Alphabetic,
     Hanging,
@@ -1197,7 +1188,6 @@ WTF::TextStream& operator<<(WTF::TextStream&, FillBox);
 WTF::TextStream& operator<<(WTF::TextStream&, FillRepeat);
 WTF::TextStream& operator<<(WTF::TextStream&, FillSizeType);
 WTF::TextStream& operator<<(WTF::TextStream&, FlexDirection);
-WTF::TextStream& operator<<(WTF::TextStream&, FlexWrap);
 WTF::TextStream& operator<<(WTF::TextStream&, Float);
 WTF::TextStream& operator<<(WTF::TextStream&, UsedFloat);
 WTF::TextStream& operator<<(WTF::TextStream&, Hyphens);
@@ -1221,6 +1211,7 @@ WTF::TextStream& operator<<(WTF::TextStream&, WebCore::Overflow);
 WTF::TextStream& operator<<(WTF::TextStream&, OverflowAlignment);
 WTF::TextStream& operator<<(WTF::TextStream&, OverflowWrap);
 WTF::TextStream& operator<<(WTF::TextStream&, PointerEvents);
+WTF::TextStream& operator<<(WTF::TextStream&, PortalActionType);
 WTF::TextStream& operator<<(WTF::TextStream&, PositionType);
 WTF::TextStream& operator<<(WTF::TextStream&, PrintColorAdjust);
 WTF::TextStream& operator<<(WTF::TextStream&, PseudoElementType);
@@ -1243,7 +1234,6 @@ WTF::TextStream& operator<<(WTF::TextStream&, TextEmphasisFill);
 WTF::TextStream& operator<<(WTF::TextStream&, TextEmphasisMark);
 WTF::TextStream& operator<<(WTF::TextStream&, TextGroupAlign);
 WTF::TextStream& operator<<(WTF::TextStream&, TextJustify);
-WTF::TextStream& operator<<(WTF::TextStream&, TextOverflow);
 WTF::TextStream& operator<<(WTF::TextStream&, TextSecurity);
 WTF::TextStream& operator<<(WTF::TextStream&, TextWrapMode);
 WTF::TextStream& operator<<(WTF::TextStream&, TextWrapStyle);

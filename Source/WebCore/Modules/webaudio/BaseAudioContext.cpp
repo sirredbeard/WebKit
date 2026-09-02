@@ -199,9 +199,9 @@ void BaseAudioContext::clear()
 
     // Audio thread is dead. Nobody will schedule node deletion action. Let's do it ourselves.
     do {
-        m_nodesToDelete = std::exchange(m_nodesMarkedForDeletion, { });
+        m_nodesToDelete.appendVector(std::exchange(m_nodesMarkedForDeletion, { }));
         deleteMarkedNodes();
-    } while (!m_nodesToDelete.isEmpty());
+    } while (!m_nodesMarkedForDeletion.isEmpty());
 }
 
 void BaseAudioContext::uninitialize()
@@ -658,18 +658,19 @@ void BaseAudioContext::handlePostRenderTasks()
 void BaseAudioContext::handleDeferredDecrementConnectionCounts()
 {
     ASSERT(isGraphOwner());
-    for (auto& node : m_deferredBreakConnectionList)
+    while (!m_deferredBreakConnectionList.isEmpty()) {
+        SUPPRESS_UNCHECKED_LOCAL auto* node = m_deferredBreakConnectionList.takeLast().unsafeGet(); // NOLINT.
         node->decrementConnectionCountWithLock();
-
-    m_deferredBreakConnectionList.clear();
+    }
 }
 
 void BaseAudioContext::handleDeferredDerefs()
 {
     ASSERT(isGraphOwner());
-    for (auto& node : m_deferredDerefList)
+    while (!m_deferredDerefList.isEmpty()) {
+        SUPPRESS_UNCHECKED_LOCAL auto* node = m_deferredDerefList.takeLast().unsafeGet(); // NOLINT.
         node->derefWithLock();
-    m_deferredDerefList.clear();
+    }
 }
 
 void BaseAudioContext::addTailProcessingNode(AudioNode& node)

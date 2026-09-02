@@ -104,7 +104,7 @@ list(APPEND TestRunnerInjectedBundle_INCLUDE_DIRECTORIES ${_wtr_mac_include_dirs
 # TestRunnerInjectedBundle links WebCoreTestSupport (static) which references
 # WTF symbols. The bundle is loaded into a process that already has WTF, so
 # use -undefined dynamic_lookup to resolve them at runtime.
-list(APPEND TestRunnerInjectedBundle_PRIVATE_LIBRARIES "-Wl,-undefined,dynamic_lookup")
+target_link_options(TestRunnerInjectedBundle PRIVATE "LINKER:-undefined,dynamic_lookup")
 
 list(APPEND TestRunnerInjectedBundle_SOURCES
     ${WebKitTestRunner_DIR}/cocoa/CrashReporterInfo.mm
@@ -159,6 +159,7 @@ list(APPEND WebKitTestRunner_SOURCES
     ${WebKitTestRunner_DIR}/mac/main.mm
 
     ${WebKitTestRunner_SHARED_DIR}/mac/NSPasteboardAdditions.mm
+    ${WebKitTestRunner_SHARED_DIR}/mac/SyntheticNSEvent.mm
 
     ${WebKitTestRunner_SHARED_DIR}/cocoa/ClassMethodSwizzler.mm
     ${WebKitTestRunner_SHARED_DIR}/cocoa/InstanceMethodSwizzler.mm
@@ -245,7 +246,7 @@ set(_wktr_ios_include_dirs
 list(APPEND WebKitTestRunner_INCLUDE_DIRECTORIES ${_wktr_ios_include_dirs})
 list(APPEND TestRunnerInjectedBundle_INCLUDE_DIRECTORIES ${_wktr_ios_include_dirs})
 
-list(APPEND TestRunnerInjectedBundle_PRIVATE_LIBRARIES "-Wl,-undefined,dynamic_lookup" "-Wl,-not_for_dyld_shared_cache")
+target_link_options(TestRunnerInjectedBundle PRIVATE "LINKER:-undefined,dynamic_lookup" "LINKER:-not_for_dyld_shared_cache")
 
 list(APPEND TestRunnerInjectedBundle_SOURCES
     ${WebKitTestRunner_DIR}/cocoa/CrashReporterInfo.mm
@@ -312,19 +313,21 @@ set_target_properties(WebKitTestRunner PROPERTIES
 
 set(_wktr_bundle_id "org.webkit.WebKitTestRunner")
 
-add_dependencies(WebKitTestRunner WebContentExtension WebContentCaptivePortalExtension NetworkingExtension)
-if (ENABLE_GPU_PROCESS)
-    add_dependencies(WebKitTestRunner GPUExtension)
-endif ()
+if (WEBKIT_SDK_TARGET_OS STREQUAL "ios")
+    add_dependencies(WebKitTestRunner WebContentExtension WebContentCaptivePortalExtension NetworkingExtension)
+    if (ENABLE_GPU_PROCESS)
+        add_dependencies(WebKitTestRunner GPUExtension)
+    endif ()
 
-WEBKIT_EMBED_EXTENSION(WebKitTestRunner WebContentExtension ${_wktr_bundle_id}
-    CHANGE_EXTENSION_POINT ADD_ATS)
-WEBKIT_EMBED_EXTENSION(WebKitTestRunner WebContentCaptivePortalExtension ${_wktr_bundle_id}
-    CHANGE_EXTENSION_POINT ADD_ATS)
-WEBKIT_EMBED_EXTENSION(WebKitTestRunner NetworkingExtension ${_wktr_bundle_id}
-    ADD_ATS)
-if (ENABLE_GPU_PROCESS)
-    WEBKIT_EMBED_EXTENSION(WebKitTestRunner GPUExtension ${_wktr_bundle_id})
+    WEBKIT_EMBED_EXTENSION(WebKitTestRunner WebContentExtension ${_wktr_bundle_id}
+        CHANGE_EXTENSION_POINT ADD_ATS)
+    WEBKIT_EMBED_EXTENSION(WebKitTestRunner WebContentCaptivePortalExtension ${_wktr_bundle_id}
+        CHANGE_EXTENSION_POINT ADD_ATS)
+    WEBKIT_EMBED_EXTENSION(WebKitTestRunner NetworkingExtension ${_wktr_bundle_id}
+        ADD_ATS)
+    if (ENABLE_GPU_PROCESS)
+        WEBKIT_EMBED_EXTENSION(WebKitTestRunner GPUExtension ${_wktr_bundle_id})
+    endif ()
 endif ()
 
 set_target_properties(WebKitTestRunner PROPERTIES LINKER_LANGUAGE CXX)

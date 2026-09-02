@@ -39,6 +39,7 @@
 #include "DOMJITGetterSetter.h"
 #include "Debugger.h"
 #include "ExecutableBaseInlines.h"
+#include "FastMallocAlignedMemoryAllocator.h"
 #include "FrameTracers.h"
 #include "FunctionCodeBlock.h"
 #include "GetterSetter.h"
@@ -55,6 +56,7 @@
 #include "JSString.h"
 #include "LinkBuffer.h"
 #include "NativeCallee.h"
+#include "ObjectConstructor.h"
 #include "ObjectPropertyCondition.h"
 #include "OperationResult.h"
 #include "Options.h"
@@ -97,6 +99,7 @@ WTF_ALLOW_UNSAFE_BUFFER_USAGE_END
 
 #if ENABLE(WEBASSEMBLY)
 #include "JSWebAssemblyHelpers.h"
+#include "JSWebAssemblyStruct.h"
 #include "WasmModuleInformation.h"
 #include "WasmStreamingCompiler.h"
 #include "WasmStreamingParser.h"
@@ -1129,7 +1132,7 @@ public:
             snippet->requireGlobalObject = true;
             snippet->setGenerator([=] (CCallHelpers& jit, SnippetParams& params) {
                 DollarVMAssertScope assertScope;
-                JSValueRegs results = params[0].jsValueRegs();
+                GPRReg results = params[0].gpr();
                 GPRReg domGPR = params[1].gpr();
                 GPRReg globalObjectGPR = params[2].gpr();
                 params.addSlowPathCall(jit.jump(), jit, domJITGetterSlowCall, results, globalObjectGPR, domGPR);
@@ -1236,7 +1239,7 @@ public:
             snippet->requireGlobalObject = true;
             snippet->setGenerator([=] (CCallHelpers& jit, SnippetParams& params) {
                 DollarVMAssertScope assertScope;
-                JSValueRegs results = params[0].jsValueRegs();
+                GPRReg results = params[0].gpr();
                 GPRReg domGPR = params[1].gpr();
                 GPRReg globalObjectGPR = params[2].gpr();
                 params.addSlowPathCall(jit.jump(), jit, domJITGetterNoEffectSlowCall, results, globalObjectGPR, domGPR);
@@ -1339,7 +1342,7 @@ public:
             snippet->requireGlobalObject = true;
             snippet->setGenerator([=] (CCallHelpers& jit, SnippetParams& params) {
                 DollarVMAssertScope assertScope;
-                JSValueRegs results = params[0].jsValueRegs();
+                GPRReg results = params[0].gpr();
                 GPRReg domGPR = params[1].gpr();
                 GPRReg globalObjectGPR = params[2].gpr();
                 for (unsigned i = 0; i < numGPScratchRegisters; ++i)
@@ -1605,7 +1608,7 @@ public:
             snippet->requireGlobalObject = true;
             snippet->setGenerator([=] (CCallHelpers& jit, SnippetParams& params) {
                 DollarVMAssertScope assertScope;
-                JSValueRegs results = params[0].jsValueRegs();
+                GPRReg results = params[0].gpr();
                 GPRReg domGPR = params[1].gpr();
                 GPRReg globalObjectGPR = params[2].gpr();
                 params.addSlowPathCall(jit.jump(), jit, domJITGetterBaseJSObjectSlowCall, results, globalObjectGPR, domGPR);
@@ -1841,8 +1844,7 @@ JSC_DEFINE_CUSTOM_SETTER(customFunctionSetter, (JSGlobalObject* globalObject, En
         return false;
 
     auto callData = JSC::getCallData(function);
-    MarkedArgumentBuffer args;
-    call(globalObject, function, callData, jsUndefined(), args);
+    call(globalObject, function, callData, jsUndefined(), ArgList { });
 
     return true;
 }
@@ -2217,9 +2219,13 @@ static JSC_DECLARE_HOST_FUNCTION(functionInstallPropertyInlineCacheClearingWatch
 static JSC_DECLARE_HOST_FUNCTION(functionDeltaBetweenButterflies);
 static JSC_DECLARE_HOST_FUNCTION(functionCurrentCPUTime);
 static JSC_DECLARE_HOST_FUNCTION(functionTotalGCTime);
+static JSC_DECLARE_HOST_FUNCTION(functionWarmUpMarkedBlockState);
+static JSC_DECLARE_HOST_FUNCTION(functionSetWarmUpMarkedBlockAllocationShouldFail);
 static JSC_DECLARE_HOST_FUNCTION(functionParseCount);
 static JSC_DECLARE_HOST_FUNCTION(functionIsWasmSupported);
 static JSC_DECLARE_HOST_FUNCTION(functionWasmCanonicalTypeCount);
+static JSC_DECLARE_HOST_FUNCTION(functionWasmStructFieldOffsets);
+static JSC_DECLARE_HOST_FUNCTION(functionWasmStructPayloadSize);
 static JSC_DECLARE_HOST_FUNCTION(functionMake16BitStringIfPossible);
 static JSC_DECLARE_HOST_FUNCTION(functionGetStructureTransitionList);;
 static JSC_DECLARE_HOST_FUNCTION(functionGetConcurrently);
@@ -2242,6 +2248,8 @@ static JSC_DECLARE_HOST_FUNCTION(functionIsGigacageEnabled);
 static JSC_DECLARE_HOST_FUNCTION(functionToCacheableDictionary);
 static JSC_DECLARE_HOST_FUNCTION(functionToUncacheableDictionary);
 static JSC_DECLARE_HOST_FUNCTION(functionIsPrivateSymbol);
+static JSC_DECLARE_HOST_FUNCTION(functionIsDefinitelyAtomString);
+static JSC_DECLARE_HOST_FUNCTION(functionIsAtomString);
 static JSC_DECLARE_HOST_FUNCTION(functionDumpAndResetPasDebugSpectrum);
 static JSC_DECLARE_HOST_FUNCTION(functionMonotonicTimeNow);
 static JSC_DECLARE_HOST_FUNCTION(functionWallTimeNow);
@@ -3048,8 +3056,7 @@ static void callWithStackSizeProbeFunction(Probe::State* state)
     DollarVMAssertScope assertScope;
 
     auto callData = JSC::getCallData(function);
-    MarkedArgumentBuffer args;
-    call(globalObject, function, callData, jsUndefined(), args);
+    call(globalObject, function, callData, jsUndefined(), ArgList { });
 }
 #endif // ENABLE(ASSEMBLER) && OS(DARWIN) && CPU(X86_64)
 
@@ -3298,10 +3305,10 @@ JSC_DEFINE_HOST_FUNCTION(functionCreateWasmStreamingCompilerForCompile, (JSGloba
         return throwVMTypeError(globalObject, scope, "First argument is not a JS function"_s);
 
     auto compiler = WasmStreamingCompiler::create(vm, globalObject, Wasm::CompilerMode::Validation, nullptr, source);
-    MarkedArgumentBuffer args;
-    args.append(compiler);
-    ASSERT(!args.hasOverflowed());
-    call(globalObject, callback, jsUndefined(), args, "You shouldn't see this..."_s);
+    auto args = WTF::toArray<EncodedJSValue>({
+        JSValue::encode(compiler),
+    });
+    call(globalObject, callback, jsUndefined(), ArgList { args.data(), args.size() }, "You shouldn't see this..."_s);
     TRY_CLEAR_EXCEPTION(scope, { });
     compiler->streamingCompiler().finalize(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
@@ -3328,10 +3335,10 @@ JSC_DEFINE_HOST_FUNCTION(functionCreateWasmStreamingCompilerForInstantiate, (JSG
         return throwVMTypeError(globalObject, scope);
 
     auto compiler = WasmStreamingCompiler::create(vm, globalObject, Wasm::CompilerMode::FullCompile, importObject, source);
-    MarkedArgumentBuffer args;
-    args.append(compiler);
-    ASSERT(!args.hasOverflowed());
-    call(globalObject, callback, jsUndefined(), args, "You shouldn't see this..."_s);
+    auto args = WTF::toArray<EncodedJSValue>({
+        JSValue::encode(compiler),
+    });
+    call(globalObject, callback, jsUndefined(), ArgList { args.data(), args.size() }, "You shouldn't see this..."_s);
     TRY_CLEAR_EXCEPTION(scope, { });
     compiler->streamingCompiler().finalize(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
@@ -3366,10 +3373,10 @@ JSC_DEFINE_HOST_FUNCTION(functionCreateWasmStreamingCompilerForInstantiateWithUR
     auto source = makeSource("[wasm code]"_s, SourceOrigin(url), taintedness);
 
     auto compiler = WasmStreamingCompiler::create(vm, globalObject, Wasm::CompilerMode::FullCompile, importObject, source, WTF::move(wasmSourceURL));
-    MarkedArgumentBuffer args;
-    args.append(compiler);
-    ASSERT(!args.hasOverflowed());
-    call(globalObject, callback, jsUndefined(), args, "You shouldn't see this..."_s);
+    auto args = WTF::toArray<EncodedJSValue>({
+        JSValue::encode(compiler),
+    });
+    call(globalObject, callback, jsUndefined(), ArgList { args.data(), args.size() }, "You shouldn't see this..."_s);
     TRY_CLEAR_EXCEPTION(scope, { });
     compiler->streamingCompiler().finalize(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
@@ -3974,6 +3981,35 @@ JSC_DEFINE_HOST_FUNCTION(functionTotalGCTime, (JSGlobalObject* globalObject, Cal
     return JSValue::encode(jsNumber(vm.heap.totalGCTime().seconds()));
 }
 
+JSC_DEFINE_HOST_FUNCTION(functionWarmUpMarkedBlockState, (JSGlobalObject* globalObject, CallFrame*))
+{
+    DollarVMAssertScope assertScope;
+    VM& vm = globalObject->vm();
+    auto state = warmUpMarkedBlockStateForTesting();
+    ASCIILiteral phase = [&] {
+        switch (state.phase) {
+        case WarmUpMarkedBlockPhase::Stopped:
+            return "stopped"_s;
+        case WarmUpMarkedBlockPhase::Armed:
+            return "armed"_s;
+        case WarmUpMarkedBlockPhase::StandingDown:
+            return "standingDown"_s;
+        }
+        RELEASE_ASSERT_NOT_REACHED();
+    }();
+    JSObject* result = constructEmptyObject(globalObject);
+    result->putDirect(vm, Identifier::fromString(vm, "blocks"_s), jsNumber(static_cast<unsigned>(state.blockCount)));
+    result->putDirect(vm, Identifier::fromString(vm, "phase"_s), jsString(vm, String(phase)));
+    return JSValue::encode(result);
+}
+
+JSC_DEFINE_HOST_FUNCTION(functionSetWarmUpMarkedBlockAllocationShouldFail, (JSGlobalObject* globalObject, CallFrame* callFrame))
+{
+    DollarVMAssertScope assertScope;
+    setWarmUpMarkedBlockAllocationShouldFailForTesting(callFrame->argument(0).toBoolean(globalObject));
+    return JSValue::encode(jsUndefined());
+}
+
 JSC_DEFINE_HOST_FUNCTION(functionParseCount, (JSGlobalObject*, CallFrame*))
 {
     DollarVMAssertScope assertScope;
@@ -3993,6 +4029,46 @@ JSC_DEFINE_HOST_FUNCTION(functionWasmCanonicalTypeCount, (JSGlobalObject*, CallF
     return JSValue::encode(jsNumber(Wasm::TypeInformation::canonicalTypeCount()));
 #else
     return JSValue::encode(jsNumber(0));
+#endif
+}
+
+JSC_DEFINE_HOST_FUNCTION(functionWasmStructFieldOffsets, (JSGlobalObject* globalObject, CallFrame* callFrame))
+{
+    DollarVMAssertScope assertScope;
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+#if ENABLE(WEBASSEMBLY)
+    auto* structObject = dynamicDowncast<JSWebAssemblyStruct>(callFrame->argument(0));
+    if (!structObject)
+        return throwVMTypeError(globalObject, scope, "argument is not a WebAssembly GC struct"_s);
+
+    SUPPRESS_UNCOUNTED_LOCAL const auto& rtt = structObject->structType();
+    JSArray* result = constructEmptyArray(globalObject, nullptr);
+    RETURN_IF_EXCEPTION(scope, { });
+    for (Wasm::StructFieldCount i = 0; i < rtt.fieldCount(); ++i) {
+        result->push(globalObject, jsNumber(rtt.offsetOfFieldInPayload(i)));
+        RETURN_IF_EXCEPTION(scope, { });
+    }
+    return JSValue::encode(result);
+#else
+    UNUSED_PARAM(callFrame);
+    return throwVMTypeError(globalObject, scope, "WebAssembly is not enabled"_s);
+#endif
+}
+
+JSC_DEFINE_HOST_FUNCTION(functionWasmStructPayloadSize, (JSGlobalObject* globalObject, CallFrame* callFrame))
+{
+    DollarVMAssertScope assertScope;
+    VM& vm = globalObject->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+#if ENABLE(WEBASSEMBLY)
+    auto* structObject = dynamicDowncast<JSWebAssemblyStruct>(callFrame->argument(0));
+    if (!structObject)
+        return throwVMTypeError(globalObject, scope, "argument is not a WebAssembly GC struct"_s);
+    return JSValue::encode(jsNumber(structObject->structType().instancePayloadSize()));
+#else
+    UNUSED_PARAM(callFrame);
+    return throwVMTypeError(globalObject, scope, "WebAssembly is not enabled"_s);
 #endif
 }
 
@@ -4259,6 +4335,29 @@ JSC_DEFINE_HOST_FUNCTION(functionIsPrivateSymbol, (JSGlobalObject*, CallFrame* c
         return JSValue::encode(jsBoolean(false));
 
     return JSValue::encode(jsBoolean(asSymbol(callFrame->argument(0))->uid().isPrivate()));
+}
+
+JSC_DEFINE_HOST_FUNCTION(functionIsDefinitelyAtomString, (JSGlobalObject*, CallFrame* callFrame))
+{
+    DollarVMAssertScope assertScope;
+
+    JSValue value = callFrame->argument(0);
+    if (!value.isString())
+        return JSValue::encode(jsBoolean(false));
+
+    return JSValue::encode(jsBoolean(asString(value)->isDefinitelyAtom()));
+}
+
+JSC_DEFINE_HOST_FUNCTION(functionIsAtomString, (JSGlobalObject*, CallFrame* callFrame))
+{
+    DollarVMAssertScope assertScope;
+
+    JSValue value = callFrame->argument(0);
+    if (!value.isString())
+        return JSValue::encode(jsBoolean(false));
+
+    const StringImpl* impl = asString(value)->tryGetValueImpl();
+    return JSValue::encode(jsBoolean(impl && impl->isAtom()));
 }
 
 JSC_DEFINE_HOST_FUNCTION(functionDumpAndResetPasDebugSpectrum, (JSGlobalObject*, CallFrame*))
@@ -4658,11 +4757,15 @@ void JSDollarVM::finishCreation(VM& vm)
     
     addFunction(vm, alwaysAllow, "currentCPUTime"_s, functionCurrentCPUTime, 0);
     addFunction(vm, alwaysAllow, "totalGCTime"_s, functionTotalGCTime, 0);
+    addFunction(vm, alwaysAllow, "warmUpMarkedBlockState"_s, functionWarmUpMarkedBlockState, 0);
+    addFunction(vm, alwaysAllow, "setWarmUpMarkedBlockAllocationShouldFail"_s, functionSetWarmUpMarkedBlockAllocationShouldFail, 1);
 
     addFunction(vm, alwaysAllow, "parseCount"_s, functionParseCount, 0);
 
     addFunction(vm, alwaysAllow, "isWasmSupported"_s, functionIsWasmSupported, 0);
     addFunction(vm, alwaysAllow, "wasmCanonicalTypeCount"_s, functionWasmCanonicalTypeCount, 0);
+    addFunction(vm, alwaysAllow, "wasmStructFieldOffsets"_s, functionWasmStructFieldOffsets, 1);
+    addFunction(vm, alwaysAllow, "wasmStructPayloadSize"_s, functionWasmStructPayloadSize, 1);
     addFunction(vm, alwaysAllow, "make16BitStringIfPossible"_s, functionMake16BitStringIfPossible, 1);
 
     addFunction(vm, allowIfNotFuzz, "getStructureTransitionList"_s, functionGetStructureTransitionList, 1);
@@ -4692,6 +4795,8 @@ void JSDollarVM::finishCreation(VM& vm)
     addFunction(vm, allowIfNotFuzz, "toUncacheableDictionary"_s, functionToUncacheableDictionary, 1);
 
     addFunction(vm, allowIfNotFuzz, "isPrivateSymbol"_s, functionIsPrivateSymbol, 1);
+    addFunction(vm, allowIfNotFuzz, "isDefinitelyAtomString"_s, functionIsDefinitelyAtomString, 1);
+    addFunction(vm, allowIfNotFuzz, "isAtomString"_s, functionIsAtomString, 1);
     addFunction(vm, allowIfNotFuzz, "dumpAndResetPasDebugSpectrum"_s, functionDumpAndResetPasDebugSpectrum, 0);
 
     addFunction(vm, alwaysAllow, "monotonicTimeNow"_s, functionMonotonicTimeNow, 0);

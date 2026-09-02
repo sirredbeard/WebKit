@@ -34,6 +34,7 @@
 #include "NetworkActivityTracker.h"
 #include "NetworkContentRuleListManager.h"
 #include "QuotaIncreaseRequestIdentifier.h"
+#include "SecurityFlags.h"
 #include "SharedPreferencesForWebProcess.h"
 #include "UseDownloadPlaceholder.h"
 #include "WebPageProxyIdentifier.h"
@@ -55,10 +56,12 @@
 #include <memory>
 #include <wtf/CheckedRef.h>
 #include <wtf/CrossThreadTask.h>
+#include <wtf/CryptographicallyRandomNumber.h>
 #include <wtf/Function.h>
 #include <wtf/HashSet.h>
 #include <wtf/Lock.h>
 #include <wtf/MemoryPressureHandler.h>
+#include <wtf/MonotonicTime.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/RetainPtr.h>
 #include <wtf/TZoneMalloc.h>
@@ -159,9 +162,12 @@ public:
     using DomainInNeedOfStorageAccess = WebCore::RegistrableDomain;
     using OpenerDomain = WebCore::RegistrableDomain;
 
-    static Ref<NetworkProcess> create(AuxiliaryProcessInitializationParameters&&);
+    static NetworkProcess& singleton();
     ~NetworkProcess();
     static constexpr WTF::AuxiliaryProcessType processType = WTF::AuxiliaryProcessType::Network;
+
+    // Never sent to the WebContent process.
+    const SecurityFlags& securityFlags() const LIFETIME_BOUND { return m_securityFlags; }
 
     // CanMakeThreadSafeCheckedPtr interface
     uint32_t checkedPtrCount() const final { return AuxiliaryProcess::checkedPtrCount(); }
@@ -474,6 +480,9 @@ public:
     AllowCookieAccess allowsFirstPartyForCookies(WebCore::ProcessIdentifier, const RegistrableDomain&);
     void addAllowedFirstPartyForCookies(WebCore::ProcessIdentifier, WebCore::RegistrableDomain&&, LoadedWebArchive, CompletionHandler<void()>&&);
 
+    // Per launch, so a reconnecting web process keeps its Vary entries.
+    uint64_t cookieHeaderDigestSalt() const { return m_cookieHeaderDigestSalt; }
+
     void requestBackgroundFetchPermission(PAL::SessionID, const WebCore::ClientOrigin&, CompletionHandler<void(bool)>&&);
     void setInspectionForServiceWorkersAllowed(PAL::SessionID, bool);
     void setStorageSiteValidationEnabled(PAL::SessionID, bool);
@@ -506,7 +515,7 @@ public:
 #endif
 
 private:
-    explicit NetworkProcess(AuxiliaryProcessInitializationParameters&&);
+    NetworkProcess();
 
     void platformInitializeNetworkProcess(const NetworkProcessCreationParameters&);
 
@@ -542,8 +551,10 @@ private:
     void initializeNetworkProcess(NetworkProcessCreationParameters&&, CompletionHandler<void()>&&);
     void createNetworkConnectionToWebProcess(WebCore::ProcessIdentifier, PAL::SessionID, NetworkProcessConnectionParameters&&,  CompletionHandler<void(std::optional<IPC::Connection::Handle>&&, WebCore::HTTPCookieAcceptPolicy)>&&);
     void sharedPreferencesForWebProcessDidChange(WebCore::ProcessIdentifier, SharedPreferencesForWebProcess&&, CompletionHandler<void()>&&);
+    void securityFlagsDidChange(SecurityFlags&&);
+    void isSecurityFlagEnabledForTesting(const String&, CompletionHandler<void(std::optional<bool>)>&&);
 
-    void fetchWebsitesWithUserInteractions(PAL::SessionID, CompletionHandler<void(HashSet<RegistrableDomain>&&)>&&);
+    void fetchWebsitesWithUserInteractions(PAL::SessionID, CompletionHandler<void(std::optional<HashMap<RegistrableDomain, WallTime>>&&)>&&);
 
     void fetchWebsiteData(PAL::SessionID, OptionSet<WebsiteDataType>, OptionSet<WebsiteDataFetchOption>, CompletionHandler<void(WebsiteData&&)>&&);
     void deleteWebsiteData(PAL::SessionID, OptionSet<WebsiteDataType>, WallTime modifiedSince, const HashSet<WebCore::ProcessIdentifier>& activeWebProcesses, CompletionHandler<void()>&&);
@@ -647,6 +658,7 @@ private:
     HashMap<PAL::SessionID, std::unique_ptr<WebCore::NetworkStorageSession>> m_networkStorageSessions;
     HashMap<WebCore::ProcessIdentifier, std::pair<LoadedWebArchive, HashSet<WebCore::RegistrableDomain>>> m_allowedFirstPartiesForCookies;
     HashMap<WebCore::ProcessIdentifier, HashSet<String>> m_pendingAllowedFilePathsByProcess;
+    const uint64_t m_cookieHeaderDigestSalt { cryptographicallyRandomNumber<uint64_t>() };
 
 #if PLATFORM(COCOA)
     void platformInitializeNetworkProcessCocoa(const NetworkProcessCreationParameters&);
@@ -691,6 +703,10 @@ private:
     bool m_didSyncCookiesForClose { false };
 #if PLATFORM(COCOA)
     int m_mediaStreamingActivitityToken { NOTIFY_TOKEN_INVALID };
+    MonotonicTime m_lastMediaStreamingActivityNotificationTime;
+    std::optional<bool> m_notifiedMediaStreamingActivity;
+    std::optional<bool> m_pendingMediaStreamingActivity;
+    bool m_mediaStreamingActivityFlushScheduled { false };
     bool m_isParentProcessFullWebBrowserOrRunningTest { false };
 #endif
 #if PLATFORM(IOS_FAMILY)
@@ -708,6 +724,8 @@ private:
         CompletionHandler<void()> completionHandler;
     };
     HashMap<TaskIdentifier, DeleteWebsiteDataTask> m_deleteWebsiteDataTasks;
+
+    SecurityFlags m_securityFlags;
 
 #if ENABLE(DNS_SERVER_FOR_TESTING_IN_NETWORKING_PROCESS)
     OSObjectPtr<nw_resolver_config_t> m_resolverConfig;

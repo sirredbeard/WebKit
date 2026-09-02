@@ -6,10 +6,7 @@
 
 // validationES3.cpp: Validation functions for OpenGL ES 3.0 entry point parameters
 
-#ifdef UNSAFE_BUFFERS_BUILD
-#    pragma allow_unsafe_buffers
-#endif
-
+#include "common/unsafe_buffers.h"
 #include "libANGLE/validationES3_autogen.h"
 
 #include "anglebase/numerics/safe_conversions.h"
@@ -220,9 +217,8 @@ bool ValidateColorMaskForSharedExponentColorBuffer(const Context *context,
     const FramebufferAttachment *attachment = state.getDrawFramebuffer()->getDrawBuffer(drawbuffer);
     if (attachment && attachment->getFormat().info->internalFormat == GL_RGB9_E5)
     {
-        bool r, g, b, a;
-        state.getBlendStateExt().getColorMaskIndexed(drawbuffer, &r, &g, &b, &a);
-        if (r != g || g != b)
+        const uint8_t mask = state.getBlendStateExt().getColorMaskIndexed(drawbuffer);
+        if (ANGLE_UNLIKELY(((mask + 1) & 0xE) != 0))  // Valid masks are 0 (none) and 15 (all).
         {
             ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION,
                                    kUnsupportedColorMaskForSharedExponentColorBuffer);
@@ -231,6 +227,23 @@ bool ValidateColorMaskForSharedExponentColorBuffer(const Context *context,
     }
 
     return true;
+}
+
+bool ValidES3ExtensionFormatCombination(GLenum format, GLenum type, GLenum internalFormat)
+{
+    switch (internalFormat)
+    {
+        case GL_LUMINANCE4_ALPHA4_OES:
+            return (type == GL_UNSIGNED_BYTE && format == GL_LUMINANCE_ALPHA);
+        case GL_DEPTH_COMPONENT32_OES:
+            return (type == GL_UNSIGNED_INT && format == GL_DEPTH_COMPONENT);
+        case GL_RGB10_EXT:
+        case GL_RGB8_OES:
+        case GL_RGB565_OES:
+            return (type == GL_UNSIGNED_INT_2_10_10_10_REV_EXT && format == GL_RGB);
+        default:
+            return false;
+    }
 }
 
 }  // anonymous namespace
@@ -303,44 +316,11 @@ bool ValidateTexImageFormatCombination(const Context *context,
     }
     else
     {
-        if (!ValidES3FormatCombination(format, type, internalFormat))
+        if (!ValidES3FormatCombination(format, type, internalFormat) &&
+            !ValidES3ExtensionFormatCombination(format, type, internalFormat))
         {
-            bool extensionFormatsAllowed = false;
-            switch (internalFormat)
-            {
-                case GL_LUMINANCE4_ALPHA4_OES:
-                    if (context->getExtensions().requiredInternalformatOES &&
-                        type == GL_UNSIGNED_BYTE && format == GL_LUMINANCE_ALPHA)
-                    {
-                        extensionFormatsAllowed = true;
-                    }
-                    break;
-                case GL_DEPTH_COMPONENT32_OES:
-                    if ((context->getExtensions().requiredInternalformatOES &&
-                         context->getExtensions().depth32OES) &&
-                        type == GL_UNSIGNED_INT && format == GL_DEPTH_COMPONENT)
-                    {
-                        extensionFormatsAllowed = true;
-                    }
-                    break;
-                case GL_RGB10_EXT:
-                case GL_RGB8_OES:
-                case GL_RGB565_OES:
-                    if (context->getExtensions().requiredInternalformatOES &&
-                        context->getExtensions().textureType2101010REVEXT &&
-                        type == GL_UNSIGNED_INT_2_10_10_10_REV_EXT && format == GL_RGB)
-                    {
-                        extensionFormatsAllowed = true;
-                    }
-                    break;
-                default:
-                    break;
-            }
-            if (!extensionFormatsAllowed)
-            {
-                ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kInvalidFormatCombination);
-                return false;
-            }
+            ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kInvalidFormatCombination);
+            return false;
         }
     }
 
@@ -431,7 +411,6 @@ bool ValidateES3TexImageParametersBase(const Context *context,
     switch (texType)
     {
         case TextureType::_2D:
-        case TextureType::VideoImage:
             if (width > (caps.max2DTextureSize >> level) ||
                 height > (caps.max2DTextureSize >> level))
             {
@@ -563,13 +542,36 @@ bool ValidateES3TexImageParametersBase(const Context *context,
                                                  ? *texture->getFormat(target, level).info
                                                  : GetInternalFormatInfo(internalformat, type);
     {
-        // Compressed formats are not valid internal formats for glTexImage*D
         if (!isSubImage)
         {
+            // Compressed formats are not valid internal formats for glTexImage*D
             const InternalFormat &internalFormatInfo = GetSizedInternalFormatInfo(internalformat);
             if (internalFormatInfo.compressed)
             {
                 ANGLE_VALIDATION_ERRORF(GL_INVALID_VALUE, kInvalidInternalFormat, internalformat);
+                return false;
+            }
+
+            // GL_DEPTH_COMPONENT32_OES texture support is enabled if GL_OES_depth_texture is
+            // supported (to support GL_EXT_texture_storage in ES2). But for ES3 glTexImage2D, it is
+            // only valid if GL_OES_depth32 is also supported.
+            if (internalformat == GL_DEPTH_COMPONENT32_OES &&
+                (!context->getExtensions().requiredInternalformatOES ||
+                 !context->getExtensions().depth32OES))
+            {
+                ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kInvalidFormatCombination);
+                return false;
+            }
+
+            // GL_RGB8_OES and GL_RGB565_OES paired with GL_UNSIGNED_INT_2_10_10_10_REV_EXT require
+            // GL_EXT_texture_type_2_10_10_10_REV and GL_OES_required_internalformat for image
+            // creation.
+            if ((internalformat == GL_RGB8_OES || internalformat == GL_RGB565_OES) &&
+                type == GL_UNSIGNED_INT_2_10_10_10_REV_EXT &&
+                (!context->getExtensions().requiredInternalformatOES ||
+                 !context->getExtensions().textureType2101010REVEXT))
+            {
+                ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kInvalidFormatCombination);
                 return false;
             }
         }
@@ -578,6 +580,17 @@ bool ValidateES3TexImageParametersBase(const Context *context,
                                                format, type))
         {
             return false;
+        }
+
+        if (isSubImage)
+        {
+            const GLenum textureSizedInternalFormat = actualFormatInfo.sizedInternalFormat;
+            if (!ValidES3FormatCombination(format, type, textureSizedInternalFormat) &&
+                !ValidES3ExtensionFormatCombination(format, type, textureSizedInternalFormat))
+            {
+                ANGLE_VALIDATION_ERROR(GL_INVALID_OPERATION, kTextureTypeMismatch);
+                return false;
+            }
         }
     }
 
@@ -799,7 +812,7 @@ static bool QueryEffectiveFormatList(const InternalFormat &srcFormat,
 {
     for (size_t curFormat = 0; curFormat < size; ++curFormat)
     {
-        const EffectiveInternalFormatInfo &formatInfo = list[curFormat];
+        const EffectiveInternalFormatInfo &formatInfo = ANGLE_UNSAFE_TODO(list[curFormat]);
         if ((formatInfo.destFormat == targetFormat) &&
             (formatInfo.minRedBits <= srcFormat.redBits &&
              formatInfo.maxRedBits >= srcFormat.redBits) &&
@@ -1661,7 +1674,7 @@ bool ValidateDrawRangeElements(const Context *context,
         return false;
     }
 
-    if (!ValidateDrawElementsCommon(context, entryPoint, mode, count, type, indices, 1))
+    if (!ValidateDrawElementsCommon(context, entryPoint, mode, count, type, indices, 1, 0))
     {
         return false;
     }
@@ -2518,7 +2531,7 @@ bool ValidateDeleteTransformFeedbacks(const Context *context,
     }
     for (GLint i = 0; i < n; ++i)
     {
-        auto *transformFeedback = context->getTransformFeedback(ids[i]);
+        auto *transformFeedback = context->getTransformFeedback(ANGLE_UNSAFE_TODO(ids[i]));
         if (transformFeedback != nullptr && transformFeedback->isActive())
         {
             // ES 3.0.4 section 2.15.1 page 86
@@ -3189,7 +3202,7 @@ bool ValidateDrawElementsInstanced(const Context *context,
                                    GLsizei instanceCount)
 {
     return ValidateDrawElementsInstancedBase(context, entryPoint, mode, count, type, indices,
-                                             instanceCount, 0);
+                                             instanceCount, 0, 0);
 }
 
 bool ValidateMultiDrawArraysInstancedANGLE(const Context *context,
@@ -3219,8 +3232,9 @@ bool ValidateMultiDrawArraysInstancedANGLE(const Context *context,
     }
     for (GLsizei drawID = 0; drawID < drawcount; ++drawID)
     {
-        if (!ValidateDrawArraysInstancedBase(context, entryPoint, mode, firsts[drawID],
-                                             counts[drawID], instanceCounts[drawID], 0))
+        if (ANGLE_UNSAFE_TODO(!ValidateDrawArraysInstancedBase(context, entryPoint, mode,
+                                                               firsts[drawID], counts[drawID],
+                                                               instanceCounts[drawID], 0)))
         {
             return false;
         }
@@ -3263,8 +3277,9 @@ bool ValidateMultiDrawElementsInstancedANGLE(const Context *context,
     }
     for (GLsizei drawID = 0; drawID < drawcount; ++drawID)
     {
-        if (!ValidateDrawElementsInstancedBase(context, entryPoint, mode, counts[drawID], type,
-                                               indices[drawID], instanceCounts[drawID], 0))
+        if (ANGLE_UNSAFE_TODO(
+                !ValidateDrawElementsInstancedBase(context, entryPoint, mode, counts[drawID], type,
+                                                   indices[drawID], instanceCounts[drawID], 0, 0)))
         {
             return false;
         }
@@ -3306,7 +3321,7 @@ bool ValidateDrawElementsInstancedBaseVertexBaseInstanceANGLE(const Context *con
                                                               GLuint baseInstance)
 {
     return ValidateDrawElementsInstancedBase(context, entryPoint, mode, count, type, indices,
-                                             instanceCount, baseInstance);
+                                             instanceCount, baseVertex, baseInstance);
 }
 
 bool ValidateMultiDrawArraysInstancedBaseInstanceANGLE(const Context *context,
@@ -3330,9 +3345,9 @@ bool ValidateMultiDrawArraysInstancedBaseInstanceANGLE(const Context *context,
     }
     for (GLsizei drawID = 0; drawID < drawcount; ++drawID)
     {
-        if (!ValidateDrawArraysInstancedBase(context, entryPoint, modePacked, firsts[drawID],
-                                             counts[drawID], instanceCounts[drawID],
-                                             baseInstances[drawID]))
+        if (!ANGLE_UNSAFE_TODO(ValidateDrawArraysInstancedBase(
+                context, entryPoint, modePacked, firsts[drawID], counts[drawID],
+                instanceCounts[drawID], baseInstances[drawID])))
         {
             return false;
         }
@@ -3370,9 +3385,9 @@ bool ValidateMultiDrawElementsInstancedBaseVertexBaseInstanceANGLE(const Context
     }
     for (GLsizei drawID = 0; drawID < drawcount; ++drawID)
     {
-        if (!ValidateDrawElementsInstancedBase(context, entryPoint, modePacked, counts[drawID],
-                                               typePacked, indices[drawID], instanceCounts[drawID],
-                                               baseInstances[drawID]))
+        if (!ANGLE_UNSAFE_TODO(ValidateDrawElementsInstancedBase(
+                context, entryPoint, modePacked, counts[drawID], typePacked, indices[drawID],
+                instanceCounts[drawID], baseVertices[drawID], baseInstances[drawID])))
         {
             return false;
         }
@@ -4018,7 +4033,7 @@ bool ValidateGetActiveUniformsiv(const Context *context,
 
     for (int uniformId = 0; uniformId < uniformCount; uniformId++)
     {
-        const GLuint index = uniformIndices[uniformId];
+        const GLuint index = ANGLE_UNSAFE_TODO(uniformIndices[uniformId]);
 
         if (index >= programUniformCount)
         {

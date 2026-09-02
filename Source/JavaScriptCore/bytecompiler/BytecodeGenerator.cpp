@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2023 Apple Inc. All rights reserved.
+ * Copyright (C) 2008-2023, 2026 Apple Inc. All rights reserved.
  * Copyright (C) 2008 Cameron Zwarich <cwzwarich@uwaterloo.ca>
  * Copyright (C) 2012 Igalia, S.L.
  *
@@ -297,8 +297,6 @@ ParserError BytecodeGenerator::generate(unsigned& size)
                 : CompletionType::Normal;
             emitLoad(&completionTypeRegister, completionType);
         }
-        m_codeBlock->addJumpTarget(m_lastInstruction.offset());
-
 
         emitJump(tryData->target.get());
         tryData->target = WTF::move(realCatchTarget);
@@ -371,7 +369,8 @@ ParserError BytecodeGenerator::generate(unsigned& size)
 
     RELEASE_ASSERT(m_codeBlock->numCalleeLocals() < static_cast<unsigned>(FirstConstantRegisterIndex));
     size = instructions().size();
-    m_codeBlock->finalize(m_writer.finalize());
+    if (!m_codeBlock->finalize(m_writer.finalize())) [[unlikely]]
+        return ParserError(ParserError::OutOfMemory);
 
     // We limit total bytecode sequence size to int32_t so that we can use int32_t jump offsets.
     // Also, this allows us to use one bit of bytecode for some flag, including "ignore-result-flag".
@@ -531,7 +530,7 @@ BytecodeGenerator::BytecodeGenerator(VM& vm, FunctionNode* functionNode, Unlinke
     if (shouldCaptureAllOfTheThings)
         functionNode->varDeclarations().markAllVariablesAsCaptured();
     
-    auto captures = scopedLambda<bool (UniquedStringImpl*)>([&] (UniquedStringImpl* uid) -> bool {
+    auto captures = [&] (UniquedStringImpl* uid) -> bool {
         if (!shouldCaptureSomeOfTheThings)
             return false;
         if (m_needsArguments && uid == propertyNames().arguments.impl()) {
@@ -542,7 +541,7 @@ BytecodeGenerator::BytecodeGenerator(VM& vm, FunctionNode* functionNode, Unlinke
             return true;
         }
         return functionNode->captures(uid);
-    });
+    };
     auto varKind = [&] (UniquedStringImpl* uid) -> VarKind {
         return captures(uid) ? VarKind::Scope : VarKind::Stack;
     };
@@ -674,7 +673,7 @@ BytecodeGenerator::BytecodeGenerator(VM& vm, FunctionNode* functionNode, Unlinke
                 if (UniquedStringImpl* name = visibleNameForParameter(parameters.at(i).first)) {
                     VarOffset varOffset(offset);
                     SymbolTableEntry entry(varOffset);
-                    functionSymbolTable->set(NoLockingNecessary, name, entry);
+                    functionSymbolTable->set(NoLockingNecessary, name, WTF::move(entry));
 
 IGNORE_GCC_WARNINGS_BEGIN("dangling-reference")
                     const Identifier& ident =
@@ -718,11 +717,11 @@ IGNORE_GCC_WARNINGS_END
             }
             
             ScopeOffset offset = functionSymbolTable->takeNextScopeOffset(NoLockingNecessary);
+            functionSymbolTable->set(NoLockingNecessary, name, SymbolTableEntry(VarOffset(offset)));
 IGNORE_GCC_WARNINGS_BEGIN("dangling-reference")
             const Identifier& ident =
                 static_cast<const BindingNode*>(parameters.at(i).first)->boundProperty();
 IGNORE_GCC_WARNINGS_END
-            functionSymbolTable->set(NoLockingNecessary, name, SymbolTableEntry(VarOffset(offset)));
             
             OpPutToScope::emit(this, m_lexicalEnvironmentRegister, addConstant(ident), virtualRegisterForArgumentIncludingThis(1 + i), GetPutInfo(ThrowIfNotFound, ResolvedClosureVar, InitializationMode::NotInitialization, ecmaMode), SymbolTableOrScopeDepth::symbolTable(VirtualRegister { symbolTableConstantIndex }), offset.offset());
         }
@@ -796,7 +795,7 @@ IGNORE_GCC_WARNINGS_END
             continue;
         if (shouldCreateArgumentsVariableInParameterScope && entry.key.get() == propertyNames().arguments.impl())
             continue;
-        if (isGeneratorOrAsyncFunctionBodyParseMode(parseMode) && generatorOrAsyncWrapperFunctionParameterNames->contains(entry.key.get()))
+        if (generatorOrAsyncWrapperFunctionParameterNames && generatorOrAsyncWrapperFunctionParameterNames->contains(entry.key.get()))
             continue;
         createVariable(Identifier::fromUid(m_vm, entry.key.get()), varKind(entry.key.get()), functionSymbolTable, IgnoreExisting);
     }
@@ -1331,17 +1330,17 @@ void BytecodeGenerator::initializeArrowFunctionContextScopeIfNeeded(SymbolTable*
         
         if (isThisUsedInInnerArrowFunction()) {
             offset = functionSymbolTable->takeNextScopeOffset(NoLockingNecessary);
-            functionSymbolTable->set(NoLockingNecessary, propertyNames().builtinNames().thisPrivateName().impl(), SymbolTableEntry(VarOffset(offset)));
+            functionSymbolTable->add(NoLockingNecessary, propertyNames().builtinNames().thisPrivateName().impl(), SymbolTableEntry(VarOffset(offset)));
         }
 
         if (m_codeType == FunctionCode && isNewTargetUsedInInnerArrowFunction()) {
             offset = functionSymbolTable->takeNextScopeOffset();
-            functionSymbolTable->set(NoLockingNecessary, propertyNames().builtinNames().newTargetLocalPrivateName().impl(), SymbolTableEntry(VarOffset(offset)));
+            functionSymbolTable->add(NoLockingNecessary, propertyNames().builtinNames().newTargetLocalPrivateName().impl(), SymbolTableEntry(VarOffset(offset)));
         }
         
         if (needsDerivedConstructorInArrowFunctionLexicalEnvironment()) {
             offset = functionSymbolTable->takeNextScopeOffset(NoLockingNecessary);
-            functionSymbolTable->set(NoLockingNecessary, propertyNames().builtinNames().derivedConstructorPrivateName().impl(), SymbolTableEntry(VarOffset(offset)));
+            functionSymbolTable->add(NoLockingNecessary, propertyNames().builtinNames().derivedConstructorPrivateName().impl(), SymbolTableEntry(VarOffset(offset)));
         }
 
         return;
@@ -1460,7 +1459,6 @@ void BytecodeGenerator::emitEnter()
     if (Options::optimizeRecursiveTailCalls()) [[likely]] {
         // We must add the end of op_enter as a potential jump target, because the bytecode parser may decide to split its basic block
         // to have somewhere to jump to if there is a recursive tail-call that points to this function.
-        m_codeBlock->addJumpTarget(instructions().size());
         // This disables peephole optimizations when an instruction is a jump target
         disablePeepholeOptimization();
     }
@@ -2125,7 +2123,7 @@ bool BytecodeGenerator::instantiateLexicalVariables(const VariableEnvironment& l
             }
 
 #if ASSERT_ENABLED
-            SymbolTableEntry symbolTableEntry = symbolTable->get(NoLockingNecessary, key);
+            SymbolTableEntry::Fast symbolTableEntry = symbolTable->get(NoLockingNecessary, key);
             ASSERT(symbolTableEntry.isNull());
 #endif
 
@@ -2153,7 +2151,7 @@ bool BytecodeGenerator::instantiateLexicalVariables(const VariableEnvironment& l
             }
 
             SymbolTableEntry newEntry(varOffset, static_cast<unsigned>(entry.value.isConst() ? PropertyAttribute::ReadOnly : PropertyAttribute::None));
-            symbolTable->add(NoLockingNecessary, key, newEntry);
+            symbolTable->add(NoLockingNecessary, key, WTF::move(newEntry));
 
             // FIXME: only do this if there is an eval() within a nested scope --- otherwise it isn't needed.
             // https://bugs.webkit.org/show_bug.cgi?id=206663
@@ -2188,7 +2186,7 @@ void BytecodeGenerator::emitPrefillStackTDZVariables(const VariableEnvironment& 
         if (entry.value.isFunction())
             continue;
 
-        SymbolTableEntry symbolTableEntry = symbolTable->get(NoLockingNecessary, entry.key.get());
+        SymbolTableEntry::Fast symbolTableEntry = symbolTable->get(NoLockingNecessary, entry.key.get());
         ASSERT(!symbolTableEntry.isNull());
         VarOffset offset = symbolTableEntry.varOffset();
         if (offset.isScope())
@@ -2339,7 +2337,7 @@ void BytecodeGenerator::initializeBlockScopedFunctions(VariableEnvironment& envi
         RELEASE_ASSERT(iter != environment.end());
         RELEASE_ASSERT(iter->value.isFunction());
         // We purposefully don't hold the symbol table lock around this loop because emitNewFunctionExpressionCommon may GC.
-        SymbolTableEntry entry = symbolTable->get(NoLockingNecessary, name.impl()); 
+        SymbolTableEntry::Fast entry = symbolTable->get(NoLockingNecessary, name.impl());
         RELEASE_ASSERT(!entry.isNull());
         emitNewFunctionExpressionCommon(temp.get(), function);
         bool isLexicallyScoped = true;
@@ -2352,11 +2350,8 @@ void BytecodeGenerator::hoistSloppyModeFunctionIfNecessary(FunctionMetadataNode*
     if (metadata->isSloppyModeHoistedFunction()) {
         const Identifier& functionName = metadata->ident();
 
-        if (isGeneratorOrAsyncFunctionBodyParseMode(parseMode())) {
-            RELEASE_ASSERT(m_generatorOrAsyncWrapperFunctionParameterNames);
-            if (m_generatorOrAsyncWrapperFunctionParameterNames->contains(functionName))
-                return;
-        }
+        if (m_generatorOrAsyncWrapperFunctionParameterNames && m_generatorOrAsyncWrapperFunctionParameterNames->contains(functionName))
+            return;
 
         Variable currentFunctionVariable = variable(functionName);
         RefPtr<RegisterID> currentValue;
@@ -2374,7 +2369,7 @@ void BytecodeGenerator::hoistSloppyModeFunctionIfNecessary(FunctionMetadataNode*
             LexicalScopeStackEntry varScope = m_lexicalScopeStack[*m_varScopeLexicalScopeStackIndex];
             SymbolTable* varSymbolTable = varScope.m_symbolTable;
             ASSERT(varSymbolTable->scopeType() == SymbolTable::ScopeType::VarScope);
-            SymbolTableEntry entry = varSymbolTable->get(NoLockingNecessary, functionName.impl());
+            SymbolTableEntry::Fast entry = varSymbolTable->get(NoLockingNecessary, functionName.impl());
             if (functionName == propertyNames().arguments && entry.isNull()) {
                 // "arguments" might be put in the parameter scope when we have a non-simple
                 // parameter list since "arguments" is visible to expressions inside the
@@ -2443,7 +2438,7 @@ void BytecodeGenerator::popLexicalScopeInternal(VariableEnvironment& environment
             hasCapturedVariables = true;
             continue;
         }
-        SymbolTableEntry symbolTableEntry = symbolTable->get(NoLockingNecessary, entry.key.get());
+        SymbolTableEntry::Fast symbolTableEntry = symbolTable->get(NoLockingNecessary, entry.key.get());
         ASSERT(!symbolTableEntry.isNull());
         VarOffset offset = symbolTableEntry.varOffset();
         ASSERT(offset.isStack());
@@ -2521,7 +2516,7 @@ void BytecodeGenerator::prepareLexicalScopeForNextForLoopIteration(VariableEnvir
     {
         for (const auto& pair : activationValuesToCopyOver) {
             const Identifier& identifier = pair.second;
-            SymbolTableEntry entry = symbolTable->get(NoLockingNecessary, identifier.impl());
+            SymbolTableEntry::Fast entry = symbolTable->get(NoLockingNecessary, identifier.impl());
             RELEASE_ASSERT(!entry.isNull());
             RegisterID* transitionValue = pair.first;
             emitPutToScope(loopScope, variableForLocalEntry(identifier, entry, loopSymbolTable->index(), true), transitionValue, DoNotThrowIfNotFound, InitializationMode::NotInitialization);
@@ -2559,7 +2554,7 @@ Variable BytecodeGenerator::variable(const Identifier& property, ThisResolutionT
         if (stackEntry.m_isWithScope)
             return Variable(property);
         SymbolTable* symbolTable = stackEntry.m_symbolTable;
-        SymbolTableEntry symbolTableEntry = symbolTable->get(NoLockingNecessary, property.impl());
+        SymbolTableEntry::Fast symbolTableEntry = symbolTable->get(NoLockingNecessary, property.impl());
         if (symbolTableEntry.isNull())
             continue;
         bool resultIsCallee = false;
@@ -2582,7 +2577,7 @@ Variable BytecodeGenerator::variable(const Identifier& property, ThisResolutionT
 }
 
 Variable BytecodeGenerator::variableForLocalEntry(
-    const Identifier& property, const SymbolTableEntry& entry, int symbolTableConstantIndex, bool isLexicallyScoped)
+    const Identifier& property, const SymbolTableEntry::Fast& entry, int symbolTableConstantIndex, bool isLexicallyScoped)
 {
     VarOffset offset = entry.varOffset();
     
@@ -2599,7 +2594,7 @@ void BytecodeGenerator::createVariable(
     const Identifier& property, VarKind varKind, SymbolTable* symbolTable, ExistingVariableMode existingVariableMode)
 {
     ASSERT(property != propertyNames().builtinNames().thisPrivateName());
-    SymbolTableEntry entry = symbolTable->get(NoLockingNecessary, property.impl());
+    SymbolTableEntry::Fast entry = symbolTable->get(NoLockingNecessary, property.impl());
     
     if (!entry.isNull()) {
         if (existingVariableMode == IgnoreExisting)
@@ -2629,7 +2624,7 @@ void BytecodeGenerator::createVariable(
         varOffset = VarOffset(virtualRegisterForLocal(m_calleeLocals.size()));
     }
     SymbolTableEntry newEntry(varOffset, 0);
-    symbolTable->add(NoLockingNecessary, property.impl(), newEntry);
+    symbolTable->add(NoLockingNecessary, property.impl(), WTF::move(newEntry));
     
     if (varKind == VarKind::Stack) {
         RegisterID* local = addVar();
@@ -4979,12 +4974,12 @@ void BytecodeGenerator::emitEnumeration(ThrowableExpressionData* node, Expressio
             emitLabel(loopStart.get());
             emitLoopHint();
 
-            emitTryWithFinallyThatDoesNotShadowException(finallyContext, scopedLambda<void(BytecodeGenerator&)>([&](BytecodeGenerator& generator) {
+            emitTryWithFinallyThatDoesNotShadowException(finallyContext, [&](BytecodeGenerator& generator) {
                 callBack(generator, value.get());
                 generator.emitJump(*scope->continueTarget());
-            }), scopedLambda<void(BytecodeGenerator&)>([&](BytecodeGenerator& generator) {
+            }, [&](BytecodeGenerator& generator) {
                 generator.emitIteratorGenericClose(iterator.get(), node, EmitAwait::Yes);
-            }));
+            });
 
             emitLabel(*scope->continueTarget());
             RELEASE_ASSERT(forLoopNode->isForOfNode());
@@ -5063,12 +5058,12 @@ void BytecodeGenerator::emitEnumeration(ThrowableExpressionData* node, Expressio
             emitJumpIfTrue(done.get(), loopDone.get());
         }
 
-        emitTryWithFinallyThatDoesNotShadowException(finallyContext, scopedLambda<void(BytecodeGenerator&)>([&](BytecodeGenerator& generator) {
+        emitTryWithFinallyThatDoesNotShadowException(finallyContext, [&](BytecodeGenerator& generator) {
             callBack(generator, value.get());
             generator.emitJump(loopStart.get());
-        }), scopedLambda<void(BytecodeGenerator&)>([&](BytecodeGenerator& generator) {
+        }, [&](BytecodeGenerator& generator) {
             generator.emitIteratorGenericClose(iterator.get(), node);
-        }));
+        });
 
         bool breakLabelIsBound = scope->breakTargetMayBeBound();
         if (breakLabelIsBound)

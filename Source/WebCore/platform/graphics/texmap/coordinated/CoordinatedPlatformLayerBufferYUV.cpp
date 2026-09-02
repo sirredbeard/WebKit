@@ -29,7 +29,16 @@
 #if USE(COORDINATED_GRAPHICS)
 #include "BitmapTexturePool.h"
 #include "PlatformDisplay.h"
+
+#if USE(TEXTURE_MAPPER)
 #include "TextureMapper.h"
+#else
+#if USE(LIBEPOXY)
+#include <epoxy/gl.h>
+#else
+#include <GLES3/gl3.h>
+#endif
+#endif
 
 #if USE(SKIA)
 WTF_IGNORE_WARNINGS_IN_THIRD_PARTY_CODE_BEGIN
@@ -83,6 +92,7 @@ CoordinatedPlatformLayerBufferYUV::CoordinatedPlatformLayerBufferYUV(Format form
 
 CoordinatedPlatformLayerBufferYUV::~CoordinatedPlatformLayerBufferYUV() = default;
 
+#if USE(TEXTURE_MAPPER)
 void CoordinatedPlatformLayerBufferYUV::paintToTextureMapper(TextureMapper& textureMapper, const FloatRect& targetRect, const TransformationMatrix& modelViewMatrix, float opacity)
 {
     waitForContentsIfNeeded();
@@ -161,7 +171,8 @@ void CoordinatedPlatformLayerBufferYUV::paintToTextureMapper(TextureMapper& text
     }
 }
 
-#if USE(SKIA)
+#else
+
 sk_sp<SkImage> CoordinatedPlatformLayerBufferYUV::skiaImage()
 {
     waitForContentsIfNeeded();
@@ -273,7 +284,8 @@ sk_sp<SkImage> CoordinatedPlatformLayerBufferYUV::skiaImage()
     }();
 
     SkYUVAInfo info(SkISize::Make(m_size.width(), m_size.height()), planeConfig, subsampling, yuvaColorSpace);
-    GrYUVABackendTextures yuvaBackendTextures(info, backendTextures.data(), kTopLeft_GrSurfaceOrigin);
+    auto origin = m_flags.contains(TextureMapperFlags::ShouldFlipTexture) ? kBottomLeft_GrSurfaceOrigin : kTopLeft_GrSurfaceOrigin;
+    GrYUVABackendTextures yuvaBackendTextures(info, backendTextures.data(), origin);
     if (!yuvaBackendTextures.isValid())
         return nullptr;
 

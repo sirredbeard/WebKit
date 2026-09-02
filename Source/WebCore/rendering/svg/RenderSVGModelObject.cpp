@@ -77,11 +77,7 @@ bool RenderSVGModelObject::requiresLayer() const
         return true;
     if (requiresLayerForSVGIntrinsicReasons())
         return true;
-    // A clip-path container needs a layer (even inside a resource container, which paints through the
-    // same machinery): its layered descendants are painted only by its own paintChildrenInDOMOrderForSVG(),
-    // and without a layer they would be orphaned. A leaf has no descendants and stays layer-free.
-    // Mirrors the transformed-container rule below.
-    if (hasClipPath() && isRenderSVGContainer())
+    if (clipsSubtree(*this) && isRenderSVGContainer())
         return true;
     // Other renderers inside a resource container are not composited, so the transformed-container rule
     // below (which exists only to expose the induced transform to RenderLayerCompositor) is unneeded.
@@ -121,6 +117,23 @@ LayoutRect RenderSVGModelObject::overflowClipRect(const LayoutPoint&, OverlayScr
 {
     ASSERT_NOT_REACHED();
     return LayoutRect();
+}
+
+LayoutRect RenderSVGModelObject::overflowClipRectForPainting(const LayoutPoint& location, OverlayScrollbarSizeRelevancy relevancy, PaintPhase phase) const
+{
+    auto clipRect = overflowClipRect(location, relevancy, phase);
+    if (clipRect.isEmpty() || clipRect.isInfinite())
+        return clipRect;
+
+    if (!m_cachedVisualOverflowRect)
+        updateCachedVisualOverflowRect();
+
+    auto contentRect = m_cachedVisualOverflowRect->repaintBoundingBox;
+    contentRect.moveBy(location);
+    if (clipRect.contains(contentRect))
+        return LayoutRect::infiniteRect();
+
+    return clipRect;
 }
 
 auto RenderSVGModelObject::localRectsForRepaint(RepaintOutlineBounds repaintOutlineBounds) const -> RepaintRects
@@ -188,9 +201,9 @@ void RenderSVGModelObject::styleDidChange(Style::Difference diff, const Style::C
 {
     RenderLayerModelObject::styleDidChange(diff, oldStyle);
 
-    // A non-layer renderer with a clip-path is an atomic paint boundary, so rebuild the enclosing
-    // layer's DOM-order paint cache when clip-path is added or removed.
-    if (oldStyle && oldStyle->clipPath().isNone() != style().clipPath().isNone()) {
+    // A non-layer renderer with a clip-path or a mask is an atomic paint boundary, so rebuild the
+    // enclosing layer's DOM-order paint cache when either is added or removed.
+    if (oldStyle && (oldStyle->clipPath().isNone() != style().clipPath().isNone() || oldStyle->hasMask() != style().hasMask())) {
         if (CheckedPtr layer = enclosingLayer(); layer && layer->isSVGLayer())
             layer->dirtyChildrenInDOMOrderForSVG();
     }

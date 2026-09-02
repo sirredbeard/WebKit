@@ -20,6 +20,7 @@ list(APPEND PAL_PUBLIC_HEADERS
     cocoa/AVKitSoftLink.h
     cocoa/AccessibilitySoftLink.h
     cocoa/AppSSOSoftLink.h
+    cocoa/CompositorServicesSoftLink.h
     cocoa/ContactsSoftLink.h
     cocoa/CoreMLSoftLink.h
     cocoa/CoreMaterialSoftLink.h
@@ -237,7 +238,7 @@ else ()
 
 
 list(APPEND PAL_PUBLIC_HEADERS
-    ios/AVRoutingSoftLink.h
+    ios/AVSystemRoutingSoftLink.h
     ios/ManagedConfigurationSoftLink.h
     ios/QuickLookSoftLink.h
     ios/SystemStatusSoftLink.h
@@ -259,7 +260,7 @@ list(APPEND PAL_PUBLIC_HEADERS
 )
 
 list(APPEND PAL_SOURCES
-    ios/AVRoutingSoftLink.mm
+    ios/AVSystemRoutingSoftLink.mm
     ios/ManagedConfigurationSoftLink.mm
     ios/QuickLookSoftLink.mm
     ios/SystemStatusSoftLink.mm

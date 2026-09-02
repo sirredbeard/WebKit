@@ -332,13 +332,7 @@ constexpr size_t typeKindSizeInBytes(TypeKind kind)
     case TypeKind::RefNull: {
         return sizeof(WriteBarrierBase<Unknown>);
     }
-    case TypeKind::Array:
-    case TypeKind::Func:
-    case TypeKind::Struct:
     case TypeKind::Void:
-    case TypeKind::Sub:
-    case TypeKind::Subfinal:
-    case TypeKind::Rec:
     case TypeKind::Eqref:
     case TypeKind::Anyref:
     case TypeKind::Noexnref:
@@ -1199,12 +1193,15 @@ public:
     // convention).
     static RefPtr<const RTT> tryGetRTT(TypeIndex);
 
-    static void tryCleanup();
+    static void requestCleanup();
+    static void cleanupIfRequested();
 
     // Total canonical entries currently retained. Used by tests.
     static size_t canonicalTypeCount();
 
 private:
+    static void tryCleanup();
+
     static Ref<const RTT> typeDefinitionForFunction(const Vector<Type, 16>& returnTypes, const Vector<Type, 16>& argumentTypes);
     static Ref<const RTT> typeDefinitionForStruct(const Vector<FieldType>& fields);
     static Ref<const RTT> typeDefinitionForArray(FieldType);

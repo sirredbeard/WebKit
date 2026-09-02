@@ -355,11 +355,6 @@ def message_to_struct_declaration(receiver, message):
 
 def atomic_object_identifier(type):
     # FIXME: This can be derived from *.serialization.in files.
-    uuid_object_identifiers = [
-        'WebCore::FileSystemHandleGlobalIdentifier',
-    ]
-    if type in uuid_object_identifiers:
-        return 'UUID'
     atomic_object_identifiers = [
         'WebCore::FileSystemHandleIdentifier',
         'WebCore::FileSystemSyncAccessHandleIdentifier',
@@ -446,7 +441,6 @@ def serialized_identifiers():
         'WebCore::DictationContext',
         'WebCore::NodeIdentifier',
         'WebCore::FetchIdentifier',
-        'WebCore::FileSystemHandleGlobalIdentifier',
         'WebCore::FileSystemHandleIdentifier',
         'WebCore::FileSystemSyncAccessHandleIdentifier',
         'WebCore::FileSystemWritableFileStreamIdentifier',
@@ -578,6 +572,7 @@ def serialized_identifiers():
         'WebKit::WebTransportSessionIdentifier',
         'WebKit::WebURLSchemeHandlerIdentifier',
         'WebKit::WebUndoStepID',
+        'WebKit::XRDeviceIdentifier',
     ]
 
 
@@ -599,6 +594,7 @@ def types_that_cannot_be_forward_declared():
         'Inspector::SearchResult',
         'MachSendRight',
         'MediaTime',
+        'WebCore::NowPlayingCandidateState',
         'PlatformXR::CompositionLayerType',
         'PlatformXR::DeviceLayer',
         'PlatformXR::ReferenceSpaceType',
@@ -623,6 +619,7 @@ def types_that_cannot_be_forward_declared():
         'WebCore::DictationContext',
         'WebCore::DragApplicationFlags',
         'WebCore::DragEventTargetData',
+        'WebCore::FileSystemHandleGlobalIdentifier',
         'WebCore::FloatBoxExtent',
         'WebCore::GCGLExtension',
         'WebCore::GlyphBufferAdvance',
@@ -654,6 +651,7 @@ def types_that_cannot_be_forward_declared():
         'WebCore::PlatformMediaError',
         'WebCore::PlaybackTargetClientContextIdentifier',
         'WebCore::PointerID',
+        'WebCore::QualifiedMediaSessionIdentifier',
         'WebCore::RTCDataChannelIdentifier',
         'WebCore::ReferrerPolicy',
         'WebCore::RenderingMode',
@@ -689,6 +687,9 @@ def types_that_cannot_be_forward_declared():
         'WebKit::LegacyCustomProtocolID',
         'WebKit::PlaybackSessionContextIdentifier',
         'WebKit::RemoteMediaResourceLoaderIdentifier',
+        'WebKit::RemoteNativeImageReadReference',
+        'WebKit::RemoteNativeImageReference',
+        'WebKit::RemoteNativeImageWriteReference',
         'WebKit::RemoteVideoFrameReadReference',
         'WebKit::RemoteVideoFrameWriteReference',
         'WebKit::RenderingUpdateID',
@@ -707,6 +708,7 @@ def types_that_cannot_be_forward_declared():
         'WebKit::WebExtensionRegisteredScriptParameters',
         'WebKit::WebExtensionScriptInjectionParameters',
         'WebKit::WebExtensionScriptInjectionResultParameters',
+        'WebKit::WebExtensionSidebarSide',
         'WebKit::WebExtensionStorageAccessLevel',
         'WebKit::WebExtensionTabParameters',
         'WebKit::WebExtensionTabQueryParameters',
@@ -1063,7 +1065,7 @@ def class_template_headers(template_string):
 
     class_template_types = {
         'WebCore::RectEdges': {'headers': ['<WebCore/RectEdges.h>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
-        'Expected': {'headers': ['<wtf/Expected.h>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
+        'std::expected': {'headers': ['<expected>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
         'HashCountedSet': {'headers': ['<wtf/HashCountedSet.h>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
         'UncheckedKeyHashMap': {'headers': ['<wtf/HashMap.h>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
         'HashMap': {'headers': ['<wtf/HashMap.h>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
@@ -1072,6 +1074,7 @@ def class_template_headers(template_string):
         'Markable': {'headers': ['<wtf/Markable.h>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
         'OptionSet': {'headers': ['<wtf/OptionSet.h>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
         'Vector': {'headers': ['<wtf/Vector.h>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
+        'std::array': {'headers': ['<array>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
         'std::optional': {'headers': ['<optional>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
         'std::pair': {'headers': ['<utility>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
         'std::span': {'headers': ['<span>'], 'argument_coder_headers': ['"ArgumentCoders.h"']},
@@ -1270,6 +1273,7 @@ def headers_for_type(type, for_implementation_file=False):
         'WebCore::FontInternalAttributes': ['<WebCore/Font.h>'],
         'WebCore::FileChooserSettings': ['<WebCore/FileChooser.h>'],
         'WebCore::FillLightMode': ['<WebCore/FillLightMode.h>'],
+        'WebCore::FileSystemHandleGlobalIdentifier': ['<WebCore/FileSystemHandleGlobalIdentifier.h>'],
         'WebCore::FirstPartyWebsiteDataRemovalMode': ['<WebCore/NetworkStorageSession.h>'],
         'WebCore::FontChanges': ['<WebCore/FontAttributeChanges.h>'],
         'WebCore::FontPlatformDataAttributes': ['<WebCore/FontPlatformData.h>'],
@@ -1337,6 +1341,7 @@ def headers_for_type(type, for_implementation_file=False):
         'WebCore::PlatformMediaSessionRemoteCommandArgument': ['<WebCore/PlatformMediaSession.h>'],
         'WebCore::PlayingToAutomotiveHeadUnit': ['<WebCore/MediaSessionHelperIOS.h>'],
         'WebCore::PlaybackSessionModelExternalPlaybackTargetType': ['<WebCore/PlaybackSessionModel.h>'],
+        'WebCore::QualifiedMediaSessionIdentifier': ['<WebCore/ProcessQualified.h>', '<WebCore/MediaSessionIdentifier.h>', '<wtf/ObjectIdentifier.h>'],
         'WebCore::LockBackForwardList': ['<WebCore/FrameLoaderTypes.h>'],
         'WebCore::MediaPlaybackTargetMockState': ['<WebCore/MediaPlaybackTargetMock.h>'],
         'WebCore::MediaPlayerBufferingPolicy': ['<WebCore/MediaPlayerEnums.h>'],
@@ -1369,6 +1374,7 @@ def headers_for_type(type, for_implementation_file=False):
         'WebCore::NetworkTransactionInformation': ['<WebCore/NetworkLoadInformation.h>'],
         'WebCore::NavigationUpgradeToHTTPSBehavior': ['<WebCore/FrameLoaderTypes.h>'],
         'WebCore::NowPlayingMetadata': ['<WebCore/NowPlayingInfo.h>'],
+        'WebCore::NowPlayingCandidateState': ['<WebCore/NowPlayingInfo.h>'],
         'WebCore::OpaqueOriginIdentifier': ['<WebCore/SecurityOriginData.h>'],
         'WebCore::PasteboardCustomData': ['<WebCore/Pasteboard.h>'],
         'WebCore::PasteboardBuffer': ['<WebCore/Pasteboard.h>'],
@@ -1392,6 +1398,7 @@ def headers_for_type(type, for_implementation_file=False):
         'WebCore::PlaybackTargetClientContextID': ['<WebCore/PlaybackTargetClientContextIdentifier.h>'],
         'WebCore::PluginInfo': ['<WebCore/PluginData.h>'],
         'WebCore::PolicyAction': ['<WebCore/FrameLoaderTypes.h>'],
+        'WebCore::PortalActionKind': ['<WebCore/PortalAction.h>'],
         'WebCore::PortalTransformKind': ['<WebCore/PortalTransform.h>'],
         'WebCore::NonSerializedDataIdentifier': ['<WebCore/NonSerializedDataIdentifier.h>'],
         'WebCore::PreserveResolution': ['<WebCore/ImageBufferBackend.h>'],
@@ -1591,6 +1598,7 @@ def headers_for_type(type, for_implementation_file=False):
         'WebKit::MessageBatchIdentifier': ['"NetworkConnectionToWebProcess.h"'],
         'WebKit::NetworkActivityTracker::CompletionCode': ['"NetworkActivityTracker.h"'],
         'WebKit::PageGroupIdentifier': ['"IdentifierTypes.h"'],
+        'WebKit::PDFAccessibilityDisplayModeState': ['"PDFAccessibilityDisplayModeState.h"'],
         'WebKit::PDFPluginDisplayMode': ['"PDFDisplayMode.h"'],
         'WebKit::RealmIdentifier': ['"IdentifierTypes.h"'],
         'WebKit::PaymentSetupConfiguration': ['"PaymentSetupConfigurationWebKit.h"'],
@@ -1604,12 +1612,16 @@ def headers_for_type(type, for_implementation_file=False):
         'WebKit::RemoteLayerBackingStoreProperties': ['"RemoteLayerBackingStore.h"'],
         'WebKit::RemoteVideoFrameReadReference': ['"RemoteVideoFrameIdentifier.h"'],
         'WebKit::RemoteVideoFrameWriteReference': ['"RemoteVideoFrameIdentifier.h"'],
+        'WebKit::RemoteNativeImageReference': ['"RemoteNativeImageIdentifier.h"'],
+        'WebKit::RemoteNativeImageReadReference': ['"RemoteNativeImageIdentifier.h"'],
+        'WebKit::RemoteNativeImageWriteReference': ['"RemoteNativeImageIdentifier.h"'],
         'WebKit::RespectSelectionAnchor': ['"GestureTypes.h"'],
         'WebKit::SandboxExtensionHandle': ['"SandboxExtension.h"'],
         'WebKit::ScriptTrackingPrivacyHost': ['"ScriptTrackingPrivacyFilter.h"'],
         'WebKit::ScriptTrackingPrivacyRules': ['"ScriptTrackingPrivacyFilter.h"'],
         'WebKit::SelectionFlags': ['"GestureTypes.h"'],
         'WebKit::SelectionTouch': ['"GestureTypes.h"'],
+        'WebKit::SelectWithGestureResult': ['"GestureTypes.h"'],
         'WebKit::SwapBuffersDisplayRequirement': ['"PrepareBackingStoreBuffersData.h"'],
         'WebKit::TapIdentifier': ['"IdentifierTypes.h"'],
         'WebKit::TextCheckerRequestID': ['"IdentifierTypes.h"'],
@@ -1619,6 +1631,7 @@ def headers_for_type(type, for_implementation_file=False):
         'WebKit::WebExtensionContextInstallReason': ['"WebExtensionContext.h"'],
         'WebKit::WebExtensionCookieFilterParameters': ['"WebExtensionCookieParameters.h"'],
         'WebKit::WebExtensionError': ['"WebExtensionError.h"'],
+        'WebKit::WebExtensionSidebarSide': ['"WebExtensionSidebarParameters.h"'],
         'WebKit::WebExtensionTabImageFormat': ['"WebExtensionTab.h"'],
         'WebKit::WebExtensionWindowTypeFilter': ['"WebExtensionWindow.h"'],
         'WebKit::WebModelIdentifier': ['"WebModelIdentifier.h"'],

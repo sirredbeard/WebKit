@@ -171,8 +171,11 @@ enum class UpdateBackingSharingFlags {
 using ScrollingScope = uint64_t;
 
 class RenderLayer final : public UniquelyOwned<RenderLayer> {
-    WTF_MAKE_PREFERABLY_COMPACT_TZONE_ALLOCATED_EXPORT(RenderLayer, WEBCORE_EXPORT);
+#if ENABLE(COMPACT_ALLOCATION_FOR_PREFERABLY_COMPACT_TYPES)
+    WTF_ALLOW_COMPACT_POINTERS;
+#endif
 public:
+    friend class WTF::RefCountedWithInlineWeakPtr<RenderLayer>;
     friend class RenderReplica;
     friend class RenderLayerFilters;
     friend class RenderLayerBacking;
@@ -182,7 +185,7 @@ public:
 
     static UniquelyOwnedPtr<RenderLayer> create(RenderLayerModelObject& modelObject)
     {
-        return adoptUniquelyOwned(new RenderLayer(modelObject));
+        return makeUniquelyOwned<RenderLayer>(modelObject);
     }
 
     WEBCORE_EXPORT ~RenderLayer();
@@ -597,6 +600,7 @@ public:
 
     void setHasVisibleContent();
     void NODELETE dirtyVisibleContentStatus();
+    void NODELETE dirtyVisibleContentStatusIncludingAncestors();
 
     bool hasVisibleBoxDecorationsOrBackground() const;
     bool hasVisibleBoxDecorations() const;
@@ -1090,7 +1094,12 @@ private:
 
     LayoutPoint paintOffsetForRenderer(const LayerFragment& fragment, const LayerPaintingInfo& paintingInfo) const
     {
-        return toLayoutPoint(fragment.layerBounds().location() - rendererLocation() + paintingInfo.subpixelOffset);
+        auto paintOffset = toLayoutPoint(fragment.layerBounds().location() - rendererLocation() + paintingInfo.subpixelOffset);
+
+        if (m_svgData && m_svgData->isPaintingResourceLayer) [[unlikely]]
+            paintOffset.moveBy(renderer().nominalSVGLayoutLocation());
+
+        return paintOffset;
     }
 
     // Compute, cache and return clip rects computed with the given layer as the root.
@@ -1205,12 +1214,12 @@ private:
         return { };
     }
 
-    LayoutRect rendererOverflowClipRect(const LayoutPoint& location, OverlayScrollbarSizeRelevancy relevancy) const
+    LayoutRect rendererOverflowClipRectForPainting(const LayoutPoint& location, OverlayScrollbarSizeRelevancy relevancy) const
     {
         if (auto* box = dynamicDowncast<RenderBox>(renderer()))
             return box->overflowClipRect(location, relevancy);
         if (auto* svgModelObject = dynamicDowncast<RenderSVGModelObject>(renderer()))
-            return svgModelObject->overflowClipRect(location, relevancy);
+            return svgModelObject->overflowClipRectForPainting(location, relevancy);
         return { };
     }
 

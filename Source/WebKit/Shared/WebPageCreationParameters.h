@@ -177,6 +177,7 @@ struct WebPageCreationParameters {
     bool openedByDOM { false };
     bool mayStartMediaWhenInWindow { false };
     bool mediaPlaybackIsSuspended { false };
+    bool areActiveDOMObjectsAndAnimationsSuspended { false };
 
     WebCore::IntSize minimumSizeForAutoLayout { };
     WebCore::IntSize sizeToContentAutoSizeMaximumSize { };
@@ -389,6 +390,8 @@ struct WebPageCreationParameters {
 #if ENABLE(IMAGE_ANALYSIS)
     std::optional<WebCore::ImageTranslationLanguageIdentifiers> imageTranslationLanguageIdentifiers { std::nullopt };
 #endif
+
+    String displayedTranslationLocaleIdentifier { };
 
     std::optional<TextManipulationParameters> textManipulationParameters { std::nullopt };
 

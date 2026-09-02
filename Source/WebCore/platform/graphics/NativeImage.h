@@ -33,10 +33,15 @@
 #include <WebCore/PlatformImage.h>
 #include <WebCore/RenderingResource.h>
 #include <wtf/CheckedRef.h>
+#include <wtf/Lock.h>
 #include <wtf/TZoneMalloc.h>
 
 #if USE(SKIA)
 class GrDirectContext;
+#endif
+
+#if HAVE(IOSURFACE)
+typedef struct CF_BRIDGED_TYPE(id) __CVBuffer* CVPixelBufferRef;
 #endif
 
 namespace WebCore {
@@ -47,6 +52,8 @@ class FloatRect;
 class GraphicsContext;
 class IntSize;
 class NativeImageBackend;
+class PixelBuffer;
+struct ImageOrientation;
 struct ImagePaintingOptions;
 
 class NativeImage : public ThreadSafeRefCounted<NativeImage>, public CanMakeThreadSafeCheckedPtr<NativeImage> {
@@ -65,9 +72,14 @@ public:
     static WEBCORE_EXPORT RefPtr<NativeImage> createTransient(PlatformImagePtr&&);
 #endif
 
+#if USE(CG)
+    WEBCORE_EXPORT static RefPtr<NativeImage> create(RetainPtr<CVPixelBufferRef>, CGImageAlphaInfo, RetainPtr<CGColorSpaceRef>);
+#endif
+    WEBCORE_EXPORT static RefPtr<NativeImage> create(Ref<PixelBuffer>&&, bool hasAlpha);
+
     WEBCORE_EXPORT virtual ~NativeImage();
 
-    WEBCORE_EXPORT virtual const PlatformImagePtr& platformImage() const;
+    WEBCORE_EXPORT virtual PlatformImagePtr platformImage() const;
     WEBCORE_EXPORT const std::optional<GainMap>& gainMap() const;
     WEBCORE_EXPORT virtual IntSize size() const;
     WEBCORE_EXPORT virtual bool hasAlpha() const;
@@ -78,6 +90,8 @@ public:
     bool hasHDRGainMap() const { return m_gainMap.has_value(); }
     Headroom baseImageHeadroom() const { return m_baseImageHeadroom; }
     Headroom headroom() const { return m_headroom; }
+
+    RefPtr<NativeImage> rotatedImage(ImageOrientation);
 
     void clearSubimages();
 
@@ -109,9 +123,10 @@ protected:
     WEBCORE_EXPORT NativeImage(PlatformImagePtr&&, std::optional<GainMap>&&);
 #endif
 
-    void computeHeadroom() const;
+    void computeHeadroom() const WTF_REQUIRES_LOCK(m_lock);
 
-    mutable PlatformImagePtr m_platformImage;
+    mutable Lock m_lock;
+    mutable PlatformImagePtr m_platformImage WTF_GUARDED_BY_LOCK(m_lock);
     mutable std::optional<GainMap> m_gainMap;
     mutable Headroom m_baseImageHeadroom { Headroom::None };
     mutable Headroom m_headroom { Headroom::None };

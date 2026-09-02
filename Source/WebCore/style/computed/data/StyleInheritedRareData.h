@@ -114,6 +114,11 @@ public:
     Color textStrokeColor;
     Color textFillColor;
     Color textEmphasisColor;
+    // Duplicates the color property as an unresolved Style::Color, which InheritedData::color
+    // cannot hold. A highlight pseudo-element inherits it unresolved so that currentcolor keeps
+    // resolving against each originating element down the highlight chain.
+    // https://drafts.csswg.org/css-pseudo-4/#highlight-cascade
+    Color colorForHighlight;
     Color visitedLinkTextStrokeColor;
     Color visitedLinkTextFillColor;
     Color visitedLinkTextEmphasisColor;
@@ -183,7 +188,8 @@ public:
     PREFERRED_TYPE(OverflowWrap) unsigned overflowWrap : 2;
     PREFERRED_TYPE(NBSPMode) unsigned nbspMode : 1;
     PREFERRED_TYPE(LineBreak) unsigned lineBreak : 3;
-    PREFERRED_TYPE(UserSelect) unsigned userSelect : 2;
+    PREFERRED_TYPE(UserSelect) unsigned webkitUserSelect : 2;
+    PREFERRED_TYPE(UserSelect) unsigned usedUserSelect : 2;
     PREFERRED_TYPE(SpeakAs) unsigned speakAs : 4;
     PREFERRED_TYPE(Hyphens) unsigned hyphens : 2;
     PREFERRED_TYPE(TextCombine) unsigned textCombine : 1;

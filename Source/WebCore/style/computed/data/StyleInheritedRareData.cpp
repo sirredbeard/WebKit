@@ -40,6 +40,7 @@ InheritedRareData::InheritedRareData()
     , textStrokeColor(ComputedStyle::initialTextStrokeColor())
     , textFillColor(ComputedStyle::initialTextFillColor())
     , textEmphasisColor(ComputedStyle::initialTextEmphasisColor())
+    , colorForHighlight(Color::currentColor())
     , visitedLinkTextStrokeColor(ComputedStyle::initialTextStrokeColor())
     , visitedLinkTextFillColor(ComputedStyle::initialTextFillColor())
     , visitedLinkTextEmphasisColor(ComputedStyle::initialTextEmphasisColor())
@@ -91,7 +92,8 @@ InheritedRareData::InheritedRareData()
     , overflowWrap(static_cast<unsigned>(ComputedStyle::initialOverflowWrap()))
     , nbspMode(static_cast<unsigned>(NBSPMode::Normal))
     , lineBreak(static_cast<unsigned>(LineBreak::Auto))
-    , userSelect(static_cast<unsigned>(ComputedStyle::initialUserSelect()))
+    , webkitUserSelect(static_cast<unsigned>(ComputedStyle::initialWebkitUserSelect()))
+    , usedUserSelect(static_cast<unsigned>(UserSelect::Text))
     , speakAs(ComputedStyle::initialSpeakAs().toRaw())
     , hyphens(static_cast<unsigned>(Hyphens::Manual))
     , textCombine(static_cast<unsigned>(ComputedStyle::initialTextCombine()))
@@ -146,6 +148,7 @@ inline InheritedRareData::InheritedRareData(const InheritedRareData& o)
     , textStrokeColor(o.textStrokeColor)
     , textFillColor(o.textFillColor)
     , textEmphasisColor(o.textEmphasisColor)
+    , colorForHighlight(o.colorForHighlight)
     , visitedLinkTextStrokeColor(o.visitedLinkTextStrokeColor)
     , visitedLinkTextFillColor(o.visitedLinkTextFillColor)
     , visitedLinkTextEmphasisColor(o.visitedLinkTextEmphasisColor)
@@ -197,7 +200,8 @@ inline InheritedRareData::InheritedRareData(const InheritedRareData& o)
     , overflowWrap(o.overflowWrap)
     , nbspMode(o.nbspMode)
     , lineBreak(o.lineBreak)
-    , userSelect(o.userSelect)
+    , webkitUserSelect(o.webkitUserSelect)
+    , usedUserSelect(o.usedUserSelect)
     , speakAs(o.speakAs)
     , hyphens(o.hyphens)
     , textCombine(o.textCombine)
@@ -260,6 +264,7 @@ bool InheritedRareData::operator==(const InheritedRareData& o) const
         && textStrokeColor == o.textStrokeColor
         && textFillColor == o.textFillColor
         && textEmphasisColor == o.textEmphasisColor
+        && colorForHighlight == o.colorForHighlight
         && visitedLinkTextStrokeColor == o.visitedLinkTextStrokeColor
         && visitedLinkTextFillColor == o.visitedLinkTextFillColor
         && visitedLinkTextEmphasisColor == o.visitedLinkTextEmphasisColor
@@ -293,7 +298,8 @@ bool InheritedRareData::operator==(const InheritedRareData& o) const
 #if ENABLE(TEXT_AUTOSIZING)
         && textSizeAdjust == o.textSizeAdjust
 #endif
-        && userSelect == o.userSelect
+        && webkitUserSelect == o.webkitUserSelect
+        && usedUserSelect == o.usedUserSelect
         && speakAs == o.speakAs
         && hyphens == o.hyphens
         && hyphenateLimitBefore == o.hyphenateLimitBefore
@@ -372,6 +378,7 @@ void InheritedRareData::dumpDifferences(TextStream& ts, const InheritedRareData&
     LOG_IF_DIFFERENT(textStrokeColor);
     LOG_IF_DIFFERENT(textFillColor);
     LOG_IF_DIFFERENT(textEmphasisColor);
+    LOG_IF_DIFFERENT(colorForHighlight);
 
     LOG_IF_DIFFERENT(visitedLinkTextStrokeColor);
     LOG_IF_DIFFERENT(visitedLinkTextFillColor);
@@ -409,7 +416,8 @@ void InheritedRareData::dumpDifferences(TextStream& ts, const InheritedRareData&
     LOG_IF_DIFFERENT_WITH_CAST(OverflowWrap, overflowWrap);
     LOG_IF_DIFFERENT_WITH_CAST(NBSPMode, nbspMode);
     LOG_IF_DIFFERENT_WITH_CAST(LineBreak, lineBreak);
-    LOG_IF_DIFFERENT_WITH_CAST(UserSelect, userSelect);
+    LOG_IF_DIFFERENT_WITH_CAST(UserSelect, webkitUserSelect);
+    LOG_IF_DIFFERENT_WITH_CAST(UserSelect, usedUserSelect);
 
     LOG_IF_DIFFERENT_WITH_FROM_RAW(SpeakAs, speakAs);
 

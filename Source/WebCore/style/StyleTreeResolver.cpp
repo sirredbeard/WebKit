@@ -436,8 +436,10 @@ auto TreeResolver::resolveElement(Element& element, const Style::ComputedStyle* 
     // Re-resolve any that were previously cached.
     if (existingStyle) {
         for (auto& [identifier, _] : existingStyle->pseudoElementStyles()) {
-            if (isHighlightPseudoElement(identifier.type))
-                resolveAndAddPseudoElementStyle(identifier);
+            // Highlight pseudo-elements inherit from the corresponding pseudo-element of the parent,
+            // so a change has to reach the descendants too.
+            if (isHighlightPseudoElement(identifier.type) && resolveAndAddPseudoElementStyle(identifier))
+                descendantsToResolve = DescendantsToResolve::All;
         }
     }
 
@@ -1300,19 +1302,31 @@ void TreeResolver::resolveComposedTree()
 
         if (RefPtr text = dynamicDowncast<Text>(node)) {
             auto containsOnlyASCIIWhitespace = text->containsOnlyASCIIWhitespace();
+            auto isDisplayContentsParent = parent.style.display() == DisplayType::Contents;
+            auto inheritedDisplayContentsStyle = isDisplayContentsParent ? createInheritedDisplayContentsStyleIfNeeded(parent.style, parentBoxStyle()) : nullptr;
+
             auto needsTextUpdate = [&] {
-                if ((text->hasInvalidRenderer() && parent.changes != Change::Renderer) || parent.style.display() == DisplayType::Contents)
+                if ((text->hasInvalidRenderer() && parent.changes != Change::Renderer) || inheritedDisplayContentsStyle)
                     return true;
-                if (!text->renderer() && containsOnlyASCIIWhitespace && parent.style.preserveNewline()) {
+
+                auto* textRenderer = text->renderer();
+                if (isDisplayContentsParent) {
+                    if (textRenderer)
+                        return textRenderer->hasInlineWrapperForDisplayContents();
+                    if (!containsOnlyASCIIWhitespace)
+                        return true;
+                }
+
+                if (!textRenderer && containsOnlyASCIIWhitespace && parent.style.preserveNewline()) {
                     // FIXME: This really needs to be done only when parent.style.preserveNewline() changes value.
                     return true;
                 }
                 return false;
             };
+
             if (needsTextUpdate()) {
                 TextUpdate textUpdate;
-                textUpdate.inheritedDisplayContentsStyle = createInheritedDisplayContentsStyleIfNeeded(parent.style, parentBoxStyle());
-
+                textUpdate.inheritedDisplayContentsStyle = WTF::move(inheritedDisplayContentsStyle);
                 m_update->addText(*text, protect(parent.element), WTF::move(textUpdate));
             }
 
@@ -1617,11 +1631,15 @@ auto TreeResolver::updateAnchorPositioningState(Element& element, const Style::C
     };
 
     update(style);
-    update(style->pseudoElementStyle({ PseudoElementType::Before }));
-    update(style->pseudoElementStyle({ PseudoElementType::After }));
+    if (style->hasPseudoElementStyles()) {
+        update(style->pseudoElementStyle({ PseudoElementType::Before }));
+        update(style->pseudoElementStyle({ PseudoElementType::After }));
+    }
 
-    auto needsInterleavedLayout = hasUnresolvedAnchorPosition({ element, { } });
-    if (needsInterleavedLayout)
+    if (m_treeResolutionState.anchorPositionedStates.isEmpty())
+        return LayoutInterleavingAction::None;
+
+    if (hasUnresolvedAnchorPosition({ element, { } }))
         return LayoutInterleavingAction::SkipDescendants;
 
     return LayoutInterleavingAction::None;

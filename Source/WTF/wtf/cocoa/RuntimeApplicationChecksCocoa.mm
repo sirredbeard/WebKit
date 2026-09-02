@@ -245,11 +245,15 @@ static SDKAlignedBehaviors computeSDKAlignedBehaviors()
     if (linkedBefore(dyld_fall_2026_os_versions, DYLD_IOS_VERSION_27_0, DYLD_MACOSX_VERSION_27_0)) {
         disableBehavior(SDKAlignedBehavior::IgnorePageLocationDuringHardPocketEligibilityCheck);
         disableBehavior(SDKAlignedBehavior::ScrollPocketInFullscreen);
+        disableBehavior(SDKAlignedBehavior::UserSelectSupersedesWebkitUserSelect);
     }
 
     // This should be disabled unconditionally until WTF::String is made thread-safe. See the comment in UserScript.cpp.
     // It's only enabled for clients that purposely enable all LOOA checks.
     disableBehavior(SDKAlignedBehavior::EnableUserScriptAndUserStyleInterning);
+
+    if (linkedBefore(dyld_2025_SU_G_os_versions, DYLD_IOS_VERSION_26_6, DYLD_MACOSX_VERSION_26_6))
+        disableBehavior(SDKAlignedBehavior::NetworkProcessInheritsNetworkAccessFromUIProcess);
 
     disableAdditionalSDKAlignedBehaviors(behaviors);
 
@@ -385,6 +389,16 @@ std::optional<audit_token_t> applicationAuditToken()
 
 #endif
 
+bool isInBaseSystem()
+{
+#if PLATFORM(MAC)
+    static bool isBaseSystem = os_variant_is_basesystem("WebKit");
+    return isBaseSystem;
+#else
+    return false;
+#endif
+}
+
 static bool applicationBundleIsEqualTo(const String& bundleIdentifierString)
 {
     return applicationBundleIdentifier() == bundleIdentifierString;
@@ -479,7 +493,7 @@ bool MacApplication::isAdobeInstaller()
 
 bool MacApplication::isMiniBrowser()
 {
-    static bool isMiniBrowser = applicationBundleIsEqualTo("org.webkit.MiniBrowser"_s);
+    static bool isMiniBrowser = applicationBundleIsEqualTo("org.webkit.MiniBrowser"_s) || applicationBundleIsEqualTo("org.webkit.SwiftBrowser"_s);
     return isMiniBrowser;
 }
 
@@ -603,7 +617,7 @@ bool IOSApplication::isDataActivation()
 
 bool IOSApplication::isMiniBrowser()
 {
-    static bool isMiniBrowser = applicationBundleIsEqualTo("org.webkit.MiniBrowser"_s);
+    static bool isMiniBrowser = applicationBundleIsEqualTo("org.webkit.MiniBrowser"_s) || applicationBundleIsEqualTo("org.webkit.SwiftBrowser"_s);
     return isMiniBrowser;
 }
 

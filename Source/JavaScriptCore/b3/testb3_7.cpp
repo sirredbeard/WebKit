@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "testb3.h"
+#include "B3BackwardsDominators.h"
 #include <wtf/WasmSIMD128.h>
 
 WTF_ALLOW_UNSAFE_BUFFER_USAGE_BEGIN
@@ -1518,6 +1519,151 @@ void testLICMControlDependentSideExits()
     CHECK_EQ(callCount, 100u);
 }
 
+// The side exit is taken on only some iterations, so it sits in a block of its own rather than in the
+// block holding the control-dependent value. Finding it requires walking back to the loop header over
+// the value's predecessors.
+void testLICMControlDependentSideExitInPredecessor()
+{
+    Procedure proc;
+    if (proc.optLevel() < 2)
+        return;
+
+    auto array = makeArrayForLoops();
+
+    BasicBlock* root = proc.addBlock();
+    BasicBlock* header = proc.addBlock();
+    BasicBlock* exiting = proc.addBlock();
+    BasicBlock* footer = proc.addBlock();
+    BasicBlock* end = proc.addBlock();
+
+    auto arguments = cCallArgumentValues<unsigned*>(proc, root);
+    Value* callCountArgument = arguments[0];
+    UpsilonValue* initialIndex = root->appendNew<UpsilonValue>(
+        proc, Origin(), root->appendNew<Const32Value>(proc, Origin(), 0));
+    root->appendNew<Value>(proc, Jump, Origin());
+    root->setSuccessors(header);
+
+    // if (array[index])
+    Value* index = header->appendNew<Value>(proc, Phi, Int32, Origin());
+    initialIndex->setPhi(index);
+    header->appendNew<Value>(
+        proc, Branch, Origin(),
+        header->appendNew<MemoryValue>(
+            proc, Load, Int32, Origin(),
+            header->appendNew<Value>(
+                proc, Add, Origin(),
+                header->appendNew<ConstPtrValue>(proc, Origin(), &array),
+                header->appendNew<Value>(
+                    proc, Mul, Origin(),
+                    header->appendNew<Value>(proc, ZExt32, Origin(), index),
+                    header->appendNew<ConstPtrValue>(proc, Origin(), sizeof(int))))));
+    header->setSuccessors(exiting, footer);
+
+    Effects effects = Effects::none();
+    effects.exitsSideways = true;
+    effects.reads = HeapRange::top();
+    exiting->appendNew<CCallValue>(
+        proc, Void, Origin(), effects,
+        exiting->appendNew<ConstPtrValue>(proc, Origin(), tagCFunction<OperationPtrTag>(noOpFunction)));
+    exiting->appendNew<Value>(proc, Jump, Origin());
+    exiting->setSuccessors(footer);
+
+    effects = Effects::none();
+    effects.controlDependent = true;
+    Value* one = footer->appendNew<CCallValue>(
+        proc, Int32, Origin(), effects,
+        footer->appendNew<ConstPtrValue>(proc, Origin(), tagCFunction<OperationPtrTag>(oneFunction)),
+        callCountArgument);
+
+    Value* nextIndex = footer->appendNew<Value>(proc, Add, Origin(), index, one);
+    UpsilonValue* loopIndex = footer->appendNew<UpsilonValue>(proc, Origin(), nextIndex);
+    loopIndex->setPhi(index);
+    footer->appendNew<Value>(
+        proc, Branch, Origin(),
+        footer->appendNew<Value>(
+            proc, LessThan, Origin(), nextIndex,
+            footer->appendNew<Const32Value>(proc, Origin(), 100)));
+    footer->setSuccessors(header, end);
+
+    end->appendNew<Value>(proc, Return, Origin());
+
+    unsigned callCount = 0;
+    compileAndRun<void>(proc, &callCount);
+    CHECK_EQ(callCount, 100u);
+}
+
+// The side exit runs in the first iteration and the control-dependent value's block is first entered
+// in the second, so the exit precedes the value while sitting in no block between the loop header and
+// it. Rejecting this relies on backwards dominance counting a back edge as a way for the procedure to
+// end, which makes the value's block not backwards-dominate the pre-header.
+void testLICMControlDependentSideExitInEarlierIteration()
+{
+    Procedure proc;
+    if (proc.optLevel() < 2)
+        return;
+
+    BasicBlock* root = proc.addBlock();
+    BasicBlock* header = proc.addBlock();
+    BasicBlock* exiting = proc.addBlock();
+    BasicBlock* body = proc.addBlock();
+    BasicBlock* end = proc.addBlock();
+
+    auto arguments = cCallArgumentValues<unsigned*>(proc, root);
+    Value* callCountArgument = arguments[0];
+    UpsilonValue* initialIndex = root->appendNew<UpsilonValue>(
+        proc, Origin(), root->appendNew<Const32Value>(proc, Origin(), 0));
+    root->appendNew<Value>(proc, Jump, Origin());
+    root->setSuccessors(header);
+
+    // if (!index), so only the first iteration takes the exiting block.
+    Value* index = header->appendNew<Value>(proc, Phi, Int32, Origin());
+    initialIndex->setPhi(index);
+    header->appendNew<Value>(
+        proc, Branch, Origin(),
+        header->appendNew<Value>(
+            proc, Equal, Origin(), index,
+            header->appendNew<Const32Value>(proc, Origin(), 0)));
+    header->setSuccessors(exiting, body);
+
+    Effects effects = Effects::none();
+    effects.exitsSideways = true;
+    effects.reads = HeapRange::top();
+    exiting->appendNew<CCallValue>(
+        proc, Void, Origin(), effects,
+        exiting->appendNew<ConstPtrValue>(proc, Origin(), tagCFunction<OperationPtrTag>(noOpFunction)));
+    UpsilonValue* indexAfterExiting = exiting->appendNew<UpsilonValue>(
+        proc, Origin(),
+        exiting->appendNew<Value>(
+            proc, Add, Origin(), index,
+            exiting->appendNew<Const32Value>(proc, Origin(), 1)));
+    indexAfterExiting->setPhi(index);
+    exiting->appendNew<Value>(proc, Jump, Origin());
+    exiting->setSuccessors(header);
+
+    effects = Effects::none();
+    effects.controlDependent = true;
+    Value* one = body->appendNew<CCallValue>(
+        proc, Int32, Origin(), effects,
+        body->appendNew<ConstPtrValue>(proc, Origin(), tagCFunction<OperationPtrTag>(oneFunction)),
+        callCountArgument);
+
+    Value* nextIndex = body->appendNew<Value>(proc, Add, Origin(), index, one);
+    UpsilonValue* loopIndex = body->appendNew<UpsilonValue>(proc, Origin(), nextIndex);
+    loopIndex->setPhi(index);
+    body->appendNew<Value>(
+        proc, Branch, Origin(),
+        body->appendNew<Value>(
+            proc, LessThan, Origin(), nextIndex,
+            body->appendNew<Const32Value>(proc, Origin(), 100)));
+    body->setSuccessors(header, end);
+
+    end->appendNew<Value>(proc, Return, Origin());
+
+    unsigned callCount = 0;
+    compileAndRun<void>(proc, &callCount);
+    CHECK_EQ(callCount, 99u);
+}
+
 void testLICMReadsPinnedWritesPinned()
 {
     Procedure proc;
@@ -2162,6 +2308,70 @@ void testInfiniteLoopDoesntCauseBadHoisting()
     auto code = compileProc(proc);
     RELEASE_ASSERT(!proc.calleeSaveRegisterAtOffsetList().registerCount());
     invoke<void>(*code, static_cast<intptr_t>(55)); // Shouldn't crash dereferncing 55.
+}
+
+void testBackwardsDominatorsWithMultipleBackEdges()
+{
+    // A loop whose header has two latches (back-edge sources), where only one
+    // of them also exits the loop:
+    //
+    //   root    --> header
+    //   header  --> success | failure          (branch)
+    //   success --> header (back edge) | exit   (branch)   // latch that can exit
+    //   failure --> header (back edge)                     // latch with no exit
+    //   exit    --> Return                                 // the only terminal
+    //
+    // `success` and `failure` are both back-edge sources. The `failure` latch
+    // has no exit of its own, so control that keeps taking it loops forever.
+    // BackwardsGraph treats that as a form of terminality: it computes
+    // post-dominators by reversing the CFG and giving the synthetic reverse
+    // root a successor for every terminal and every back-edge source.
+    //
+    // The property B3 LICM (and the control-equivalence consumers) rely on is
+    // the post-dominator relation: `success` must NOT post-dominate the header
+    // or the loop entry, because control can stay in the loop forever via the
+    // exit-less `failure` latch without ever reaching `success`. If `failure`
+    // is missing from the reverse root's successors, the header is reachable in
+    // the reverse CFG only through `success`, so `success` falsely
+    // post-dominates the header (and `root`) -- the false relationship that
+    // would let LICM hoist a control-dependent read out of the loop.
+    Procedure proc;
+    BasicBlock* root = proc.addBlock();
+    BasicBlock* header = proc.addBlock();
+    BasicBlock* success = proc.addBlock();
+    BasicBlock* failure = proc.addBlock();
+    BasicBlock* exit = proc.addBlock();
+    auto arguments = cCallArgumentValues<intptr_t>(proc, root);
+    Value* arg = arguments[0];
+
+    root->appendNewControlValue(proc, Jump, Origin(), header);
+    header->appendNewControlValue(
+        proc, Branch, Origin(),
+        header->appendNew<Value>(proc, Equal, Origin(), arg,
+            header->appendNew<ConstPtrValue>(proc, Origin(), 10)),
+        success, failure);
+    success->appendNewControlValue(
+        proc, Branch, Origin(),
+        success->appendNew<Value>(proc, Equal, Origin(), arg,
+            success->appendNew<ConstPtrValue>(proc, Origin(), 20)),
+        header, exit);
+    failure->appendNewControlValue(proc, Jump, Origin(), header);
+    exit->appendNewControlValue(proc, Return, Origin());
+
+    proc.resetReachability();
+
+    BackwardsDominators& backwardsDominators = proc.backwardsDominators();
+
+    // Sanity: `header` genuinely post-dominates the entry (root's only successor
+    // is header), so the checks below are not vacuously true.
+    CHECK(backwardsDominators.dominates(header, root));
+
+    // The actual property: `success` must not post-dominate the header or the
+    // loop entry, because the exit-less `failure` latch is an escape that
+    // bypasses `success`. A dropped `failure` back-edge source makes both of
+    // these falsely true.
+    CHECK(!backwardsDominators.dominates(success, header));
+    CHECK(!backwardsDominators.dominates(success, root));
 }
 
 static void testSimpleTuplePair(unsigned first, int64_t second)

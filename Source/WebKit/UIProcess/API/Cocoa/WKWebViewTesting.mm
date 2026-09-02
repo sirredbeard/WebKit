@@ -360,6 +360,15 @@ static void dumpCALayer(TextStream& ts, CALayer *layer, bool traverse)
     return coordinator->scrollingTreeAsText().createNSString().autorelease();
 }
 
+- (NSString *)_scrollingTreeIncludingNodeIDsAsText
+{
+    CheckedPtr coordinator = _page->scrollingCoordinatorProxy();
+    if (!coordinator)
+        return @"";
+
+    return coordinator->scrollingTreeIncludingNodeIDsAsText().createNSString().autorelease();
+}
+
 - (double)_rubberbandHyperbolicCoefficientForTesting
 {
     if (CheckedPtr coordinator = _page->scrollingCoordinatorProxy())
@@ -472,6 +481,28 @@ static void dumpCALayer(TextStream& ts, CALayer *layer, bool traverse)
         return;
 
     protect(_page->legacyMainFrameProcess())->setThrottleStateForTesting(static_cast<WebKit::ProcessThrottleState>(value));
+}
+
+- (NSString *)_processAssertionTypeForTesting
+{
+    if (!_page)
+        return nil;
+
+    auto assertionType = protect(_page->legacyMainFrameProcess())->throttler().assertionTypeForTesting();
+    if (!assertionType)
+        return nil;
+
+    return WebKit::processAssertionTypeDescription(*assertionType).createNSString().autorelease();
+}
+
+- (void)_setJetsamBoostEnabledForTesting:(BOOL)enabled
+{
+#if PLATFORM(MAC) && USE(RUNNINGBOARD)
+    if (_page)
+        protect(_page->legacyMainFrameProcess())->setJetsamBoostEnabled(enabled);
+#else
+    UNUSED_PARAM(enabled);
+#endif
 }
 
 - (BOOL)_hasServiceWorkerBackgroundActivityForTesting
@@ -770,10 +801,41 @@ static void dumpCALayer(TextStream& ts, CALayer *layer, bool traverse)
     });
 }
 
+- (void)_setDisplayForTesting:(uint32_t)displayID nominalFramesPerSecond:(unsigned)nominalFramesPerSecond
+{
+    if (RefPtr pageForTesting = _page->pageForTesting())
+        pageForTesting->setDisplayForTesting(displayID, nominalFramesPerSecond);
+}
+
+- (void)_preferredRenderingUpdateIntervalsForTesting:(void (^)(NSArray<NSNumber *> *))completionHandler
+{
+    RefPtr pageForTesting = _page->pageForTesting();
+    if (!pageForTesting)
+        return completionHandler(@[ ]);
+
+    pageForTesting->preferredRenderingUpdateIntervalsInMilliseconds([completionHandler = makeBlockPtr(completionHandler)](Vector<double>&& intervals) {
+        completionHandler(createNSArray(intervals, [](double interval) {
+            return @(interval);
+        }).get());
+    });
+}
+
 - (void)_computePagesForPrinting:(_WKFrameHandle *)handle completionHandler:(void(^)(void))completionHandler
 {
+    // A default-constructed PrintInfo has a zero-sized page, which makes the printing layout
+    // divide by zero, so pretend we're printing to US Letter paper.
     WebKit::PrintInfo printInfo;
+    printInfo.pageSetupScaleFactor = 1;
+    printInfo.availablePaperWidth = 612;
+    printInfo.availablePaperHeight = 792;
     _page->computePagesForPrinting(*handle->_frameHandle->frameID(), printInfo, [completionHandler = makeBlockPtr(completionHandler)] (const Vector<WebCore::IntRect>&, double, const WebCore::FloatBoxExtent&) {
+        completionHandler();
+    });
+}
+
+- (void)_endPrintingForTesting:(void(^)(void))completionHandler
+{
+    _page->endPrinting([completionHandler = makeBlockPtr(completionHandler)] {
         completionHandler();
     });
 }

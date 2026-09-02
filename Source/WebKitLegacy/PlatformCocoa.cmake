@@ -8,9 +8,6 @@ find_library(APPLICATIONSERVICES_LIBRARY ApplicationServices)
 find_library(QUARTZ_LIBRARY Quartz)
 find_library(SECURITYINTERFACE_LIBRARY SecurityInterface)
 
-list(APPEND WebKitLegacy_PRIVATE_LIBRARIES
-    PAL
-)
 if (WEBKIT_SDK_IS_IOS_FAMILY)
     list(APPEND WebKitLegacy_PRIVATE_LIBRARIES ${UIKIT_LIBRARY})
 endif ()
@@ -49,7 +46,7 @@ list(APPEND WebKitLegacy_UNIFIED_SOURCE_LIST_FILES
     SourcesCocoa.txt
 )
 # FIXME: Test building on iOS and then enable on iOS.
-if (NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+if (NOT WEBKIT_SDK_IS_IOS_FAMILY)
     list(APPEND WebKitLegacy_UNIFIED_SOURCE_LIST_FILES
         SourcesCMakeCocoa.txt
     )
@@ -93,6 +90,13 @@ add_custom_command(
     COMMAND_EXPAND_LISTS
     VERBATIM
 )
+
+# Put the generated header into a separate target so that dependents can build
+# without waiting for the rest of WebCore to compile and link.
+add_custom_target(WebKitLegacyPreferences DEPENDS
+    ${WebKitLegacy_DERIVED_SOURCES_DIR}/WebPreferencesDefinitions.h
+)
+add_dependencies(WebKitLegacy WebKitLegacyPreferences)
 
 list(APPEND WebKitLegacy_SOURCES
     ${WebKitLegacy_DERIVED_SOURCES_DIR}/WebViewPreferencesChangedGenerated.mm
@@ -216,7 +220,6 @@ list(APPEND WebKitLegacy_SOURCES
     mac/WebView/WebGeolocationPosition.mm
     mac/WebView/WebHTMLRepresentation.mm
     mac/WebView/WebIndicateLayer.mm
-    mac/WebView/WebJSPDFDoc.mm
     mac/WebView/WebMediaPlaybackTargetPicker.mm
     mac/WebView/WebNavigationData.mm
     mac/WebView/WebNotification.mm
@@ -251,10 +254,6 @@ set(WebKitLegacy_POST_BUILD_COMMAND
 )
 set_target_properties(WebKitLegacy PROPERTIES
     INSTALL_NAME_DIR "${WebKitLegacy_INSTALL_NAME_DIR}"
-)
-target_link_options(WebKitLegacy PRIVATE
-    -compatibility_version 1.0.0
-    -current_version ${WEBKIT_MAC_VERSION}
 )
 
 target_link_options(WebKitLegacy PRIVATE
@@ -667,7 +666,6 @@ set(WebKitLegacy_LEGACY_FORWARDING_HEADERS_FILES
     mac/WebView/WebHistoryDelegate.h
     mac/WebView/WebImmediateActionController.h
     mac/WebView/WebIndicateLayer.h
-    mac/WebView/WebJSPDFDoc.h
     mac/WebView/WebMediaPlaybackTargetPicker.h
     mac/WebView/WebNavigationData.h
     mac/WebView/WebNotification.h
@@ -1013,7 +1011,6 @@ set(_wkl_excluded_for_ios
     WebIndicateLayer.h
     WebInspectorClient.h
     WebInspectorFrontend.h
-    WebJSPDFDoc.h
     WebJavaScriptTextInputPanel.h
     WebKitFullScreenListener.h
     WebKitLogging.h
@@ -1177,8 +1174,8 @@ foreach (_file ${WebKitLegacy_LEGACY_FORWARDING_HEADERS_FILES})
 endforeach ()
 
 set(_wkl_fw "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKitLegacy.framework")
-make_directory("${_wkl_fw}")
-make_directory("${_wkl_fw}/Modules")
+file(MAKE_DIRECTORY "${_wkl_fw}")
+file(MAKE_DIRECTORY "${_wkl_fw}/Modules")
 
 if (NOT EXISTS "${_wkl_fw}/PrivateHeaders")
     file(CREATE_LINK "${WebKitLegacy_FRAMEWORK_HEADERS_DIR}/WebKitLegacy"
@@ -1258,6 +1255,12 @@ endif ()
 
 add_definitions(-iframework ${QUARTZ_LIBRARY}/Frameworks)
 add_definitions(-iframework ${APPLICATIONSERVICES_LIBRARY}/Versions/Current/Frameworks)
+
+if (WebKitLegacy_INSTALL_NAME_DIR)
+    set_target_properties(WebKitLegacy PROPERTIES
+        INSTALL_NAME_DIR "${WebKitLegacy_INSTALL_NAME_DIR}"
+    )
+endif ()
 
 
 # WebKit reexports WebKitLegacy, so the legacy ObjC API is part of WebKit's
@@ -1518,19 +1521,26 @@ set(WebKitLegacy_FORWARDED_PRIVATE_HEADERS
 # Make the above also available from <WebKitLegacy/X.h> imports.
 set(WebKitLegacy_PRIVATE_FRAMEWORK_HEADERS
     ${WebKitLegacy_FORWARDED_PUBLIC_HEADERS}
-    ${WebKitLegacy_FORWARDED_PRIVATE_HEADERS})
+    ${WebKitLegacy_FORWARDED_PRIVATE_HEADERS}
+)
 
-list(APPEND WebKitLegacy_INTERFACE_DEPENDENCIES WebKitLegacy_ForwardHeaders WebKitLegacy_ForwardPrivateHeaders)
+list(APPEND WebKitLegacy_INTERFACE_DEPENDENCIES WebKitLegacy_ForwardHeaders WebKitLegacy_ForwardPrivateHeaders WebKitLegacy_CopyPrivateHeaders)
 
 WEBKIT_COPY_FILES(WebKitLegacy_ForwardHeaders
     DESTINATION ${WebKit_HEADERS_DIR}
     FILES ${WebKitLegacy_FORWARDED_PUBLIC_HEADERS}
-    COMMAND ${PERL_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/forward-headers-cmake.pl
+    COMMAND ${PERL_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/forward-headers-cmake.pl --webkit
     FLATTENED
 )
 WEBKIT_COPY_FILES(WebKitLegacy_ForwardPrivateHeaders
     DESTINATION ${WebKit_PRIVATE_HEADERS_DIR}
     FILES ${WebKitLegacy_FORWARDED_PRIVATE_HEADERS}
+    COMMAND ${PERL_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/forward-headers-cmake.pl --webkit
+    FLATTENED
+)
+WEBKIT_COPY_FILES(WebKitLegacy_CopyPrivateHeaders
+    DESTINATION ${WebKitLegacy_HEADERS_DIR}
+    FILES ${WebKitLegacy_PRIVATE_FRAMEWORK_HEADERS}
     COMMAND ${PERL_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/scripts/forward-headers-cmake.pl
     FLATTENED
 )
@@ -1705,7 +1715,6 @@ set(WebKitLegacy_PROJECT_HEADERS
     mac/WebView/WebHistoryDelegate.h
     mac/WebView/WebImmediateActionController.h
     mac/WebView/WebIndicateLayer.h
-    mac/WebView/WebJSPDFDoc.h
     mac/WebView/WebMediaPlaybackTargetPicker.h
     mac/WebView/WebNotificationInternal.h
     mac/WebView/WebPDFDocumentExtras.h
@@ -1721,5 +1730,3 @@ set(WebKitLegacy_PROJECT_HEADERS
     mac/WebView/WebViewInternal.h
     mac/WebView/WebViewRenderingUpdateScheduler.h
 )
-
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -compatibility_version 1 -current_version ${WEBKIT_MAC_VERSION} -framework SecurityInterface")

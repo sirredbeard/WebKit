@@ -627,10 +627,10 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncReplace, (JSGlobalObject* globalObject, 
             auto callData = JSC::getCallData(replacer);
             if (callData.type == CallData::Type::None) [[unlikely]]
                 return throwVMTypeError(globalObject, scope, "@@replace method is not callable"_s);
-            std::array<EncodedJSValue, 2> args { {
+            auto args = WTF::toArray<EncodedJSValue>({
                 JSValue::encode(thisValue),
                 JSValue::encode(callFrame->argument(1)),
-            } };
+            });
             RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, replacer, callData, searchValue, ArgList { args.data(), args.size() })));
         }
     }
@@ -703,10 +703,10 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncReplaceAll, (JSGlobalObject* globalObjec
             auto callData = JSC::getCallData(replacer);
             if (callData.type == CallData::Type::None) [[unlikely]]
                 return throwVMTypeError(globalObject, scope, "@@replace method is not callable"_s);
-            std::array<EncodedJSValue, 2> args { {
+            auto args = WTF::toArray<EncodedJSValue>({
                 JSValue::encode(thisValue),
                 JSValue::encode(callFrame->argument(1)),
-            } };
+            });
             RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, replacer, callData, searchValue, ArgList { args.data(), args.size() })));
         }
     }
@@ -921,9 +921,6 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncLastIndexOf, (JSGlobalObject* globalObje
     JSString* otherJSString = a0.toString(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
 
-    auto otherView = otherJSString->view(globalObject);
-    RETURN_IF_EXCEPTION(scope, { });
-
     // 5. Let numPos be ? ToNumber(position).
     // 6. Assert: If position is undefined, then numPos is NaN.
     // 7. If numPos is NaN, let pos be +∞; else let pos be ! ToIntegerOrInfinity(numPos).
@@ -935,7 +932,7 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncLastIndexOf, (JSGlobalObject* globalObje
     RETURN_IF_EXCEPTION(scope, { });
 
     unsigned len = thisJSString->length();
-    unsigned otherLen = otherView->length();
+    unsigned otherLen = otherJSString->length();
     if (len < otherLen)
         return JSValue::encode(jsNumber(-1));
 
@@ -947,6 +944,9 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncLastIndexOf, (JSGlobalObject* globalObje
         startPosition = maxStart;
     else
         startPosition = static_cast<unsigned>(numPos);
+
+    auto otherView = otherJSString->view(globalObject);
+    RETURN_IF_EXCEPTION(scope, { });
 
     // Now, startPosition is in [0, maxStart(len - otherLen)].
     if (otherLen == 1) {
@@ -1269,10 +1269,10 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncSplit, (JSGlobalObject* globalObject, Ca
             auto callData = JSC::getCallData(splitter);
             if (callData.type == CallData::Type::None) [[unlikely]]
                 return throwVMTypeError(globalObject, scope, "@@split method is not callable"_s);
-            std::array<EncodedJSValue, 2> args { {
+            auto args = WTF::toArray<EncodedJSValue>({
                 JSValue::encode(thisValue),
                 JSValue::encode(limitValue),
-            } };
+            });
             JSValue result = call(globalObject, splitter, callData, separatorValue, ArgList { args.data(), args.size() });
             RETURN_IF_EXCEPTION(scope, { });
             return JSValue::encode(result);
@@ -1295,9 +1295,9 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncSplit, (JSGlobalObject* globalObject, Ca
             RELEASE_AND_RETURN(scope, JSValue::encode(constructEmptyArray(globalObject, nullptr)));
         auto input = thisString->value(globalObject);
         RETURN_IF_EXCEPTION(scope, { });
-        std::array<EncodedJSValue, 1> args { {
+        auto args = WTF::toArray<EncodedJSValue>({
             JSValue::encode(jsStringWithReuse(globalObject, thisString, input))
-        } };
+        });
         RETURN_IF_EXCEPTION(scope, { });
         RELEASE_AND_RETURN(scope, JSValue::encode(constructArray(globalObject, static_cast<ArrayAllocationProfile*>(nullptr), ArgList { args.data(), args.size() })));
     }
@@ -1329,9 +1329,9 @@ JSValue stringMatchSlow(JSGlobalObject* globalObject, JSString* thisString, JSVa
         throwTypeError(globalObject, scope, makeString(description, " is not a function"_s));
         return { };
     }
-    std::array<EncodedJSValue, 1> args { {
+    auto args = WTF::toArray<EncodedJSValue>({
         JSValue::encode(thisString),
-    } };
+    });
     RELEASE_AND_RETURN(scope, call(globalObject, matcher, callData, regExpObject, ArgList { args.data(), args.size() }));
 }
 
@@ -1355,9 +1355,9 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncMatch, (JSGlobalObject* globalObject, Ca
             JSValue matcher = globalObject->linkTimeConstant(LinkTimeConstant::regExpPrototypeSymbolMatch);
             auto callData = JSC::getCallData(matcher);
             ASSERT(callData.type != CallData::Type::None);
-            std::array<EncodedJSValue, 1> args { {
+            auto args = WTF::toArray<EncodedJSValue>({
                 JSValue::encode(thisString),
-            } };
+            });
             RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, matcher, callData, regExpObject, ArgList { args.data(), args.size() })));
         }
 
@@ -1371,9 +1371,9 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncMatch, (JSGlobalObject* globalObject, Ca
                 RETURN_IF_EXCEPTION(scope, { });
                 return throwVMTypeError(globalObject, scope, makeString(description, " is not a function"_s));
             }
-            std::array<EncodedJSValue, 1> args { {
+            auto args = WTF::toArray<EncodedJSValue>({
                 JSValue::encode(thisValue),
-            } };
+            });
             RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, matcher, callData, regexpValue, ArgList { args.data(), args.size() })));
         }
     }
@@ -1404,9 +1404,9 @@ JSValue stringSearchSlow(JSGlobalObject* globalObject, JSString* thisString, JSV
         throwTypeError(globalObject, scope, makeString(description, " is not a function"_s));
         return { };
     }
-    std::array<EncodedJSValue, 1> args { {
+    auto args = WTF::toArray<EncodedJSValue>({
         JSValue::encode(thisString),
-    } };
+    });
     RELEASE_AND_RETURN(scope, call(globalObject, searcher, callData, createdRegExp, ArgList { args.data(), args.size() }));
 }
 
@@ -1454,9 +1454,9 @@ JSValue stringMatchAllSlow(JSGlobalObject* globalObject, JSString* thisString, J
         throwTypeError(globalObject, scope, makeString(description, " is not a function"_s));
         return { };
     }
-    std::array<EncodedJSValue, 1> args { {
+    auto args = WTF::toArray<EncodedJSValue>({
         JSValue::encode(thisString),
-    } };
+    });
     RELEASE_AND_RETURN(scope, call(globalObject, matchAllMethod, callData, regExpObject, ArgList { args.data(), args.size() }));
 }
 
@@ -1493,9 +1493,9 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncSearch, (JSGlobalObject* globalObject, C
                 RETURN_IF_EXCEPTION(scope, { });
                 return throwVMTypeError(globalObject, scope, makeString(description, " is not a function"_s));
             }
-            std::array<EncodedJSValue, 1> args { {
+            auto args = WTF::toArray<EncodedJSValue>({
                 JSValue::encode(thisValue),
-            } };
+            });
             RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, searcher, callData, regexpValue, ArgList { args.data(), args.size() })));
         }
     }
@@ -1547,9 +1547,9 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncMatchAll, (JSGlobalObject* globalObject,
             JSValue matcher = globalObject->linkTimeConstant(LinkTimeConstant::regExpPrototypeSymbolMatchAll);
             auto callData = JSC::getCallData(matcher);
             ASSERT(callData.type != CallData::Type::None);
-            std::array<EncodedJSValue, 1> args { {
+            auto args = WTF::toArray<EncodedJSValue>({
                 JSValue::encode(thisString),
-            } };
+            });
             RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, matcher, callData, regExpObject, ArgList { args.data(), args.size() })));
         }
 
@@ -1574,9 +1574,9 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncMatchAll, (JSGlobalObject* globalObject,
                 RETURN_IF_EXCEPTION(scope, { });
                 return throwVMTypeError(globalObject, scope, makeString(description, " is not a function"_s));
             }
-            std::array<EncodedJSValue, 1> args { {
+            auto args = WTF::toArray<EncodedJSValue>({
                 JSValue::encode(thisValue),
-            } };
+            });
             RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, matcher, callData, regexpValue, ArgList { args.data(), args.size() })));
         }
     }
@@ -1979,13 +1979,14 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncStartsWith, (JSGlobalObject* globalObjec
         RETURN_IF_EXCEPTION(scope, encodedJSValue());
     }
 
+    auto searchLength = search->length();
+    if (length - start < searchLength)
+        return JSValue::encode(jsBoolean(false));
+
     auto searchString = search->view(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
 
-    if (searchString->length() == 1 && string->isRope() && length >= JSString::minLengthForRopeWalk) {
-        if (start >= length)
-            return JSValue::encode(jsBoolean(false));
-
+    if (searchLength == 1 && string->isRope() && length >= JSString::minLengthForRopeWalk) {
         if (auto character = string->tryGetCharAt(globalObject, start))
             return JSValue::encode(jsBoolean(*character == searchString[0]));
     }
@@ -2029,13 +2030,14 @@ JSC_DEFINE_HOST_FUNCTION(stringProtoFuncEndsWith, (JSGlobalObject* globalObject,
         RETURN_IF_EXCEPTION(scope, encodedJSValue());
     }
 
+    auto searchLength = search->length();
+    if (end < searchLength)
+        return JSValue::encode(jsBoolean(false));
+
     auto searchString = search->view(globalObject);
     RETURN_IF_EXCEPTION(scope, { });
 
-    if (searchString->length() == 1 && string->isRope() && length >= JSString::minLengthForRopeWalk) {
-        if (!end)
-            return JSValue::encode(jsBoolean(false));
-
+    if (searchLength == 1 && string->isRope() && length >= JSString::minLengthForRopeWalk) {
         if (auto character = string->tryGetCharAt(globalObject, end - 1))
             return JSValue::encode(jsBoolean(*character == searchString[0]));
     }
@@ -2058,7 +2060,11 @@ static EncodedJSValue stringIncludesImpl(JSGlobalObject* globalObject, VM& vm, J
         RETURN_IF_EXCEPTION(scope, encodedJSValue());
     }
 
-    if (search->length() == 1 && string->isRope() && string->length() >= JSString::minLengthForRopeWalk) {
+    auto searchLength = search->length();
+    if (length - start < searchLength)
+        return JSValue::encode(jsBoolean(false));
+
+    if (searchLength == 1 && string->isRope() && string->length() >= JSString::minLengthForRopeWalk) {
         auto searchView = search->view(globalObject);
         RETURN_IF_EXCEPTION(scope, encodedJSValue());
 

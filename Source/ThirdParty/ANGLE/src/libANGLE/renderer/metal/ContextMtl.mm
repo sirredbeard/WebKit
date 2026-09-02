@@ -7,10 +7,6 @@
 //    Implements the class methods for ContextMtl.
 //
 
-#ifdef UNSAFE_BUFFERS_BUILD
-#    pragma allow_unsafe_buffers
-#endif
-
 #include "libANGLE/renderer/metal/ContextMtl.h"
 
 #include <TargetConditionals.h>
@@ -18,11 +14,11 @@
 
 #include "GLSLANG/ShaderLang.h"
 #include "common/debug.h"
+#include "common/unsafe_buffers.h"
 #include "image_util/loadimage.h"
 #include "libANGLE/Display.h"
 #include "libANGLE/Query.h"
 #include "libANGLE/TransformFeedback.h"
-#include "libANGLE/renderer/OverlayImpl.h"
 #include "libANGLE/renderer/metal/BufferMtl.h"
 #include "libANGLE/renderer/metal/CompilerMtl.h"
 #include "libANGLE/renderer/metal/DisplayMtl.h"
@@ -1333,8 +1329,6 @@ angle::Result ContextMtl::syncState(const gl::Context *context,
                 // NOTE(hqle): this is part of EXT_multisample_compatibility.
                 // NOTE(hqle): MSAA feature.
                 break;
-            case gl::state::DIRTY_BIT_COVERAGE_MODULATION:
-                break;
             case gl::state::DIRTY_BIT_FRAMEBUFFER_SRGB_WRITE_CONTROL_MODE:
                 break;
             case gl::state::DIRTY_BIT_CURRENT_VALUES:
@@ -1343,6 +1337,10 @@ angle::Result ContextMtl::syncState(const gl::Context *context,
                 break;
             }
             case gl::state::DIRTY_BIT_PROVOKING_VERTEX:
+                break;
+            case gl::state::DIRTY_BIT_CLIP_CONTROL:
+                updateFrontFace(glState);
+                invalidateDriverUniforms();
                 break;
             case gl::state::DIRTY_BIT_EXTENDED:
                 updateExtendedState(glState, extendedDirtyBits);
@@ -1369,10 +1367,6 @@ void ContextMtl::updateExtendedState(const gl::State &glState,
     {
         switch (extendedDirtyBit)
         {
-            case gl::state::EXTENDED_DIRTY_BIT_CLIP_CONTROL:
-                updateFrontFace(glState);
-                invalidateDriverUniforms();
-                break;
             case gl::state::EXTENDED_DIRTY_BIT_CLIP_DISTANCES:
                 invalidateDriverUniforms();
                 break;
@@ -1557,12 +1551,6 @@ SemaphoreImpl *ContextMtl::createSemaphore()
 {
     UNIMPLEMENTED();
     return nullptr;
-}
-
-OverlayImpl *ContextMtl::createOverlay(const gl::OverlayState &state)
-{
-    // Not implemented.
-    return new OverlayImpl(state);
 }
 
 angle::Result ContextMtl::dispatchCompute(const gl::Context *context,
@@ -2414,8 +2402,8 @@ angle::Result ContextMtl::updateDefaultAttribute(size_t attribIndex)
 
     static_assert(kDefaultGLAttributeValueSize == mtl::kDefaultAttributeSize,
                   "Unexpected default attribute size");
-    memcpy(mDefaultAttributes[attribIndex].values, &defaultValue.Values,
-           mtl::kDefaultAttributeSize);
+    ANGLE_UNSAFE_TODO(memcpy(mDefaultAttributes[attribIndex].values, &defaultValue.Values,
+                             mtl::kDefaultAttributeSize));
 
     return angle::Result::Continue;
 }

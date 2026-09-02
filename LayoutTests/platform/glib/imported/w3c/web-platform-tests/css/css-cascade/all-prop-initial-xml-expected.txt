@@ -142,6 +142,7 @@ PASS fill
 PASS fill-opacity
 PASS fill-rule
 PASS filter
+PASS fit-tolerance
 PASS flex-basis
 PASS flex-direction
 PASS flex-grow
@@ -150,7 +151,6 @@ PASS flex-wrap
 PASS float
 PASS flood-color
 PASS flood-opacity
-PASS flow-tolerance
 PASS font-family
 PASS font-feature-settings
 PASS font-kerning
@@ -204,6 +204,7 @@ PASS letter-spacing
 PASS lighting-color
 PASS line-break
 PASS line-height
+PASS link-parameters
 PASS list-style-image
 PASS list-style-position
 PASS list-style-type
@@ -395,6 +396,7 @@ PASS transition-timing-function
 PASS translate
 PASS trigger-scope
 PASS unicode-bidi
+PASS user-select
 PASS vector-effect
 PASS vertical-align
 PASS view-timeline-axis

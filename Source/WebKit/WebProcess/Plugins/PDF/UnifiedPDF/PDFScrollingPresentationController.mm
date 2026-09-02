@@ -306,7 +306,7 @@ void PDFScrollingPresentationController::updateDebugBorders(bool showDebugBorder
         for (auto& pageLayer : m_pageBackgroundsContainerLayer->children()) {
             propagateSettingsToLayer(pageLayer);
             if (pageLayer->children().size())
-                propagateSettingsToLayer(pageLayer->children()[0]);
+                propagateSettingsToLayer(protect(pageLayer->children()[0]));
         }
     }
 
@@ -314,18 +314,25 @@ void PDFScrollingPresentationController::updateDebugBorders(bool showDebugBorder
         asyncRenderer->setShowDebugBorders(showDebugBorders);
 }
 
-void PDFScrollingPresentationController::updateForAccessibilityDisplayModeChange(PDFAccessibilityDisplayMode accessibilityDisplayMode)
+void PDFScrollingPresentationController::updateLayersForAccessibilityDisplayModeChange()
 {
+    auto displayMode = accessibilityDisplayMode();
+
+    if (RefPtr contentsLayer = m_contentsLayer)
+        contentsLayer->setNeedsDisplay();
+
 #if ENABLE(PDFKIT_PAINTED_SELECTIONS)
-    if (RefPtr selectionLayer = m_selectionLayer)
-        selectionLayer->setBlendMode(pdfSelectionBlendMode(accessibilityDisplayMode));
+    if (RefPtr selectionLayer = m_selectionLayer) {
+        selectionLayer->setBlendMode(pdfSelectionBlendMode(displayMode));
+        selectionLayer->setNeedsDisplay();
+    }
 #endif
 
     RefPtr pageBackgroundsContainerLayer = m_pageBackgroundsContainerLayer;
     if (!pageBackgroundsContainerLayer)
         return;
 
-    auto backgroundColor = pdfPageBackgroundColor(accessibilityDisplayMode);
+    auto backgroundColor = pdfPageBackgroundColor(displayMode);
     for (auto& pageContainerLayer : pageBackgroundsContainerLayer->children()) {
         if (!pageContainerLayer->children().size())
             continue;

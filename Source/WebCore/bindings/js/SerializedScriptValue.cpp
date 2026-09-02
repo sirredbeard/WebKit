@@ -1170,14 +1170,28 @@ private:
 
     void dumpDOMException(JSObject* obj, SerializationReturnCode& code)
     {
-        if (RefPtr exception = JSDOMException::toWrapped(m_lexicalGlobalObject->vm(), obj)) {
-            write(DOMExceptionTag);
-            write(exception->message());
-            write(exception->name());
+        RefPtr exception = JSDOMException::toWrapped(m_lexicalGlobalObject->vm(), obj);
+        if (!exception) {
+            code = SerializationReturnCode::DataCloneError;
             return;
         }
 
-        code = SerializationReturnCode::DataCloneError;
+        // A DOMException's wrapper is a JSC::ErrorInstance, so it carries the same non-standard
+        // line/column/sourceURL/stack own properties a plain Error does. Serialize them too, so a
+        // clone reports the same stack as the original.
+        auto errorInformation = JSC::extractErrorInformationFromErrorInstance(m_lexicalGlobalObject, downcast<JSC::ErrorInstance>(*obj));
+        if (!errorInformation) {
+            code = SerializationReturnCode::DataCloneError;
+            return;
+        }
+
+        write(DOMExceptionTag);
+        write(exception->message());
+        write(exception->name());
+        write(errorInformation->line);
+        write(errorInformation->column);
+        writeNullableString(errorInformation->sourceURL);
+        writeNullableString(errorInformation->stack);
     }
 
 public:
@@ -1361,6 +1375,10 @@ public:
             write(WasmMemoryTag);
             write(agentClusterIDFromGlobalObject(*m_lexicalGlobalObject));
             write(index);
+            // The address type is not recoverable from the shared contents, and a memory declared with a
+            // maximum of zero has no contents at all. This record is never persisted (forStorage is
+            // rejected above), so it needs no version guard.
+            write(memory->memory().addressType().is64Bit());
             return true;
         }
 #endif
@@ -1478,7 +1496,7 @@ public:
             write(FileSystemHandleTag);
             write(std::to_underlying(handle.kind()));
             write(handle.name());
-            write(std::span<const uint8_t> { handle.globalIdentifier().toRawValue().span() });
+            write(std::span<const uint8_t> { handle.globalIdentifier().span() });
             ASSERT(!context->securityOrigin()->isOpaque());
             write(context->securityOrigin()->toString());
             if (RefPtr connection = fileSystemStorageConnectionForContext(*context)) {
@@ -3472,8 +3490,26 @@ private:
         CachedStringRef name;
         if (!readStringData(name))
             return JSValue();
+
+        uint32_t line = 0;
+        uint32_t column = 0;
+        String sourceURL;
+        String stack;
+        bool hasErrorInformation = m_majorVersion >= 16;
+        if (hasErrorInformation) {
+            if (!read(line) || !read(column) || !readNullableString(sourceURL) || !readNullableString(stack))
+                return JSValue();
+        }
+
         auto exception = DOMException::create(message->string(), name->string());
-        return getJSValue(exception);
+        JSValue result = getJSValue(exception);
+        // Creating the wrapper captured a stack trace of the frame doing the deserializing; replace
+        // it with the serialized one so the clone reports the same stack as the original did.
+        if (hasErrorInformation) {
+            if (auto* errorInstance = dynamicDowncast<JSC::ErrorInstance>(result.getObject()))
+                errorInstance->setErrorInfoForEmbedderError(JSC::LineColumn { line, column }, WTF::move(sourceURL), WTF::move(stack));
+        }
+        return result;
     }
 
     JSValue readFileSystemHandle()
@@ -3710,6 +3746,14 @@ public:
                 return JSValue();
             }
 
+            bool isMemory64;
+            if (!read(isMemory64)) {
+                SERIALIZE_TRACE("FAIL deserialize");
+                fail();
+                return JSValue();
+            }
+            JSC::Wasm::AddressType addressType { isMemory64 };
+
             auto& vm = m_lexicalGlobalObject->vm();
             JSWebAssemblyMemory* result = JSC::JSWebAssemblyMemory::create(vm, m_globalObject->webAssemblyMemoryStructure());
             RefPtr<Wasm::Memory> memory;
@@ -3720,10 +3764,10 @@ public:
                     fail();
                     return JSValue();
                 }
-                memory = Wasm::Memory::create(contents.releaseNonNull(), result->memory().addressType(), WTF::move(handler));
+                memory = Wasm::Memory::create(contents.releaseNonNull(), addressType, WTF::move(handler));
             } else {
                 // zero size & max-size.
-                memory = Wasm::Memory::createZeroSized(JSC::MemorySharingMode::Shared, result->memory().addressType(), WTF::move(handler));
+                memory = Wasm::Memory::createZeroSized(JSC::MemorySharingMode::Shared, addressType, WTF::move(handler));
             }
 
             result->adopt(memory.releaseNonNull());
@@ -4258,8 +4302,11 @@ size_t SerializedScriptValue::computeMemoryCost() const
 #if ENABLE(WEBASSEMBLY)
     // We are not supporting WebAssembly Module memory estimation yet.
     if (m_internals->wasmMemoryHandlesArray) {
-        for (auto& content : *m_internals->wasmMemoryHandlesArray)
-            cost += content->sizeInBytes(std::memory_order_relaxed);
+        // A shared memory declared with a maximum of zero has no contents at all.
+        for (auto& content : *m_internals->wasmMemoryHandlesArray) {
+            if (content)
+                cost += content->sizeInBytes(std::memory_order_relaxed);
+        }
     }
 #endif
 #if ENABLE(WEB_CODECS)

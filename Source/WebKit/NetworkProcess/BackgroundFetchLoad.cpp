@@ -64,16 +64,17 @@ BackgroundFetchLoad::BackgroundFetchLoad(NetworkProcess& networkProcess, PAL::Se
     if (request.cspResponseHeaders)
         m_networkLoadChecker->setCSPResponseHeaders(ContentSecurityPolicyResponseHeaders { *request.cspResponseHeaders });
 
-    m_networkLoadChecker->check(ResourceRequest { m_request }, nullptr, [this, weakThis = WeakPtr { *this }, networkProcess = Ref { networkProcess }] (auto&& result) {
-        if (!weakThis)
+    m_networkLoadChecker->check(ResourceRequest { m_request }, nullptr, [weakThis = WeakPtr { *this }, networkProcess = Ref { networkProcess }] (auto&& result) {
+        RefPtr protectedThis = weakThis;
+        if (!protectedThis)
             return;
-        WTF::switchOn(result, [this] (ResourceError& error) {
-            this->didFinish(error);
+        WTF::switchOn(result, [&] (ResourceError& error) {
+            protectedThis->didFinish(error);
         }, [] (NetworkLoadChecker::RedirectionTriplet& triplet) {
             // We should never send a synthetic redirect for BackgroundFetchLoads.
             ASSERT_NOT_REACHED();
         }, [&] (ResourceRequest& request) {
-            this->loadRequest(networkProcess, WTF::move(request));
+            protectedThis->loadRequest(networkProcess, WTF::move(request));
         });
     });
 }

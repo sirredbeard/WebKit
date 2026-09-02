@@ -56,7 +56,6 @@ NetworkLoad::NetworkLoad(NetworkLoadClient& client, NetworkLoadParameters&& para
     , m_parameters(WTF::move(parameters))
     , m_currentRequest(m_parameters.request)
 {
-    relaxAdoptionRequirement();
     if (m_parameters.request.url().protocolIsBlob())
         m_task = NetworkDataTaskBlob::create(networkSession, *this, m_parameters.request, m_parameters.blobFileReferences, m_parameters.topOrigin);
     else
@@ -268,8 +267,8 @@ void NetworkLoad::didReceiveResponse(ResourceResponse&& response, NegotiatedLega
 {
     ASSERT(RunLoop::isMain());
 
-    if (m_task && m_task->isDownload()) {
-        m_networkProcess->findPendingDownloadLocation(*m_task.get(), WTF::move(completionHandler), response);
+    if (RefPtr task = m_task; task && task->isDownload()) {
+        m_networkProcess->findPendingDownloadLocation(*task, WTF::move(completionHandler), response);
         return;
     }
 
@@ -367,7 +366,7 @@ String NetworkLoad::description() const
     return emptyString();
 }
 
-void NetworkLoad::setH2PingCallback(const URL& url, CompletionHandler<void(Expected<WTF::Seconds, WebCore::ResourceError>&&)>&& completionHandler)
+void NetworkLoad::setH2PingCallback(const URL& url, CompletionHandler<void(std::expected<WTF::Seconds, WebCore::ResourceError>&&)>&& completionHandler)
 {
     if (RefPtr task = m_task)
         task->setH2PingCallback(url, WTF::move(completionHandler));
@@ -383,7 +382,7 @@ void NetworkLoad::setTimingAllowFailedFlag()
 
 String NetworkLoad::attributedBundleIdentifier(WebPageProxyIdentifier pageID)
 {
-    if (auto* task = m_task.get())
+    if (RefPtr task = m_task)
         return task->attributedBundleIdentifier(pageID);
     return { };
 }

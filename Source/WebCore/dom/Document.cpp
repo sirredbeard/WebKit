@@ -62,7 +62,6 @@
 #include "ComposedTreeAncestorIterator.h"
 #include "ComposedTreeIterator.h"
 #include "CompositionEvent.h"
-#include "ConstantPropertyMap.h"
 #include "ContentSecurityPolicy.h"
 #include "ContentVisibilityDocumentState.h"
 #include "ContentfulPaintChecker.h"
@@ -186,6 +185,7 @@
 #include "LayoutDisallowedScope.h"
 #include "LazyLoadImageObserver.h"
 #include "LegacySchemeRegistry.h"
+#include "LinkLoader.h"
 #include "LoadableSpeculationRules.h"
 #include "LoaderStrategy.h"
 #include "LocalDOMWindow.h"
@@ -535,12 +535,12 @@ static void CallbackForContainIntrinsicSize(const Vector<Ref<ResizeObserverEntry
 
             auto contentBoxSize = entry->contentBoxSize().at(0);
             if (box->style().logicalContainIntrinsicWidth().hasAuto()) {
-                auto adjustedWidth = LayoutUnit { Style::applyZoom(contentBoxSize->inlineSize(), box->style()) };
+                auto adjustedWidth = LayoutUnit { Style::applyingZoom<float>(contentBoxSize->inlineSize(), box->style()) };
                 target->setLastRememberedLogicalWidth(adjustedWidth);
             }
 
             if (box->style().logicalContainIntrinsicHeight().hasAuto()) {
-                auto adjustedHeight = LayoutUnit { Style::applyZoom(contentBoxSize->blockSize(), box->style()) };
+                auto adjustedHeight = LayoutUnit { Style::applyingZoom<float>(contentBoxSize->blockSize(), box->style()) };
                 target->setLastRememberedLogicalHeight(adjustedHeight);
             }
         }
@@ -927,7 +927,7 @@ void Document::removedLastRef()
 
     // FIXME: This condition is usually true, and can probably be unconditional.
     if (m_referencingNodeCount) {
-        RELEASE_ASSERT(!hasLivingRenderTree());
+        RELEASE_ASSERT(renderTreeState() != RenderTreeState::Built);
         // We must make sure not to be retaining any of our children through
         // these extra pointers or we will create a reference cycle.
         m_focusedElement = nullptr;
@@ -2285,7 +2285,7 @@ RefPtr<Range> Document::caretRangeFromPoint(int x, int y, HitTestSource source)
 
 std::optional<BoundaryPoint> Document::caretPositionFromPoint(const LayoutPoint& clientPoint, HitTestSource source)
 {
-    if (!hasLivingRenderTree())
+    if (renderTreeState() != RenderTreeState::Built)
         return std::nullopt;
 
     LayoutPoint localPoint;
@@ -2316,7 +2316,7 @@ std::optional<BoundaryPoint> Document::caretPositionFromPoint(const LayoutPoint&
 
 RefPtr<CaretPosition> Document::caretPositionFromPoint(double x, double y, CaretPositionFromPointOptions options)
 {
-    if (!hasLivingRenderTree())
+    if (renderTreeState() != RenderTreeState::Built)
         return nullptr;
 
     LayoutPoint localPoint;
@@ -2930,7 +2930,7 @@ void Document::resolveStyle(ResolveStyleType type)
 
 void Document::updateTextRenderer(Text& text, unsigned offsetOfReplacedText, unsigned lengthOfReplacedText)
 {
-    if (!hasLivingRenderTree())
+    if (renderTreeState() != RenderTreeState::Built)
         return;
 
     ensurePendingRenderTreeUpdate().addText(text, { offsetOfReplacedText, lengthOfReplacedText, std::nullopt });
@@ -2938,7 +2938,7 @@ void Document::updateTextRenderer(Text& text, unsigned offsetOfReplacedText, uns
 
 void Document::updateSVGRenderer(SVGElement& element, Style::SVGRendererUpdateType kind)
 {
-    if (!hasLivingRenderTree())
+    if (renderTreeState() != RenderTreeState::Built)
         return;
 
     // TransformAttributeOnly bypasses Style::Update so it does not flip needsStyleRecalc()
@@ -2963,7 +2963,7 @@ void Document::updateSVGRenderer(SVGElement& element, Style::SVGRendererUpdateTy
 
 Style::Update& Document::ensurePendingRenderTreeUpdate()
 {
-    ASSERT(hasLivingRenderTree());
+    ASSERT(renderTreeState() == RenderTreeState::Built);
 
     if (!m_pendingRenderTreeUpdate)
         m_pendingRenderTreeUpdate = makeUnique<Style::Update>(*this);
@@ -2976,6 +2976,9 @@ Style::Update& Document::ensurePendingRenderTreeUpdate()
 bool Document::needsStyleRecalc() const
 {
     if (backForwardCacheState() != NotInBackForwardCache)
+        return false;
+
+    if (renderTreeState() != RenderTreeState::Built)
         return false;
 
     if (m_needsFullStyleRebuild)
@@ -3017,6 +3020,13 @@ bool Document::updateStyleIfNeeded()
 #if ENABLE(CONTENT_CHANGE_OBSERVER)
     ContentChangeObserver::StyleRecalcScope observingScope(*this);
 #endif
+
+    if (!renderView()) {
+        // needsStyleRecalc() is what keeps this true, and resolveStyle() resolves nothing without it.
+        ASSERT_NOT_REACHED();
+        return false;
+    }
+
     resolveStyle();
     return true;
 }
@@ -3193,7 +3203,7 @@ std::unique_ptr<Style::ComputedStyle> Document::styleForElementIgnoringPendingSt
 
     std::optional<Style::ComputedStyle> updatedDocumentStyle;
     CheckedPtr parentStyle = parentStyleArg;
-    if (!parentStyle && m_needsFullStyleRebuild && hasLivingRenderTree()) {
+    if (!parentStyle && m_needsFullStyleRebuild && renderTreeState() == RenderTreeState::Built) {
         updatedDocumentStyle.emplace(Style::resolveForDocument(*this));
         parentStyle = &*updatedDocumentStyle;
     }
@@ -3466,6 +3476,7 @@ void Document::createRenderTree()
 
     // FIXME: It would be better if we could pass the resolved document style directly here.
     m_renderView = createRenderer<RenderView>(*this, Style::ComputedStyle::create());
+    m_renderTreeState = RenderTreeState::Built;
     auto* renderView = m_renderView.get();
     Node::setRenderer(renderView);
 
@@ -3487,7 +3498,7 @@ void Document::didBecomeCurrentDocumentInFrame()
     if (!m_frame)
         return;
 
-    if (!hasLivingRenderTree())
+    if (renderTreeState() != RenderTreeState::Built)
         createRenderTree();
     if (!m_frame)
         return;
@@ -3570,7 +3581,7 @@ void Document::detachFromCachedFrame(CachedFrameBase& cachedFrame)
 
 void Document::destroyRenderTree()
 {
-    ASSERT(hasLivingRenderTree());
+    ASSERT(renderTreeState() == RenderTreeState::Built);
     ASSERT(frame());
     ASSERT(frame()->document() == this);
     ASSERT(page());
@@ -3578,7 +3589,7 @@ void Document::destroyRenderTree()
     // Prevent Widget tree changes from committing until the RenderView is dead and gone.
     WidgetHierarchyUpdatesSuspensionScope suspendWidgetHierarchyUpdates;
 
-    SetForScope change(m_renderTreeBeingDestroyed, true);
+    auto scope = SetForScope { m_renderTreeState, RenderTreeState::BeingDestroyed, RenderTreeState::NotBuilt };
 
     if (isTopDocument())
         clearAXObjectCache();
@@ -3665,7 +3676,7 @@ void Document::willBeRemovedFromFrame()
 
     styleScope().clearResolver();
 
-    if (hasLivingRenderTree())
+    if (renderTreeState() == RenderTreeState::Built)
         destroyRenderTree();
 
     if (auto* pluginDocument = dynamicDowncast<PluginDocument>(*this))
@@ -4163,6 +4174,11 @@ bool Document::isFullyActive() const
     return frame->isMainFrame() || frame->loader().client().isProvisionalFrame();
 }
 
+bool Document::canEverRender() const
+{
+    return isFullyActive() && !m_isNonRenderedPlaceholder;
+}
+
 // https://html.spec.whatwg.org/multipage/interaction.html#fully-active-descendant-of-a-top-level-traversable-with-user-attention
 // "System focus" here is a property of the top-level traversable (the window), not of this
 // frame's subtree, so it checks FocusController window state rather than Document::hasFocus().
@@ -4406,7 +4422,7 @@ void Document::implicitClose()
     }
 
 #if PLATFORM(COCOA) || PLATFORM(WIN) || PLATFORM(GTK)
-    if (frame && hasLivingRenderTree() && AXObjectCache::accessibilityEnabled()) {
+    if (frame && renderTreeState() == RenderTreeState::Built && AXObjectCache::accessibilityEnabled()) {
         // The AX cache may have been cleared at this point, but we need to make sure it contains an
         // AX object to send the notification to. getOrCreate will make sure that an valid AX object
         // exists in the cache (we ignore the return value because we don't need it here). This is
@@ -5635,7 +5651,7 @@ void Document::processApplicationManifest(const ApplicationManifest& application
 
 MouseEventWithHitTestResults Document::prepareMouseEvent(const HitTestRequest& request, const DoublePoint& documentPoint, const PlatformMouseEvent& event)
 {
-    if (!hasLivingRenderTree())
+    if (renderTreeState() != RenderTreeState::Built)
         return MouseEventWithHitTestResults(event, HitTestResult(DoublePoint()));
 
     HitTestResult result(documentPoint);
@@ -6199,7 +6215,8 @@ void Document::processCaptureStateDidChange(Function<bool(const Page&)>&& isPage
     if (!hasRealtimeMediaSource(m_captureSources, filterSource))
         return;
 
-    eventLoop().queueTask(TaskSource::MediaElement, [weakDocument = WeakPtr { *this }, weakSession = WeakPtr { *mediaSession }, isPageMuted = isPageMutedCallback(*page), filterSource = WTF::move(filterSource), isPageMutedCallback = WTF::move(isPageMutedCallback), action] {
+    bool isPageMuted = isPageMutedCallback(*page);
+    eventLoop().queueTask(TaskSource::MediaElement, [weakDocument = WeakPtr { *this }, weakSession = WeakPtr { *mediaSession }, isPageMuted, filterSource = WTF::move(filterSource), isPageMutedCallback = WTF::move(isPageMutedCallback), action] {
         RefPtr protecteDocument = weakDocument.get();
         if (!protecteDocument)
             return;
@@ -7121,6 +7138,8 @@ void Document::dispatchWindowLoadEvent()
         return;
     protect(window())->dispatchLoadEvent();
     m_loadEventFinished = true;
+
+    flushPendingCompressionDictionaryLoads();
 
     // A subframe that finished loading without ever being laid out was hidden (e.g. parent had
     // display:none); note that so the first layout can fire resize for the 0x0 to actual size change.
@@ -8062,7 +8081,7 @@ Document* Document::mainFrameDocument() const
 
     // FIXME: This special-casing avoids incorrectly determined top documents during the process
     // of AXObjectCache teardown or notification posting for cached or being-destroyed documents.
-    if (backForwardCacheState() == NotInBackForwardCache && !m_renderTreeBeingDestroyed) {
+    if (backForwardCacheState() == NotInBackForwardCache && renderTreeState() != RenderTreeState::BeingDestroyed) {
         Document* localMainDocument = nullptr;
         if (RefPtr localMainFrame = this->localMainFrame())
             localMainDocument = localMainFrame->document();
@@ -8244,6 +8263,38 @@ Ref<HTMLCollection> Document::documentNamedItems(const AtomString& name)
 Ref<NodeList> Document::getElementsByName(const AtomString& elementName)
 {
     return ensureRareData().ensureNodeLists().addCacheWithAtomName<NameNodeList>(*this, elementName);
+}
+
+void Document::queueCompressionDictionaryLoad(Function<void()>&& load)
+{
+    if (!m_loadEventFinished) {
+        m_pendingCompressionDictionaryLoads.append(WTF::move(load));
+        return;
+    }
+    eventLoop().queueTask(TaskSource::Networking, WTF::move(load));
+}
+
+// Dictionary fetches must not compete with the page's critical-path loads, so they are held back
+// until the load event has been dispatched: those from <link> elements, and those named by this
+// document's own Link headers, which are only looked at for dictionaries here.
+void Document::flushPendingCompressionDictionaryLoads()
+{
+    ASSERT(m_loadEventFinished);
+
+    if (!settings().compressionDictionaryEnabled())
+        return;
+
+    if (RefPtr documentLoader = loader()) {
+        auto linkHeader = documentLoader->response().httpHeaderField(HTTPHeaderName::Link);
+        if (!linkHeader.isEmpty()) {
+            m_pendingCompressionDictionaryLoads.append([document = Ref { *this }, linkHeader = WTF::move(linkHeader)] {
+                LinkLoader::loadCompressionDictionariesFromHeader(linkHeader, document->url(), document);
+            });
+        }
+    }
+
+    for (auto& load : std::exchange(m_pendingCompressionDictionaryLoads, { }))
+        eventLoop().queueTask(TaskSource::Networking, WTF::move(load));
 }
 
 void Document::finishedParsing()
@@ -8532,7 +8583,7 @@ void Document::enforceSandboxFlags(SandboxFlags flags, SandboxFlagsSource source
     bool wasSandboxedOrigin = isSandboxed(SandboxFlag::Origin);
     SecurityContext::enforceSandboxFlags(flags, source);
 
-    if (m_frame && settings().siteIsolationEnabled()) {
+    if (RefPtr page = this->page(); page && page->hasRemoteFrames()) {
         bool sandboxedStateDidChange = wasSandboxedOrigin != isSandboxed(SandboxFlag::Origin);
         if (!sandboxedStateDidChange)
             return;
@@ -9642,7 +9693,7 @@ bool Document::hasTouchEventHandlers() const
 {
     auto touchEventHandlerCountsIsEmpty = true;
 
-#if ENABLE(TOUCH_EVENTS) && ENABLE(TOUCH_EVENT_REGIONS)
+#if ENABLE(IOS_TOUCH_EVENTS) && ENABLE(TOUCH_EVENT_REGIONS)
     touchEventHandlerCountsIsEmpty = !shouldUseTouchEventRegions() || m_touchEventHandlerCounts.isEmptyIgnoringNullReferences();
 #endif
 
@@ -10252,9 +10303,12 @@ void Document::showPlaybackTargetPicker(MediaPlaybackTargetClient& client, bool 
     if (it == m_clientToIDMap.end())
         return;
 
-    // FIXME: This is probably wrong for subframes.
-    auto position = flooredIntPoint(frame()->eventHandler().lastKnownMousePosition());
-    page->showPlaybackTargetPicker(it->value, position, isVideo, routeSharingPolicy, routingContextUID);
+    RefPtr localRootView = frame()->rootFrame().view();
+    if (!localRootView)
+        return;
+
+    auto position = localRootView->contentsToRootView(localRootView->windowToContents(flooredIntPoint(frame()->eventHandler().lastKnownMousePosition())));
+    page->showPlaybackTargetPicker(it->value, frame()->rootFrame().frameID(), position, isVideo, routeSharingPolicy, routingContextUID);
 }
 
 void Document::playbackTargetPickerClientStateDidChange(MediaPlaybackTargetClient& client, MediaProducerMediaStateFlags state)
@@ -10483,6 +10537,9 @@ static void updateAndNotifyIntersectionObservers(const Vector<WeakPtr<Intersecti
 
 void Document::updateRemoteIntersectionObservers()
 {
+    if (m_remoteIntersectionObservers.isEmpty())
+        return;
+
     RefPtr page = this->page();
     if (!page)
         return;
@@ -10490,6 +10547,16 @@ void Document::updateRemoteIntersectionObservers()
     RefPtr mainFrame = this->page()->mainFrame();
     if (!mainFrame)
         return;
+
+    RefPtr frameView = view();
+    if (!frameView)
+        return;
+
+    bool needsLayout = frameView->layoutContext().isLayoutPending() || (renderView() && renderView()->needsLayout());
+    if (needsLayout || hasPendingStyleRecalc()) {
+        scheduleRenderingUpdate(RenderingUpdateStep::IntersectionObservations);
+        return;
+    }
 
     updateAndNotifyIntersectionObservers(m_remoteIntersectionObservers, *mainFrame);
 }
@@ -10520,7 +10587,7 @@ void Document::updateIntersectionObservers()
     updateAndNotifyIntersectionObservers(m_localIntersectionObservers, *frame);
     updateRemoteIntersectionObservers();
 
-    if (settings().siteIsolationEnabled())
+    if (page->hasRemoteFrames())
         page->chrome().client().updateRemoteIntersectionObserversInOtherWebProcesses();
 }
 
@@ -10680,15 +10747,6 @@ void Document::didRemoveInDocumentShadowRoot(ShadowRoot& shadowRoot)
 {
     ASSERT(m_inDocumentShadowRoots.contains(shadowRoot));
     m_inDocumentShadowRoots.remove(shadowRoot);
-}
-
-ConstantPropertyMap& Document::constantProperties() const
-{
-    if (!m_constantPropertyMap) {
-        auto& thisDocument = const_cast<Document&>(*this);
-        thisDocument.m_constantPropertyMap = makeUnique<ConstantPropertyMap>(thisDocument);
-    }
-    return *m_constantPropertyMap;
 }
 
 void Document::orientationChanged(IntDegrees orientation)
@@ -11555,7 +11613,8 @@ void Document::updateServiceWorkerClientData()
     if (!serviceWorkerConnection)
         return;
 
-    if (!Ref { topOrigin() }->isHTTPFamily() && !(page() && page()->isServiceWorkerPage()))
+    Ref topOrigin = this->topOrigin();
+    if (!topOrigin->isHTTPFamily() && !LegacySchemeRegistry::shouldTreatURLSchemeAsAllowingServiceWorkerClients(topOrigin->protocol()) && !(page() && page()->isServiceWorkerPage()))
         return;
 
     auto controllingServiceWorkerRegistrationIdentifier = activeServiceWorker() ? std::make_optional<ServiceWorkerRegistrationIdentifier>(activeServiceWorker()->registrationIdentifier()) : std::nullopt;
@@ -11611,7 +11670,7 @@ const Style::ComputedStyle& Document::initialStyle() const
 
         auto initialFontFamily = FontFamily { standardFamily, FontFamilyKind::Generic };
         auto initialSpecifiedFontSize = Style::fontSizeForKeyword(CSSValueMedium, false, settingsValues(), inQuirksMode());
-        auto initialComputedFontSize = Style::computedFontSizeFromSpecifiedSize(initialSpecifiedFontSize, false, zoomForFontDescription, Style::MinimumFontSizeRule::AbsoluteAndRelative, settingsValues());
+        auto initialUsedFontSize = Style::usedFontSizeFromSpecifiedSize(initialSpecifiedFontSize, false, zoomForFontDescription, Style::MinimumFontSizeRule::AbsoluteAndRelative, settingsValues());
         auto allowUserInstalledFonts = settings().shouldAllowUserInstalledFonts() ? AllowUserInstalledFonts::Yes : AllowUserInstalledFonts::No;
 
         FontCascadeDescription fontDescription;
@@ -11619,7 +11678,7 @@ const Style::ComputedStyle& Document::initialStyle() const
         fontDescription.setOneFamily(WTF::move(initialFontFamily));
         fontDescription.setKeywordSizeFromIdentifier(CSSValueMedium);
         fontDescription.setSpecifiedSize(initialSpecifiedFontSize);
-        fontDescription.setComputedSize(initialComputedFontSize, zoomForFontDescription);
+        fontDescription.setUsedSize(initialUsedFontSize, zoomForFontDescription);
         fontDescription.setShouldAllowUserInstalledFonts(allowUserInstalledFonts);
 
         m_cachedInitialStyle->setFontDescription(WTF::move(fontDescription));

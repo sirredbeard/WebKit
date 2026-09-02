@@ -85,6 +85,7 @@
 #import "WebCoreFrameView.h"
 #import <AppKit/NSAccessibilityConstants.h>
 #import <pal/spi/cocoa/NSAccessibilitySPI.h>
+#import <wtf/HexNumber.h>
 #import <wtf/ObjCRuntimeExtras.h>
 #import <wtf/RuntimeApplicationChecks.h>
 #import <wtf/cocoa/TypeCastsCocoa.h>
@@ -4230,7 +4231,7 @@ static id handleLengthForTextMarkerRangeAttribute(WebAccessibilityObjectWrapper*
 {
     if (!isMainThread()) {
         AXTextMarkerRange range = { context.textMarkerRange };
-        return @(range.toString().length());
+        return @(range.length());
     }
 
     RefPtr<AXCoreObject> backingObject = wrapper.axBackingObject;

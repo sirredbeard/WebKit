@@ -26,13 +26,16 @@
 #include "config.h"
 #include "ServiceWorkerFetch.h"
 
+#include "CachedResourceRequestInitiatorTypes.h"
 #include "CrossOriginAccessControl.h"
 #include "EventNames.h"
 #include "FetchEvent.h"
 #include "FetchRequest.h"
 #include "FetchResponse.h"
+#include "JSDOMConvertInterface.h"
 #include "JSDOMPromise.h"
 #include "JSDOMPromiseDeferred.h"
+#include "JSFetchResponse.h"
 #include "MIMETypeRegistry.h"
 #include "ResourceRequest.h"
 #include "ScriptExecutionContextIdentifier.h"
@@ -67,7 +70,7 @@ static inline ResourceError validateResponse(const ResourceResponse& response, F
     return { };
 }
 
-static void processResponse(Ref<Client>&& client, Expected<Ref<FetchResponse>, std::optional<ResourceError>>&& result, FetchOptions::Mode mode, FetchOptions::Redirect redirect, const URL& requestURL, CertificateInfo&& certificateInfo, DeferredPromise& promise)
+static void processResponse(Ref<Client>&& client, std::expected<Ref<FetchResponse>, std::optional<ResourceError>>&& result, FetchOptions::Mode mode, FetchOptions::Redirect redirect, const URL& requestURL, CertificateInfo&& certificateInfo, DeferredPromise& promise)
 {
     if (!result.has_value()) {
         auto& error = result.error();
@@ -237,12 +240,27 @@ void dispatchFetchEvent(Ref<Client>&& client, ServiceWorkerGlobalScope& globalSc
             return;
         }
 
-        if (isPendingStream && protect(event->request())->isDisturbed()) {
-            errorCallback({ errorDomainWebKitInternal, 0, requestURL, "Fetch request body is disturbed"_s, ResourceError::Type::General, ResourceError::IsSanitized::Yes });
-            return;
+        Ref eventRequest = event->request();
+        bool isHandled = false;
+        if (isPendingStream) {
+            if (eventRequest->isDisturbed()) {
+                errorCallback({ errorDomainWebKitInternal, 0, requestURL, "Fetch request body is disturbed"_s, ResourceError::Type::General, ResourceError::IsSanitized::Yes });
+                return;
+            }
+            if (eventRequest->hasClonedReadableStream()) {
+                auto [promise, deferred] = createPromiseAndWrapper(jsDOMGlobalObject);
+                FetchResponse::fetch(globalScope, eventRequest.get(), [deferred = DOMPromiseDeferred<IDLInterface<FetchResponse>> { WTF::move(deferred) }](auto&& result) mutable {
+                    deferred.settle(WTF::move(result));
+                }, cachedResourceRequestInitiatorTypes().fetch);
+                event->processRespondWithPromise(WTF::move(promise));
+                isHandled = true;
+            }
         }
-        client->didNotHandle();
-        deferredPromise->resolve();
+        if (!isHandled) {
+            eventRequest->markAsUnhandled();
+            client->didNotHandle();
+            deferredPromise->resolve();
+        }
     }
 
     globalScope.updateExtendedEventsSet(event.ptr());

@@ -166,14 +166,16 @@ void CanvasRenderingContext2D::drawFocusIfNeeded(Path2D& path, Element& element)
 
 void CanvasRenderingContext2D::drawFocusIfNeededInternal(const Path& path, Element& element)
 {
-    auto* context = effectiveDrawingContext();
     Ref canvas = this->canvas();
-    if (!element.focused() || !hasInvertibleTransform() || path.isEmpty() || !element.isDescendantOf(canvas.get()) || !context)
+    if (!element.focused() || !hasInvertibleTransform() || path.isEmpty() || !element.isDescendantOf(canvas.get()))
+        return;
+    auto* context = effectiveDrawingContext();
+    if (!context)
         return;
     CheckedPtr canvasStyle = canvas->computedStyle();
     auto zoomFactor = canvasStyle ? canvasStyle->usedZoom() : 1.f;
+    willUpdateEntireContents();
     context->drawFocusRing(path, 1, RenderTheme::singleton().focusRingColor(protect(element.document())->styleColorOptions(canvasStyle)), zoomFactor);
-    didDrawEntireCanvas();
 
     if (CheckedPtr cache = element.document().existingAXObjectCache()) {
         auto pathBounds = path.boundingRect();
@@ -234,7 +236,7 @@ void CanvasRenderingContext2D::setFontWithoutUpdatingStyle(const String& newFont
         static NeverDestroyed<AtomString> family = DefaultFontFamily;
         fontDescription.setOneFamily(family.get());
         fontDescription.setSpecifiedSize(DefaultFontSize);
-        fontDescription.setComputedSize(DefaultFontSize);
+        fontDescription.setUsedSize(DefaultFontSize);
     }
 
     if (newFont == state().unparsedFont && state().font.realized() && fontDescription == state().fontResolutionBase)

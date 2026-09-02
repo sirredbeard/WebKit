@@ -237,7 +237,7 @@
 #endif
 
 #if OS(LINUX)
-#include <wtf/linux/RealTimeThreads.h>
+#include <wtf/linux/HighPriorityThreads.h>
 #endif
 
 #if ENABLE(CONTENT_FILTERING)
@@ -363,7 +363,10 @@ WebProcess::WebProcess()
 #endif
     , m_broadcastChannelRegistry(WebBroadcastChannelRegistry::create())
     , m_cookieJar(WebCookieJar::create())
-    , m_dnsPrefetchHystereris([this](PAL::HysteresisState state) { if (state == PAL::HysteresisState::Stopped) m_dnsPrefetchedHosts.clear(); })
+    , m_dnsPrefetchHystereris([weakThis = WeakPtr { *this }](PAL::HysteresisState state) {
+        if (RefPtr protectedThis = weakThis; protectedThis && state == PAL::HysteresisState::Stopped)
+            protectedThis->m_dnsPrefetchedHosts.clear();
+    })
 #if ENABLE(NON_VISIBLE_WEBPROCESS_MEMORY_CLEANUP_TIMER)
     , m_nonVisibleProcessMemoryCleanupTimer(*this, &WebProcess::nonVisibleProcessMemoryCleanupTimerFired)
 #endif
@@ -688,6 +691,8 @@ void WebProcess::initializeWebProcess(WebProcessCreationParameters&& parameters,
 #endif
 
     setMemoryCacheDisabled(parameters.memoryCacheDisabled);
+
+    setHiddenPageDOMTimerThrottlingIncreaseLimit(parameters.hiddenPageDOMTimerThrottlingIncreaseLimit);
 
     WebCore::DeprecatedGlobalSettings::setAttrStyleEnabled(parameters.attrStyleEnabled);
 
@@ -1060,6 +1065,8 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
     // It is necessary to check for page existence here since during a window.open() (or targeted
     // link) the WebPage gets created both in the synchronous handler and through the normal way.
     if (addResult.isNewEntry) {
+        page->setHiddenPageDOMTimerThrottlingIncreaseLimit(m_hiddenPageDOMTimerThrottlingIncreaseLimit);
+
 #if ENABLE(GPU_PROCESS)
         if (RefPtr gpuProcessConnection = m_gpuProcessConnection)
             page->gpuProcessConnectionDidBecomeAvailable(*gpuProcessConnection);
@@ -1071,7 +1078,7 @@ void WebProcess::createWebPage(PageIdentifier pageID, WebPageCreationParameters&
         updateIsBroadcastChannelEnabled();
 
 #if OS(LINUX)
-        RealTimeThreads::singleton().setEnabled(hasVisibleWebPage());
+        HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
 #endif
     } else
         page->reinitializeWebPage(WTF::move(parameters));
@@ -1101,7 +1108,7 @@ void WebProcess::removeWebPage(PageIdentifier pageID)
     updateIsBroadcastChannelEnabled();
 
 #if OS(LINUX)
-    RealTimeThreads::singleton().setEnabled(hasVisibleWebPage());
+    HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
 #endif
 }
 
@@ -1726,6 +1733,7 @@ void WebProcess::deleteWebsiteDataForOrigins(OptionSet<WebsiteDataType> websiteD
 
 void WebProcess::setHiddenPageDOMTimerThrottlingIncreaseLimit(Seconds seconds)
 {
+    m_hiddenPageDOMTimerThrottlingIncreaseLimit = seconds;
     for (auto& page : m_pageMap.values())
         page->setHiddenPageDOMTimerThrottlingIncreaseLimit(seconds);
 }
@@ -1767,7 +1775,7 @@ void WebProcess::pageActivityStateDidChange(PageIdentifier, OptionSet<WebCore::A
     if (changed & WebCore::ActivityState::IsVisible) {
         updateCPUMonitorState(CPUMonitorUpdateReason::VisibilityHasChanged);
 #if OS(LINUX)
-        RealTimeThreads::singleton().setEnabled(hasVisibleWebPage());
+        HighPriorityThreads::singleton().setEnabled(hasVisibleWebPage());
 #endif
     }
 }
@@ -2691,10 +2699,29 @@ void WebProcess::setResourceMonitorContentRuleListAsync(WebCompiledContentRuleLi
 }
 #endif
 
-void WebProcess::didReceiveRemoteCommand(PlatformMediaSession::RemoteControlCommandType type, const PlatformMediaSession::RemoteCommandArgument& argument)
+void WebProcess::didReceiveRemoteCommand(PlatformMediaSession::RemoteControlCommandType type, const PlatformMediaSession::RemoteCommandArgument& argument, std::optional<WebCore::MediaSessionIdentifier> targetSession)
 {
-    for (auto& page : m_pageMap.values())
-        page->didReceiveRemoteCommand(type, argument);
+    if (!targetSession) {
+        // Non-site-isolated NowPlaying: every page's manager re-selects locally, as it always has.
+        for (auto& page : m_pageMap.values())
+            page->didReceiveRemoteCommand(type, argument, std::nullopt);
+        return;
+    }
+
+    // The GPU process elected one session, and at most one page's manager owns it.
+    for (auto& page : m_pageMap.values()) {
+        if (page->didReceiveRemoteCommand(type, argument, targetSession))
+            return;
+    }
+
+    // The elected session went away or stopped accepting commands between the election and now. Fall back to local
+    // re-selection so the command is not dropped, as it would be without site isolation. Best effort only: m_pageMap
+    // has no stable order and, under site isolation, each page has its own manager, so there is no cross-page
+    // current-session order to follow here.
+    for (auto& page : m_pageMap.values()) {
+        if (page->didReceiveRemoteCommand(type, argument, std::nullopt))
+            return;
+    }
 }
 
 void WebProcess::contentWorldDestroyed(ContentWorldIdentifier identifier)

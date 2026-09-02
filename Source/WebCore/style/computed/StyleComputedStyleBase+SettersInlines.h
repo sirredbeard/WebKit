@@ -73,10 +73,10 @@ inline void ComputedStyleBase::setUsesTreeCountingFunctions()
     m_nonInheritedFlags.useTreeCountingFunctions = true;
 }
 
-inline void ComputedStyleBase::setColorIsCurrentColorForHighlight(bool colorIsCurrentColorForHighlight)
+inline void ComputedStyleBase::setColorForHighlight(Color&& colorForHighlight)
 {
-    if (m_inheritedData->colorIsCurrentColorForHighlight != colorIsCurrentColorForHighlight)
-        m_inheritedData.access().colorIsCurrentColorForHighlight = colorIsCurrentColorForHighlight;
+    if (m_inheritedRareData->colorForHighlight != colorForHighlight)
+        m_inheritedRareData.access().colorForHighlight = WTF::move(colorForHighlight);
 }
 
 inline void ComputedStyleBase::setInsideLink(InsideLink insideLink)
@@ -197,6 +197,11 @@ inline void ComputedStyleBase::setDisplayMaintainingOriginalDisplay(Display disp
 inline void ComputedStyleBase::setUsedAppearance(StyleAppearance a)
 {
     SET_NESTED(m_nonInheritedData, miscData, usedAppearance, static_cast<unsigned>(a));
+}
+
+inline void ComputedStyleBase::setUsedUserSelect(UserSelect userSelect)
+{
+    SET(m_inheritedRareData, usedUserSelect, static_cast<unsigned>(userSelect));
 }
 
 inline void ComputedStyleBase::setUsedContentVisibility(ContentVisibility usedContentVisibility)

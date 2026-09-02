@@ -40,14 +40,14 @@ namespace WebKit {
 static NSString * const unknownErrorString = @"an unknown error occurred";
 
 template<typename T>
-static Expected<T, WebExtensionError> toExpected(std::optional<T>&& optional, NSString * const errorMessage = @"value not found")
+static std::expected<T, WebExtensionError> toExpected(std::optional<T>&& optional, NSString * const errorMessage = @"value not found")
 {
     if (optional)
         return WTF::move(optional.value());
     return makeUnexpected(errorMessage);
 }
 
-static Expected<Ref<WebExtensionSidebar>, WebExtensionError> getSidebarWithIdentifiers(std::optional<WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebExtensionTabIdentifier> tabIdentifier, WebExtensionContext& context)
+static std::expected<Ref<WebExtensionSidebar>, WebExtensionError> getSidebarWithIdentifiers(std::optional<WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebExtensionTabIdentifier> tabIdentifier, WebExtensionContext& context)
 {
     if (windowIdentifier && tabIdentifier)
         return makeUnexpected(@"it cannot specify both 'windowId' and 'tabId'");
@@ -74,7 +74,7 @@ static Expected<Ref<WebExtensionSidebar>, WebExtensionError> getSidebarWithIdent
     return Ref { context.defaultSidebar() };
 }
 
-static Expected<Ref<WebExtensionSidebar>, WebExtensionError> getOrCreateSidebarWithIdentifiers(std::optional<WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebExtensionTabIdentifier> tabIdentifier, WebExtensionContext& context)
+static std::expected<Ref<WebExtensionSidebar>, WebExtensionError> getOrCreateSidebarWithIdentifiers(std::optional<WebExtensionWindowIdentifier> windowIdentifier, std::optional<WebExtensionTabIdentifier> tabIdentifier, WebExtensionContext& context)
 {
     if (windowIdentifier && tabIdentifier)
         return makeUnexpected(@"it cannot to specify both 'windowId' and 'tabId'");
@@ -219,7 +219,7 @@ bool WebExtensionContext::canProgrammaticallyCloseSidebar()
     return [controllerDelegate respondsToSelector:@selector(_webExtensionController:closeSidebar:forExtensionContext:completionHandler:)];
 }
 
-void WebExtensionContext::sidebarOpen(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, CompletionHandler<void(Expected<void, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarOpen(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completionHandler)
 {
     static NSString * const apiName = @"open()";
 
@@ -228,38 +228,15 @@ void WebExtensionContext::sidebarOpen(const std::optional<WebExtensionWindowIden
         return;
     }
 
-    RefPtr<WebExtensionTab> tab;
-    if (!tabIdentifier && !windowIdentifier) {
-        // In the case where we have neither identifier, we must be servicing sidebarAction rather than sidePanel
-        // since sidePanel requires one of the identifiers to be set in calls to open.
-        if (RefPtr window = frontmostWindow())
-            tab = window->activeTab();
-        else {
-            completionHandler(toWebExtensionError(scopedAPINameFor(apiName, *this), nullString(), @"no windows are open"));
-            return;
-        }
-    } else if (tabIdentifier) {
-        tab = getTab(*tabIdentifier);
-        if (!tab) {
-            completionHandler(toWebExtensionError(scopedAPINameFor(apiName, *this), nullString(), @"the tab was not found"));
-            return;
-        }
-    } else {
-        RefPtr window = getWindow(*windowIdentifier);
-        if (!window) {
-            completionHandler(toWebExtensionError(scopedAPINameFor(apiName, *this), nullString(), @"the window was not found"));
-            return;
-        }
-
-        tab = window->activeTab();
-    }
-
-    if (!tab) {
-        completionHandler(toWebExtensionError(scopedAPINameFor(apiName, *this), nullString(), unknownErrorString));
+    auto tabResult = getTabFromIdentifiers(windowIdentifier, tabIdentifier);
+    if (!tabResult) {
+        completionHandler(toWebExtensionError(scopedAPINameFor(apiName, *this), nullString(), tabResult.error()));
         return;
     }
 
-    std::optional<Ref<WebExtensionSidebar>> sidebar = sidebarForTab(*tab);
+    Ref tab = WTF::move(tabResult.value());
+
+    std::optional<Ref<WebExtensionSidebar>> sidebar = sidebarForTab(tab.get());
     if (!sidebar) {
         completionHandler(toWebExtensionError(scopedAPINameFor(apiName, *this), nullString(), unknownErrorString));
         return;
@@ -280,30 +257,30 @@ void WebExtensionContext::sidebarOpen(const std::optional<WebExtensionWindowIden
     completionHandler({ });
 }
 
-void WebExtensionContext::sidebarClose(CompletionHandler<void(Expected<void, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarClose(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completionHandler)
 {
-    // This method services a sidebarAction-only API which will just close the sidebar in the active window
-    // as such, we do not need to use scopedAPINameFor(...) here, we can just assume we're servicing sidebarAction
-    static NSString * const apiName = @"sidebarAction.close()";
+    NSString * const apiName = scopedAPINameFor(@"close()", *this);
 
     if (!canProgrammaticallyCloseSidebar()) {
         completionHandler(toWebExtensionError(apiName, nullString(), @"it is not implemented"));
         return;
     }
 
-    auto window = frontmostWindow();
-    if (!window) {
-        completionHandler(toWebExtensionError(apiName, nullString(), @"no windows are open"));
+    auto tabResult = getTabFromIdentifiers(windowIdentifier, tabIdentifier);
+    if (!tabResult) {
+        completionHandler(toWebExtensionError(apiName, nullString(), tabResult.error()));
         return;
     }
 
-    auto tab = window->activeTab();
-    if (!tab) {
-        completionHandler(toWebExtensionError(apiName, nullString(), unknownErrorString));
+    Ref tab = WTF::move(tabResult.value());
+
+    // Chrome rejects a tab-specific close if there is no sidebar specifically for that tab
+    if (tabIdentifier && !getSidebar(tab.get())) {
+        completionHandler(toWebExtensionError(apiName, nullString(), @"no side panel is open for the specified tab"));
         return;
     }
 
-    auto maybeSidebar = sidebarForTab(*tab);
+    auto maybeSidebar = sidebarForTab(tab.get());
     if (!maybeSidebar) {
         completionHandler(toWebExtensionError(apiName, nullString(), unknownErrorString));
         return;
@@ -314,7 +291,28 @@ void WebExtensionContext::sidebarClose(CompletionHandler<void(Expected<void, Web
     completionHandler({ });
 }
 
-void WebExtensionContext::sidebarIsOpen(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, CompletionHandler<void(Expected<bool, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarGetLayout(CompletionHandler<void(std::expected<WebExtensionSidebarSide, WebExtensionError>&&)>&& completionHandler)
+{
+    // This method services a sidePanel-only API; sidebarAction has no layout/side concept.
+    static NSString * const apiName = @"sidePanel.getLayout()";
+
+    RefPtr controller = extensionController();
+    if (!controller) {
+        completionHandler(toWebExtensionError(apiName, nullString(), unknownErrorString));
+        return;
+    }
+
+    auto *controllerDelegate = controller->delegate();
+    if (![controllerDelegate respondsToSelector:@selector(_webExtensionController:sidebarSideForExtensionContext:)]) {
+        completionHandler(toWebExtensionError(apiName, nullString(), @"it is not implemented"));
+        return;
+    }
+
+    auto side = [controllerDelegate _webExtensionController:controller->wrapper() sidebarSideForExtensionContext:wrapper()];
+    completionHandler(side == _WKWebExtensionSidebarSideRight ? WebExtensionSidebarSide::Right : WebExtensionSidebarSide::Left);
+}
+
+void WebExtensionContext::sidebarIsOpen(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, CompletionHandler<void(std::expected<bool, WebExtensionError>&&)>&& completionHandler)
 {
     // This method services a sidebarAction-only API which will check if a sidebar is open in the specified window, or the active window if no window is specified
     RefPtr<WebExtensionWindow> window;
@@ -338,7 +336,7 @@ void WebExtensionContext::sidebarIsOpen(const std::optional<WebExtensionWindowId
     completionHandler(isOpen);
 }
 
-void WebExtensionContext::sidebarToggle(CompletionHandler<void(Expected<void, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarToggle(CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completionHandler)
 {
     // this method services a sidebarAction-only API which toggles the sidebar in the currently active window
     // as such, we do not need to use scopedAPINameFor(...) here, we can just assume we're servicing sidebarAction
@@ -349,19 +347,15 @@ void WebExtensionContext::sidebarToggle(CompletionHandler<void(Expected<void, We
         return;
     }
 
-    auto window = frontmostWindow();
-    if (!window) {
-        completionHandler(toWebExtensionError(apiName, nullString(), @"no windows are open"));
+    auto tabResult = getTabFromIdentifiers(std::nullopt, std::nullopt);
+    if (!tabResult) {
+        completionHandler(toWebExtensionError(apiName, nullString(), tabResult.error()));
         return;
     }
 
-    auto tab = window->activeTab();
-    if (!tab) {
-        completionHandler(toWebExtensionError(apiName, nullString(), unknownErrorString));
-        return;
-    }
+    Ref tab = WTF::move(tabResult.value());
 
-    auto maybeSidebar = sidebarForTab(*tab);
+    auto maybeSidebar = sidebarForTab(tab.get());
     if (!maybeSidebar) {
         completionHandler(toWebExtensionError(apiName, nullString(), unknownErrorString));
         return;
@@ -382,12 +376,12 @@ void WebExtensionContext::sidebarToggle(CompletionHandler<void(Expected<void, We
     completionHandler({ });
 }
 
-void WebExtensionContext::sidebarSetIcon(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, const String& iconJSON, CompletionHandler<void(Expected<void, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarSetIcon(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, const String& iconJSON, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completionHandler)
 {
     // FIXME: <https://webkit.org/b/276833> implement icon-related methods
 }
 
-void WebExtensionContext::sidebarGetTitle(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, CompletionHandler<void(Expected<String, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarGetTitle(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, CompletionHandler<void(std::expected<String, WebExtensionError>&&)>&& completionHandler)
 {
     // this method services a sidebarAction-only API method
     static NSString * const apiName = @"sidebarAction.getTitle()";
@@ -401,7 +395,7 @@ void WebExtensionContext::sidebarGetTitle(const std::optional<WebExtensionWindow
     completionHandler(sidebar.value()->title());
 }
 
-void WebExtensionContext::sidebarSetTitle(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, const std::optional<String>& title, CompletionHandler<void(Expected<void, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarSetTitle(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, const std::optional<String>& title, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completionHandler)
 {
     // this method services a sidebarAction-only API method
     static NSString * const apiName = @"sidebarAction.setTitle()";
@@ -424,7 +418,7 @@ void WebExtensionContext::sidebarSetTitle(const std::optional<WebExtensionWindow
     completionHandler({ });
 }
 
-void WebExtensionContext::sidebarGetOptions(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, CompletionHandler<void(Expected<WebExtensionSidebarParameters, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarGetOptions(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, CompletionHandler<void(std::expected<WebExtensionSidebarParameters, WebExtensionError>&&)>&& completionHandler)
 {
     NSString *apiName;
     NSString *objectName;
@@ -450,7 +444,7 @@ void WebExtensionContext::sidebarGetOptions(const std::optional<WebExtensionWind
     });
 }
 
-void WebExtensionContext::sidebarSetOptions(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, const std::optional<String>& panelSourcePath, const std::optional<bool> enabled, CompletionHandler<void(Expected<void, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarSetOptions(const std::optional<WebExtensionWindowIdentifier> windowIdentifier, const std::optional<WebExtensionTabIdentifier> tabIdentifier, const std::optional<String>& panelSourcePath, const std::optional<bool> enabled, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completionHandler)
 {
     NSString *apiName;
     NSString *objectName;
@@ -481,13 +475,13 @@ void WebExtensionContext::sidebarSetOptions(const std::optional<WebExtensionWind
     completionHandler({ });
 }
 
-void WebExtensionContext::sidebarSetActionClickBehavior(WebExtensionActionClickBehavior behavior, CompletionHandler<void(Expected<void, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarSetActionClickBehavior(WebExtensionActionClickBehavior behavior, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&& completionHandler)
 {
     m_actionClickBehavior = behavior;
     completionHandler({ });
 }
 
-void WebExtensionContext::sidebarGetActionClickBehavior(CompletionHandler<void(Expected<WebExtensionActionClickBehavior, WebExtensionError>&&)>&& completionHandler)
+void WebExtensionContext::sidebarGetActionClickBehavior(CompletionHandler<void(std::expected<WebExtensionActionClickBehavior, WebExtensionError>&&)>&& completionHandler)
 {
     completionHandler(m_actionClickBehavior);
 }

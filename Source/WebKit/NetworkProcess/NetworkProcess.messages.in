@@ -30,6 +30,8 @@ messages -> NetworkProcess : AuxiliaryProcess WantsAsyncDispatchMessage {
 
     CreateNetworkConnectionToWebProcess(WebCore::ProcessIdentifier processIdentifier, PAL::SessionID sessionID, struct WebKit::NetworkProcessConnectionParameters parameters) -> (std::optional<IPC::ConnectionHandle> connectionHandle, enum:uint8_t WebCore::HTTPCookieAcceptPolicy cookieAcceptPolicy) AllowedWhenWaitingForSyncReply
     SharedPreferencesForWebProcessDidChange(WebCore::ProcessIdentifier processIdentifier, struct WebKit::SharedPreferencesForWebProcess sharedPreferencesForWebProcess) -> ()
+    SecurityFlagsDidChange(struct WebKit::SecurityFlags securityFlags)
+    IsSecurityFlagEnabledForTesting(String flagName) -> (std::optional<bool> enabled)
 
     AddAllowedFirstPartyForCookies(WebCore::ProcessIdentifier processIdentifier, WebCore::RegistrableDomain firstPartyForCookies, enum:bool WebKit::LoadedWebArchive loadedWebArchive) -> ()
 
@@ -49,7 +51,7 @@ messages -> NetworkProcess : AuxiliaryProcess WantsAsyncDispatchMessage {
     DestroySession(PAL::SessionID sessionID) -> ()
     EnsureSessionWithDataStoreIdentifierRemoved(WTF::UUID identifier) -> ()
 
-    FetchWebsitesWithUserInteractions(PAL::SessionID sessionID) -> (HashSet<WebCore::RegistrableDomain> websites)
+    FetchWebsitesWithUserInteractions(PAL::SessionID sessionID) -> (std::optional<HashMap<WebCore::RegistrableDomain, WallTime>> websites)
 
     FetchWebsiteData(PAL::SessionID sessionID, OptionSet<WebKit::WebsiteDataType> websiteDataTypes, OptionSet<WebKit::WebsiteDataFetchOption> fetchOptions) -> (struct WebKit::WebsiteData websiteData)
     DeleteWebsiteData(PAL::SessionID sessionID, OptionSet<WebKit::WebsiteDataType> websiteDataTypes, WallTime modifiedSince, HashSet<WebCore::ProcessIdentifier> activeWebProcesses) -> ()

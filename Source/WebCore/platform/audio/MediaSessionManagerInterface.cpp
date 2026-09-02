@@ -35,6 +35,8 @@
 #include "PlatformMediaSession.h"
 #include <algorithm>
 #include <ranges>
+#include <wtf/HexNumber.h>
+#include <wtf/MainThread.h>
 #include <wtf/RunLoop.h>
 #include <wtf/TZoneMallocInlines.h>
 
@@ -54,16 +56,6 @@ public:
         : m_pageIdentifier(pageIdentifier) { }
 
 private:
-    Ref<GenericPromise> tryToSetAudioSessionActive(bool active, PlatformMediaSessionInterface*) final
-    {
-#if USE(AUDIO_SESSION)
-        return AudioSession::singleton().tryToSetActive(active);
-#else
-        UNUSED_PARAM(active);
-        return GenericPromise::createAndResolve();
-#endif
-    }
-
     void hasActiveNowPlayingSessionChanged(PlatformMediaSessionInterface*) final
     {
         if (RefPtr page = m_pageIdentifier ? Page::fromPageIdentifier(*m_pageIdentifier) : nullptr)
@@ -175,6 +167,24 @@ void MediaSessionManagerInterface::resetRestrictions()
     m_restrictions[indexFromMediaType(PlatformMediaSession::MediaType::DOMMediaSession)] = MediaSessionRestriction::NoRestrictions;
 }
 
+void MediaSessionManagerInterface::resetToConsistentStateForTesting()
+{
+#if ENABLE(VIDEO)
+    resetHaveEverRegisteredAsNowPlayingApplicationForTesting();
+    resetRestrictions();
+    resetSessionState();
+    setWillIgnoreSystemInterruptions(true);
+    applicationWillEnterForeground(false);
+#endif
+    setIsPlayingToAutomotiveHeadUnit(false);
+
+#if USE(AUDIO_SESSION)
+    AudioSession::singleton().setCategoryOverride(AudioSessionCategory::None);
+    AudioSession::singleton().tryToSetActive(false)->whenSettled(RunLoop::mainSingleton(), [](auto&&) { });
+    AudioSession::singleton().endInterruptionForTesting();
+#endif
+}
+
 bool MediaSessionManagerInterface::isMediaSessionManagerGLib() const
 {
     return false;
@@ -201,7 +211,26 @@ bool MediaSessionManagerInterface::activeAudioSessionRequired() const
 #endif
 }
 
-bool MediaSessionManagerInterface::hasActiveAudioSession() const
+bool MediaSessionManagerInterface::audioSessionActivationRequired() const
+{
+    // Stricter than activeAudioSessionRequired(): activating the audio session interrupts other
+    // applications and cannot be withdrawn once the request reaches the platform, so a session whose
+    // client is not allowed to play must not cause it. Deactivation keys on
+    // activeAudioSessionRequired() instead (conservative about giving the session up, strict about
+    // taking it).
+#if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
+    if (anyOfSessions([] (auto& session) { return session.activeAudioSessionRequired() && session.playbackPermitted(); }))
+        return true;
+
+    return std::ranges::any_of(m_audioCaptureSources, [](auto& source) {
+        return Ref { source }->isCapturingAudio();
+    });
+#else
+    return false;
+#endif
+}
+
+bool MediaSessionManagerInterface::hasActiveAudioSession(PlatformMediaSessionInterface&) const
 {
 #if USE(AUDIO_SESSION)
     return m_becameActive;
@@ -491,7 +520,49 @@ MediaSessionRestrictions MediaSessionManagerInterface::restrictions(PlatformMedi
     return m_restrictions[indexFromMediaType(type)];
 }
 
-void MediaSessionManagerInterface::sessionWillBeginPlayback(PlatformMediaSessionInterface& session, CompletionHandler<void(bool)>&& completionHandler)
+Ref<GenericPromise> MediaSessionManagerInterface::sessionWillBeginPlayback(PlatformMediaSessionInterface& session)
+{
+    assertIsMainThread();
+
+    auto stateAtStart = session.state();
+
+    GenericPromise::Producer producer;
+    Ref promise = producer.promise();
+    m_currentPlaybackAdmission = protect(m_currentPlaybackAdmission)->whenSettled(RunLoop::mainSingleton(), [this, protectedThis = Ref { *this }, weakSession = WeakPtr { session }, stateAtStart, producer = WTF::move(producer)](auto) mutable -> Ref<GenericPromise> {
+        RefPtr session = weakSession.get();
+        if (!session) {
+            producer.reject();
+            return GenericPromise::createAndResolve();
+        }
+
+        // A pause() call between clientWillBeginPlayback() starting and this callback running means the
+        // client no longer intends to play — this turn must not touch setCurrentSession or evict anyone on
+        // its behalf. That gap exists on every call, not just a contended one: this link is always deferred
+        // by a run-loop turn, whether or not another admission preceded it in the chain. Resolve, not
+        // reject: commitPlaybackAdmission() handles the same race by skipping the claim to Playing while still
+        // settling successfully, and the play promise must settle the same way regardless of which of the two
+        // checks caught the race.
+        if (!session->admissionStillValid()) {
+            producer.resolve();
+            return GenericPromise::createAndResolve();
+        }
+
+        return startSessionAdmission(*session, stateAtStart)->whenSettled(RunLoop::mainSingleton(), [producer = WTF::move(producer)](auto&& result) mutable {
+            if (result)
+                producer.resolve();
+            else
+                producer.reject();
+            return GenericPromise::createAndResolve();
+        });
+    });
+    return promise;
+}
+
+void MediaSessionManagerInterface::sessionDidCompleteAdmission(PlatformMediaSessionInterface&)
+{
+}
+
+Ref<GenericPromise> MediaSessionManagerInterface::startSessionAdmission(PlatformMediaSessionInterface& session, PlatformMediaSessionState stateAtStart)
 {
     ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier());
 
@@ -500,10 +571,9 @@ void MediaSessionManagerInterface::sessionWillBeginPlayback(PlatformMediaSession
 #if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
     auto sessionType = session.mediaType();
     auto restrictions = this->restrictions(sessionType);
-    if (session.state() == PlatformMediaSession::State::Interrupted && restrictions & MediaSessionRestriction::InterruptedPlaybackNotPermitted) {
-        ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier(), " returning false because session.state() is Interrupted, and InterruptedPlaybackNotPermitted");
-        completionHandler(false);
-        return;
+    if (stateAtStart == PlatformMediaSession::State::Interrupted && restrictions & MediaSessionRestriction::InterruptedPlaybackNotPermitted) {
+        ALWAYS_LOG(LOGIDENTIFIER, session.logIdentifier(), " returning false because stateAtStart is Interrupted, and InterruptedPlaybackNotPermitted");
+        return GenericPromise::createAndReject();
     }
 
     // Capture whether the session is already interrupted now. If activation is async and an
@@ -512,23 +582,27 @@ void MediaSessionManagerInterface::sessionWillBeginPlayback(PlatformMediaSession
     bool sessionWasAlreadyInterrupted = session.state() == PlatformMediaSession::State::Interrupted;
 
     auto logSiteIdentifier = LOGIDENTIFIER;
-    auto completeWillBeginPlayback = [this, protectedThis = Ref { *this }, weakSession = WeakPtr { session },
+    auto completeWillBeginPlayback = [this, protectedThis = Ref { *this }, weakSession = WeakPtr { session }, stateAtStart,
 #if !RELEASE_LOG_DISABLED
         sessionLogId = session.logIdentifier(),
 #endif
-        sessionWasAlreadyInterrupted, logSiteIdentifier, completionHandler = WTF::move(completionHandler)](bool activated) mutable {
+        sessionWasAlreadyInterrupted, logSiteIdentifier](bool activated) {
         if (!activated) {
             ALWAYS_LOG(logSiteIdentifier, " returning false, failed to activate AudioSession");
-            completionHandler(false);
-            return;
+            return GenericPromise::createAndReject();
         }
         if (m_currentInterruption && sessionWasAlreadyInterrupted)
             endInterruption(PlatformMediaSession::EndInterruptionFlags::NoFlags);
 
-        if (RefPtr session = weakSession.get())
-            enforceConcurrentPlaybackRestriction(*session);
+        if (RefPtr session = weakSession.get()) {
+            if (session->commitPlaybackAdmission(stateAtStart)) {
+                enforceConcurrentPlaybackRestriction(*session);
+                sessionDidCompleteAdmission(*session);
+            } else
+                ALWAYS_LOG(logSiteIdentifier, sessionLogId, " session stayed paused, not claiming playback on its behalf");
+        }
         ALWAYS_LOG(logSiteIdentifier, sessionLogId, " returning true");
-        completionHandler(true);
+        return GenericPromise::createAndResolve();
     };
 
 #if USE(AUDIO_SESSION)
@@ -549,29 +623,27 @@ void MediaSessionManagerInterface::sessionWillBeginPlayback(PlatformMediaSession
         // Video->VideoAudio transition), which would spuriously tear down an active
         // session and make internals.audioSessionActive() observably false at the
         // 'playing' event (Release-timing race). Consistent with B1.
-        AudioSession::singleton().tryToSetActive(true)->whenSettled(RunLoop::mainSingleton(),
-            [this, protectedThis = Ref { *this }, completeWillBeginPlayback = WTF::move(completeWillBeginPlayback)](auto&& result) mutable {
+        return AudioSession::singleton().tryToSetActive(true)->whenSettled(RunLoop::mainSingleton(),
+            [this, protectedThis = Ref { *this }, completeWillBeginPlayback = WTF::move(completeWillBeginPlayback)](auto&& result) {
                 if (result)
                     m_becameActive = true;
-                completeWillBeginPlayback(result.has_value());
+                Ref promise = completeWillBeginPlayback(result.has_value());
                 if (result && hasNoSession())
                     maybeDeactivateAudioSession();
+                return promise;
             });
-        return;
     }
 #endif
 
-    if (!activeAudioSessionRequired() || m_becameActive) {
-        completeWillBeginPlayback(true);
-        return;
-    }
+    if (!activeAudioSessionRequired() || hasActiveAudioSession(session))
+        return completeWillBeginPlayback(true);
 
-    maybeActivateAudioSession()->whenSettled(RunLoop::mainSingleton(),
-        [completeWillBeginPlayback = WTF::move(completeWillBeginPlayback)](auto&& result) mutable {
-            completeWillBeginPlayback(result.has_value());
+    return maybeActivateAudioSession()->whenSettled(RunLoop::mainSingleton(),
+        [completeWillBeginPlayback = WTF::move(completeWillBeginPlayback)](auto&& result) {
+            return completeWillBeginPlayback(result.has_value());
         });
 #else
-    completionHandler(false);
+    return GenericPromise::createAndReject();
 #endif
 }
 
@@ -582,8 +654,19 @@ void MediaSessionManagerInterface::enforceConcurrentPlaybackRestriction(Platform
     if (!restrictions.contains(MediaSessionRestriction::ConcurrentPlaybackNotPermitted))
         return;
 
+    // Only the current session claims exclusivity. A session that stopped being current while its
+    // admission was in flight, or whose mediaType changed after another session started, would
+    // otherwise pause the session that started last.
+    if (currentSession() != &newSession)
+        return;
+
     forEachMatchingSession([&newSession](auto& otherSession) {
         bool isOther = &otherSession == &newSession;
+        // Only sessions that reached Playing are candidates. A session with preparingToPlay() set hasn't
+        // earned that yet — whether it's merely queued behind another admission (sessionWillBeginPlayback()
+        // serializes those) or a call from outside that chain (canProduceAudioChanged()) catches it mid-
+        // admission — and evicting it here preempts its own admission, which is the only place that should
+        // decide its fate.
         bool isPlaying = otherSession.state() == PlatformMediaSession::State::Playing;
         bool canConcurrent = otherSession.canPlayConcurrently(newSession);
         if (isOther)
@@ -613,7 +696,10 @@ void MediaSessionManagerInterface::sessionWillEndPlayback(PlatformMediaSessionIn
     RefPtr<PlatformMediaSessionInterface> firstPausedSession;
     for (auto it = sessions.begin(); it != sessions.end(); ++it) {
         RefPtr session = *it.get();
-        if (&pausingSession == session.get() || session->state() == PlatformMediaSession::State::Playing)
+        // A session whose own admission is in flight must stay ahead of the pausing session: it is
+        // likely still at the front of the list, and enforceConcurrentPlaybackRestriction()'s guard
+        // relies on currentSession() still naming it once its admission completes.
+        if (&pausingSession == session.get() || session->isPlayingOrPreparingToPlay())
             continue;
 
         firstPausedSession = session.get();
@@ -700,28 +786,21 @@ void MediaSessionManagerInterface::removeAudioCaptureSource(AudioCaptureSource& 
 
 Ref<GenericPromise> MediaSessionManagerInterface::audioCaptureSourceStateChanged(IsCaptureStarting isCaptureStarting)
 {
-    Ref categoryApplied = updateSessionState();
+    updateSessionState();
 #if USE(AUDIO_SESSION)
     // Activation and deactivation are requested synchronously, so a caller that does not wait on the
-    // returned promise observes AudioSession::isActive() as soon as this returns (RemoteAudioSession
-    // reflects the requested state optimistically). navigator.mediaSession.setMicrophoneActive() for
-    // instance resolves its promise from the UIProcess ValidateCaptureStateUpdate reply, which does not
-    // wait for the UpdateMediaSessionStates round-trip that applies the category under site isolation.
-    // The returned promise settles once both the category has been applied and the activation has
-    // completed, so a caller that does wait — the getUserMedia promise, the track mute/unmute events —
-    // sees a session that is both categorised and active.
-    if (isCaptureStarting == IsCaptureStarting::Yes) {
-        GenericPromise::Producer producer;
-        Ref promise = producer.promise();
-        GenericPromise::all({ WTF::move(categoryApplied), maybeActivateAudioSession() })->chainTo(WTF::move(producer));
-        return promise;
-    }
+    // returned promise still observes AudioSession::isActive() as soon as this returns
+    // (RemoteAudioSession reflects the requested state optimistically). The promise settles once the
+    // activation has completed, for callers that need an active session — the getUserMedia promise and
+    // the track unmute event.
+    if (isCaptureStarting == IsCaptureStarting::Yes)
+        return maybeActivateAudioSession();
 
     maybeDeactivateAudioSession();
 #else
     UNUSED_PARAM(isCaptureStarting);
 #endif
-    return categoryApplied;
+    return GenericPromise::createAndResolve();
 }
 
 int MediaSessionManagerInterface::countActiveAudioCaptureSources()
@@ -734,28 +813,40 @@ int MediaSessionManagerInterface::countActiveAudioCaptureSources()
     return count;
 }
 
-void MediaSessionManagerInterface::processDidReceiveRemoteControlCommand(PlatformMediaSession::RemoteControlCommandType command, const PlatformMediaSession::RemoteCommandArgument& argument)
+bool MediaSessionManagerInterface::processDidReceiveRemoteControlCommand(PlatformMediaSession::RemoteControlCommandType command, const PlatformMediaSession::RemoteCommandArgument& argument, std::optional<MediaSessionIdentifier> targetSession)
 {
-#if ENABLE(VIDEO) || ENABLE(audio)
+#if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
     RefPtr<PlatformMediaSessionInterface> activeSession;
-    for (auto& weakSession : copySessionsToVector()) {
-        RefPtr session = weakSession.get();
-        if (!session || !session->canReceiveRemoteControlCommands())
-            continue;
+    if (targetSession) {
+        // A NowPlaying owner elected across processes; deliver only to that session (this manager may not own it).
+        activeSession = firstSessionMatching([&](auto& session) {
+            return session.mediaSessionIdentifier() == *targetSession && session.canReceiveRemoteControlCommands();
+        }).get();
+    } else {
+        for (auto& weakSession : copySessionsToVector()) {
+            RefPtr session = weakSession.get();
+            if (!session || !session->canReceiveRemoteControlCommands())
+                continue;
 
-        if (session->isNowPlayingEligible()) {
-            activeSession = WTF::move(session);
-            break;
+            if (session->isNowPlayingEligible()) {
+                activeSession = WTF::move(session);
+                break;
+            }
+            if (!activeSession)
+                activeSession = WTF::move(session);
         }
-        if (!activeSession)
-            activeSession = WTF::move(session);
     }
 
-    if (activeSession)
-        activeSession->didReceiveRemoteControlCommand(command, argument);
+    if (!activeSession)
+        return false;
+
+    activeSession->didReceiveRemoteControlCommand(command, argument);
+    return true;
 #else
     UNUSED_PARAM(command);
     UNUSED_PARAM(argument);
+    UNUSED_PARAM(targetSession);
+    return false;
 #endif
 }
 
@@ -866,7 +957,7 @@ void MediaSessionManagerInterface::maybeDeactivateAudioSession(ShouldCheckRequir
 Ref<GenericPromise> MediaSessionManagerInterface::maybeActivateAudioSession()
 {
 #if USE(AUDIO_SESSION)
-    if (!activeAudioSessionRequired()) {
+    if (!audioSessionActivationRequired()) {
         MEDIASESSIONMANAGERINTERFACE_RELEASE_LOG(MaybeActivateAudioSessionActiveSessionNotRequired);
         // Do NOT deactivate here. This is an "activate or no-op" function, matching
         // the pre-async contract (7136b90d351d). Tearing the session down on any
@@ -933,11 +1024,6 @@ void MediaSessionManagerInterface::scheduleUpdateSessionState()
         updateSessionState();
         m_hasScheduledSessionStateUpdate = false;
     });
-}
-
-Ref<GenericPromise> MediaSessionManagerInterface::updateSessionState()
-{
-    return GenericPromise::createAndResolve();
 }
 
 #if !RELEASE_LOG_DISABLED

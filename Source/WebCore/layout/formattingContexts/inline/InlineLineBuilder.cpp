@@ -197,8 +197,9 @@ static TextDirection inlineBaseDirectionForLineContent(const Line::RunList& runs
     auto shouldUseBlockDirection = rootStyle.unicodeBidi() != UnicodeBidi::Plaintext;
     if (shouldUseBlockDirection)
         return rootStyle.writingMode().bidiDirection();
-    // A previous line ending with a line break (<br> or preserved \n) introduces a new unicode paragraph with its own direction.
-    if (previousLine && !previousLine->endsWithLineBreak)
+    // A previous line that ended a paragraph, with a line break (<br> or preserved \n) or with a block level box on it,
+    // introduces a new unicode paragraph, so this line takes its direction from its own content.
+    if (previousLine && !previousLine->endsParagraph)
         return previousLine->inlineBaseDirection;
     return TextUtil::directionForTextContent(toString(runs));
 }
@@ -449,8 +450,8 @@ void LineBuilder::initialize(const InlineRect& initialLineLogicalRect, const Inl
     m_line.initialize(m_lineSpanningInlineBoxes, isFirstFormattedLineCandidate);
 
     m_lineInitialLogicalRect = initialLineLogicalRect;
-    auto previousLineEndsWithLineBreak = previousLine ? std::make_optional(previousLine->endsWithLineBreak ? InlineFormattingUtils::LineEndsWithLineBreak::Yes : InlineFormattingUtils::LineEndsWithLineBreak::No) : std::nullopt;
-    m_lineMarginStart = formattingContext().formattingUtils().computedTextIndent(isInIntrinsicWidthMode() ? InlineFormattingUtils::IsIntrinsicWidthMode::Yes : InlineFormattingUtils::IsIntrinsicWidthMode::No, isFirstFormattedLineCandidate ? IsFirstFormattedLine::Yes : IsFirstFormattedLine::No, previousLineEndsWithLineBreak, initialLineLogicalRect.width());
+    auto previousLineEndsParagraph = previousLine ? std::make_optional(previousLine->endsParagraph ? InlineFormattingUtils::PreviousLineEndsParagraph::Yes : InlineFormattingUtils::PreviousLineEndsParagraph::No) : std::nullopt;
+    m_lineMarginStart = formattingContext().formattingUtils().computedTextIndent(isInIntrinsicWidthMode() ? InlineFormattingUtils::IsIntrinsicWidthMode::Yes : InlineFormattingUtils::IsIntrinsicWidthMode::No, isFirstFormattedLineCandidate ? IsFirstFormattedLine::Yes : IsFirstFormattedLine::No, previousLineEndsParagraph, initialLineLogicalRect.width());
 
     auto computeLineLogicalRect = [&] {
         // Apply the block margin coming from previous content (e.g. margin-bottom of a preceding block-in-inline
@@ -909,8 +910,12 @@ Vector<std::pair<size_t, size_t>> LineBuilder::collectShapeRanges(const LineCand
                 auto hasMatchingFontCascade = *lastFontCascade.get() == styleToUse.fontCascade();
                 if (isEligibleText && hasMatchingFontCascade)
                     trailingContentRunIndex = entry.index;
-                else
-                    resetCandidateRange();
+                else {
+                    commitIfHasContentAndReset();
+                    if (isEligibleText)
+                        leadingContentRunIndex = entry.index;
+                    lastFontCascade = &styleToUse.fontCascade();
+                }
             } else if (!isEligibleText)
                 resetCandidateRange();
             break;
@@ -1412,8 +1417,14 @@ void LineBuilder::handleBlockContent(const InlineItem& blockItem)
     ASSERT(blockItem.isBlock());
     // Blocks are always the only content on the line.
     ASSERT(!m_line.hasContent(Line::IncludeInsideListMarker::Yes));
-    if (isInIntrinsicWidthMode())
-        return m_line.appendBlock(blockItem, formattingContext().formattingUtils().inlineItemWidth(blockItem, { }, false));
+    if (isInIntrinsicWidthMode()) {
+        CheckedRef blockBox = downcast<ElementBox>(blockItem.layoutBox());
+        auto& boxGeometry = formattingContext().geometryForBox(blockBox.get());
+        auto& integrationUtils = formattingContext().integrationUtils();
+        auto contribution = *intrinsicWidthMode() == IntrinsicWidthMode::Minimum ? integrationUtils.minContentLogicalWidthContribution(blockBox.get()) : integrationUtils.maxContentLogicalWidthContribution(blockBox.get());
+        auto marginBoxWidth = contribution + boxGeometry.marginStart() + boxGeometry.marginEnd();
+        return m_line.appendBlock(blockItem, marginBoxWidth);
+    }
 
     if (rootStyle().writingMode().isBidiRTL())
         m_line.setContentNeedsBidiReordering();
@@ -1423,10 +1434,17 @@ void LineBuilder::handleBlockContent(const InlineItem& blockItem)
     // top would double-count the margin. Roll back m_lineLogicalRect.top too so the line's reported
     // bottom doesn't inherit the eager advance (which would shift the next line down).
     auto& marginState = blockLayoutState().marginState();
-    if (!marginState.atBeforeSideOfBlock) {
+    // Unless the margin collapses out through the root's before edge, the line's top already includes it: either
+    // initialize advanced the line by it, or the previous line's bottom absorbed it as a self collapsing block box's
+    // offset. Block layout applies the margin from the container's own position, so take it back off before handing over.
+    auto marginCollapsesThroughBeforeSide = marginState.atBeforeSideOfBlock && marginState.canCollapseMarginBeforeWithChildren;
+    auto lineTopIncludesPendingMargin = !marginCollapsesThroughBeforeSide;
+    if (lineTopIncludesPendingMargin) {
         if (auto blockMargin = marginState.margin())
             m_lineLogicalRect = { m_lineLogicalRect.top() - blockMargin, m_lineInitialLogicalRect.left(), m_lineInitialLogicalRect.width(), m_lineInitialLogicalRect.height() };
     }
+    // Block layout places this margin from its own position, where the clearance is accounted for already.
+    marginState.marginBeforeWithClearance = { };
 
     formattingContext().integrationUtils().layoutWithFormattingContextForBlockInInline(downcast<ElementBox>(blockItem.layoutBox()), LayoutPoint { m_lineLogicalRect.topLeft() }, layoutState());
     auto contentWidth = InlineLayoutUnit { };

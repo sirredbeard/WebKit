@@ -114,9 +114,9 @@ inline bool ComputedStyleBase::useTreeCountingFunctions() const
     return m_nonInheritedFlags.useTreeCountingFunctions;
 }
 
-inline bool ComputedStyleBase::colorIsCurrentColorForHighlight() const
+inline const Color& ComputedStyleBase::colorForHighlight() const
 {
-    return m_inheritedData->colorIsCurrentColorForHighlight;
+    return m_inheritedRareData->colorForHighlight;
 }
 
 inline InsideLink ComputedStyleBase::insideLink() const
@@ -247,6 +247,11 @@ inline StyleAppearance ComputedStyleBase::usedAppearance() const
 inline ContentVisibility ComputedStyleBase::usedContentVisibility() const
 {
     return static_cast<ContentVisibility>(m_inheritedRareData->usedContentVisibility);
+}
+
+inline UserSelect ComputedStyleBase::usedUserSelectIgnoringEffectivelyInert() const
+{
+    return static_cast<UserSelect>(m_inheritedRareData->usedUserSelect);
 }
 
 inline TouchAction ComputedStyleBase::usedTouchAction() const

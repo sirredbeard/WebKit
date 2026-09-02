@@ -26,7 +26,6 @@ mod ffi {
         Glsl430Core,
         Glsl440Core,
         Glsl450Core,
-        Hlsl3,
         Hlsl41,
         Spirv,
         Msl,
@@ -91,7 +90,6 @@ mod ffi {
         OES_texture_storage_multisample_2d_array: bool,
         OVR_multiview: bool,
         OVR_multiview2: bool,
-        WEBGL_video_texture: bool,
     }
 
     // Limits corresponding to ShBuiltInResources
@@ -168,6 +166,10 @@ mod ffi {
         // independent (for example outputting ESSL 300 even if the input is ESSL 100), then the
         // _output_ version should be used by the generator.
         is_es1: bool,
+
+        // One char to add after '_' to prefix user-defined symbols.
+        user_variable_name_prefix: u8,
+        user_block_name_prefix: u8,
 
         // Whether uninitialized local and global variables should be zero-initialized.
         initialize_uninitialized_variables: bool,
@@ -342,7 +344,7 @@ mod ffi {
         storage_blocks: Vec<InterfaceBlock>,
     }
 
-    extern "C++" {
+    unsafe extern "C++" {
         include!("compiler/translator/ir/src/output/legacy.h");
 
         #[namespace = "sh"]
@@ -361,11 +363,13 @@ mod ffi {
         type IR = crate::ir::IR;
 
         include!("compiler/translator/ir/src/pool_alloc.h");
-        unsafe fn initialize_global_pool_index();
-        unsafe fn free_global_pool_index();
+        fn initialize_global_pool_index();
+        fn free_global_pool_index();
+        // SAFETY: Pointer must be obtained from C++ and passed back unmodified.
         unsafe fn set_global_pool_allocator(allocator: *mut PoolAllocator);
     }
     extern "Rust" {
+        // SAFETY: Pointers must be obtained from C++ and passed back unmodified.
         unsafe fn generate_ast(
             mut ir: Box<IR>,
             compiler: *mut TCompiler,
@@ -395,6 +399,7 @@ unsafe fn generate_ast(
     allocator: *mut ffi::PoolAllocator,
     options: &Options,
 ) -> ffi::Output {
+    // SAFETY: Pointer is obtained from C++ and passed back to it.
     unsafe { ffi::set_global_pool_allocator(allocator) };
 
     // Apply transforms shared by multiple generators:
@@ -426,7 +431,7 @@ unsafe fn generate_ast(
             #[cfg(not(angle_enable_glsl))]
             panic!("Internal error: GLSL generator is not built");
         }
-        OutputLanguage::Hlsl3 | OutputLanguage::Hlsl41 => {
+        OutputLanguage::Hlsl41 => {
             #[cfg(angle_enable_hlsl)]
             output::hlsl::generate(&mut ir, options);
             #[cfg(not(angle_enable_hlsl))]
@@ -576,6 +581,8 @@ fn collect_reflection_info(ir: &mut IR, options: &Options) {
         let reflection_options = reflection::Options {
             is_es1: options.shader_version == 100,
             transform_float_uniform_to_fp16: options.transform_float_uniform_to_fp16,
+            user_variable_name_prefix: options.user_variable_name_prefix as char,
+            user_block_name_prefix: options.user_block_name_prefix as char,
         };
         ir.collect_reflection_info(&reflection_options, &active_interface_variables);
     }
@@ -654,8 +661,8 @@ fn common_post_variable_collection_transforms(ir: &mut IR, options: &Options) {
 }
 
 fn initialize_global_pool_index_workaround() {
-    unsafe { ffi::initialize_global_pool_index() };
+    ffi::initialize_global_pool_index();
 }
 fn free_global_pool_index_workaround() {
-    unsafe { ffi::free_global_pool_index() };
+    ffi::free_global_pool_index();
 }

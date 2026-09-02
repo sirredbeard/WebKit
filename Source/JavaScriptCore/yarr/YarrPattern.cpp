@@ -152,6 +152,16 @@ public:
             m_invertedStrings = true;
         }
 
+        if (!isUnionSetOp()) {
+            // FIXME: Flipping the pending op (intersect with complement == subtract, and vice versa)
+            // would avoid materializing the complement, but m_strings still needs the original op.
+            CharacterClass inverted;
+            addSortedInverted(0, 0xff, other->m_matches8, other->m_ranges8, inverted.m_matches8, inverted.m_ranges8);
+            addSortedInverted(0x100, UCHAR_MAX_VALUE, other->m_matches32, other->m_ranges32, inverted.m_matches32, inverted.m_ranges32);
+            append(&inverted);
+            return;
+        }
+
         addSortedInverted(0, 0xff, other->m_matches8, other->m_ranges8, m_matches8, m_ranges8);
         addSortedInverted(0x100, UCHAR_MAX_VALUE, other->m_matches32, other->m_ranges32, m_matches32, m_ranges32);
     }
@@ -324,6 +334,22 @@ public:
             ++info;
             lo = info->begin;
         }
+    }
+
+    void putUnicodeIgnoreCase(const CharacterClass* other)
+    {
+        ASSERT(m_isCaseInsensitive && m_canonicalMode == CanonicalMode::Unicode && isUnionSetOp());
+        for (auto& string : other->m_strings)
+            m_strings.append(string);
+        for (char32_t ch : other->m_matches8)
+            putChar(ch);
+        for (auto& range : other->m_ranges8)
+            putRange(range.begin, range.end);
+        for (char32_t ch : other->m_matches32)
+            putChar(ch);
+        for (auto& range : other->m_ranges32)
+            putRange(range.begin, range.end);
+        m_mayContainStrings |= other->hasStrings();
     }
 
     void atomClassStringDisjunction(Vector<Vector<char32_t>>& disjunctionStrings)
@@ -1066,8 +1092,12 @@ private:
                     }
                 }
 
-                while (matchesIndex < matches.size() && matches[matchesIndex] < ranges[rangesIndex].end + 1)
-                    matchesIndex++;
+                size_t endIndex = matchesIndex;
+                while (endIndex < matches.size() && matches[endIndex] < ranges[rangesIndex].end + 1)
+                    endIndex++;
+
+                if (matchesIndex != endIndex)
+                    matches.removeAt(matchesIndex, endIndex - matchesIndex);
 
                 if (matchesIndex < matches.size()) {
                     if (matches[matchesIndex] > ranges[rangesIndex].end + 1) {
@@ -1147,6 +1177,36 @@ private:
     Vector<char32_t> m_matches32;
     Vector<CharacterRange> m_ranges32;
 };
+
+static std::unique_ptr<CharacterClass> invertedCharacterClass(const CharacterClass* characterClass, CompileMode compileMode)
+{
+    CharacterClassConstructor constructor(false, compileMode);
+    constructor.appendInverted(characterClass);
+    return constructor.charClass();
+}
+
+CharacterClass* YarrPattern::unicodeCharacterClassFor(BuiltInCharacterClassID unicodeClassID, bool ignoreCase, bool invert)
+{
+    ASSERT(unicodeClassID >= BuiltInCharacterClassID::BaseUnicodePropertyID);
+
+    ignoreCase = ignoreCase && eitherUnicode();
+    invert = invert && ignoreCase && !unicodeSets();
+    unsigned key = static_cast<unsigned>(unicodeClassID) << 2 | static_cast<unsigned>(ignoreCase) << 1 | static_cast<unsigned>(invert);
+    return unicodePropertiesCached.ensure(key, [&] {
+        std::unique_ptr<CharacterClass> characterClass = createUnicodeCharacterClassFor(unicodeClassID);
+        if (ignoreCase) {
+            if (invert)
+                characterClass = invertedCharacterClass(characterClass.get(), compileMode());
+            CharacterClassConstructor constructor(true, compileMode());
+            constructor.putUnicodeIgnoreCase(characterClass.get());
+            characterClass = constructor.charClass();
+            if (invert)
+                characterClass = invertedCharacterClass(characterClass.get(), compileMode());
+        }
+        m_userCharacterClasses.append(WTF::move(characterClass));
+        return m_userCharacterClasses.last().get();
+    }).iterator->value;
+}
 
 class YarrPatternConstructor {
     class UnresolvedForwardReference {
@@ -1354,37 +1414,34 @@ public:
                 m_alternative->m_terms.append(PatternTerm(m_pattern.newlineCharacterClass(), true, m_flags, parenthesisMatchDirection()));
             break;
         default: {
-            if (characterClassMayContainStrings(classID)) {
-                auto characterClass = m_pattern.unicodeCharacterClassFor(classID);
-                if (characterClass->hasStrings()) {
-                    atomParenthesesSubpatternBegin(false);
-                    unsigned alternativeCount = 0;
-                    for (unsigned i = 0; i < characterClass->m_strings.size(); ++i) {
-                        if (alternativeCount)
-                            disjunction(CreateDisjunctionPurpose::ForNextAlternative);
+            CharacterClass* characterClass = m_pattern.unicodeCharacterClassFor(classID, ignoreCase(), invert);
+            if (characterClass->hasStrings()) {
+                atomParenthesesSubpatternBegin(false);
+                unsigned alternativeCount = 0;
+                for (unsigned i = 0; i < characterClass->m_strings.size(); ++i) {
+                    if (alternativeCount)
+                        disjunction(CreateDisjunctionPurpose::ForNextAlternative);
 
-                        auto string = characterClass->m_strings[i];
+                    auto string = characterClass->m_strings[i];
 
-                        for (auto ch : string)
-                            atomPatternCharacter(ch, /* hyphenIsRange */ false);
+                    for (auto ch : string)
+                        atomPatternCharacter(ch, /* hyphenIsRange */ false);
 
-                        ++alternativeCount;
-                    }
-
-                    if (characterClass->hasSingleCharacters()) {
-                        if (alternativeCount)
-                            disjunction(CreateDisjunctionPurpose::ForNextAlternative);
-
-                        m_alternative->m_terms.append(PatternTerm(characterClass, invert, m_flags, parenthesisMatchDirection()));
-                    }
-
-                    atomParenthesesEnd();
-                    break;
+                    ++alternativeCount;
                 }
-                // Fall through for the case where the characterClass REALLY doesn't have strings.
+
+                if (characterClass->hasSingleCharacters()) {
+                    if (alternativeCount)
+                        disjunction(CreateDisjunctionPurpose::ForNextAlternative);
+
+                    m_alternative->m_terms.append(PatternTerm(characterClass, invert, m_flags, parenthesisMatchDirection()));
+                }
+
+                atomParenthesesEnd();
+                break;
             }
 
-            m_alternative->m_terms.append(PatternTerm(m_pattern.unicodeCharacterClassFor(classID), invert, m_flags, parenthesisMatchDirection()));
+            m_alternative->m_terms.append(PatternTerm(characterClass, invert, m_flags, parenthesisMatchDirection()));
             break;
         }
         }
@@ -1428,11 +1485,13 @@ public:
                 m_currentCharacterClassConstructor->append(invert ? m_pattern.nonwordcharCharacterClass() : m_pattern.wordcharCharacterClass());
             break;
         
-        default:
+        default: {
+            CharacterClass* characterClass = m_pattern.unicodeCharacterClassFor(classID, ignoreCase(), invert);
             if (!invert)
-                m_currentCharacterClassConstructor->append(m_pattern.unicodeCharacterClassFor(classID));
+                m_currentCharacterClassConstructor->append(characterClass);
             else
-                m_currentCharacterClassConstructor->appendInverted(m_pattern.unicodeCharacterClassFor(classID));
+                m_currentCharacterClassConstructor->appendInverted(characterClass);
+        }
         }
     }
 
@@ -1850,8 +1909,7 @@ public:
             // FixedCount{min} + Greedy/NonGreedy{0,max-min}. The split would deep-copy
             // the disjunction subtree, which can hit OffsetTooLarge / pattern-size limits
             // for very large bounds (e.g. (?:x){2147483648,...}). Backward parens
-            // (lookbehinds) still use the expansion path; the JIT's right-to-left
-            // backtracking machinery hasn't been generalized for single-term VariableMin.
+            // (lookbehinds) still use the expansion path.
             term.quantify(min, max, greedy ? QuantifierType::Greedy : QuantifierType::NonGreedy);
         } else {
             if (term.matchDirection() == Forward) {
@@ -2541,7 +2599,15 @@ public:
                 startsWithBOL = true;
                 ++termIndex;
             }
-            
+
+            // In dotAll mode, .* can match line terminators. In multiline mode, ^ matches the
+            // beginning of every line (instead of in non-multiline mode, it only matches the start
+            // of input). So a ^.* in the combined dotAll and multiline is not checkable by
+            // adjusting the beginning and the end of the match, because the match might begin at a
+            // line after the wrapped expression. In this case ^.* is not optimized.
+            if (startsWithBOL && dotAll() && multiline())
+                return;
+
             PatternTerm& firstNonAnchorTerm = terms[termIndex];
             if (firstNonAnchorTerm.type != PatternTerm::Type::CharacterClass
                 || firstNonAnchorTerm.characterClass != dotCharacterClass
@@ -3517,6 +3583,21 @@ std::unique_ptr<CharacterClass> anycharCreate()
     characterClass->m_characterWidths = CharacterClassWidths::HasBothBMPAndNonBMP;
     characterClass->m_anyCharacter = true;
     return characterClass;
+}
+
+bool CharacterClass::hasOnlyNonSurrogateBMPCharacters() const
+{
+    if (hasStrings() || !hasOnlyBMPCharacters())
+        return false;
+    for (auto character : m_matches32) {
+        if (U_IS_SURROGATE(character))
+            return false;
+    }
+    for (auto& range : m_ranges32) {
+        if (range.end >= 0xd800 && range.begin <= 0xdfff)
+            return false;
+    }
+    return true;
 }
 
 std::optional<char16_t> CharacterClass::hasSharedLeadSurrogate() const

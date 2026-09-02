@@ -40,6 +40,7 @@
 #import <pal/spi/cf/CoreVideoSPI.h>
 #import <pal/spi/cg/CoreGraphicsSPI.h>
 #import <wtf/Assertions.h>
+#import <wtf/CheckedArithmetic.h>
 #import <wtf/EnumTraits.h>
 #import <wtf/MachSendRight.h>
 #import <wtf/MathExtras.h>
@@ -118,6 +119,58 @@ std::unique_ptr<IOSurface> IOSurface::createFromSendRight(const MachSendRight&& 
 
     auto surface = adoptCF(IOSurfaceLookupFromMachPort(sendRight.sendRight()));
     return IOSurface::createFromSurface(surface.get(), { });
+}
+
+template <unsigned bytesPerElement>
+static std::unique_ptr<IOSurface> validateAndCreateFromUntrustedSurface(IOSurfaceRef surface)
+{
+    static_assert(bytesPerElement > 0);
+    auto width = IOSurfaceGetWidth(surface);
+    auto height = IOSurfaceGetHeight(surface);
+    auto bytesPerRow = IOSurfaceGetBytesPerRow(surface);
+    if (!width || !height || !bytesPerRow)
+        return nullptr;
+    auto maxSize = IOSurface::maximumSize();
+    if (width > size_t(maxSize.width()) || height > size_t(maxSize.height()))
+        return nullptr;
+    auto rowBytes = CheckedSize { width } * bytesPerElement;
+    if (rowBytes.hasOverflowed() || rowBytes.value() > bytesPerRow)
+        return nullptr;
+    auto totalBytes = CheckedSize { bytesPerRow } * height;
+    auto allocSize = IOSurfaceGetAllocSize(surface);
+    if (totalBytes.hasOverflowed() || totalBytes.value() > allocSize)
+        return nullptr;
+
+    return IOSurface::createFromSurface(surface, { });
+}
+
+std::unique_ptr<IOSurface> IOSurface::createFromUntrustedUncompressedWebKitSendRight(const MachSendRight&& sendRight)
+{
+    ASSERT(ProcessCapabilities::canUseAcceleratedBuffers());
+
+    auto surface = adoptCF(IOSurfaceLookupFromMachPort(sendRight.sendRight()));
+    if (!surface)
+        return nullptr;
+
+    unsigned pixelFormat = IOSurfaceGetPixelFormat(surface.get());
+    switch (pixelFormat) {
+    case kCVPixelFormatType_32BGRA:
+    case kCVPixelFormatType_32RGBA:
+#if ENABLE(PIXEL_FORMAT_RGB10)
+    case kCVPixelFormatType_30RGBLEPackedWideGamut:
+#endif
+        return validateAndCreateFromUntrustedSurface<4>(surface.get());
+
+#if ENABLE(PIXEL_FORMAT_RGBA16F)
+    case kCVPixelFormatType_64RGBAHalf:
+        return validateAndCreateFromUntrustedSurface<8>(surface.get());
+#endif
+
+    default:
+        break;
+    }
+
+    return { };
 }
 
 std::unique_ptr<IOSurface> IOSurface::createFromSurface(IOSurfaceRef surface, std::optional<DestinationColorSpace>&& colorSpace)
@@ -750,15 +803,26 @@ void IOSurface::convertToFormat(IOSurfacePool* pool, std::unique_ptr<IOSurface>&
 {
     static IOSurfaceAcceleratorRef accelerator;
     if (!accelerator) {
-        IOSurfaceAcceleratorCreate(nullptr, nullptr, &accelerator);
+        IOSurfaceAcceleratorRef newAccelerator = nullptr;
+        IOSurfaceAcceleratorCreate(nullptr, nullptr, &newAccelerator);
 
-        if (!accelerator) {
+        if (!newAccelerator) {
             callback(nullptr);
             return;
         }
 
-        auto runLoopSource = IOSurfaceAcceleratorGetRunLoopSource(accelerator);
+        // Without a run loop source, the accelerator can never deliver a completion, so
+        // don't cache it; every subsequent transform would silently never complete.
+        auto runLoopSource = IOSurfaceAcceleratorGetRunLoopSource(newAccelerator);
+        if (!runLoopSource) {
+            RELEASE_LOG_ERROR(IOSurface, "IOSurface::convertToFormat: failed to get a run loop source for the accelerator");
+            CFRelease(newAccelerator);
+            callback(nullptr);
+            return;
+        }
+
         CFRunLoopAddSource(CFRunLoopGetMain(), runLoopSource, kCFRunLoopDefaultMode);
+        accelerator = newAccelerator;
     }
 
     if (inSurface->pixelFormat() == format) {
@@ -776,18 +840,22 @@ void IOSurface::convertToFormat(IOSurfacePool* pool, std::unique_ptr<IOSurface>&
     IOSurfaceAcceleratorCompletion completion;
     completion.completionRefCon = new WTF::Function<void(std::unique_ptr<IOSurface>)> (WTF::move(callback));
     completion.completionRefCon2 = destinationSurface.release();
-    completion.completionCallback = [](void *completionRefCon, IOReturn, void * completionRefCon2) {
+    completion.completionCallback = [](void *completionRefCon, IOReturn result, void * completionRefCon2) {
         auto* callback = static_cast<WTF::Function<void(std::unique_ptr<IOSurface>)>*>(completionRefCon);
         auto destinationSurface = std::unique_ptr<IOSurface>(static_cast<IOSurface*>(completionRefCon2));
-        
-        (*callback)(WTF::move(destinationSurface));
+
+        (*callback)(result == kIOReturnSuccess ? WTF::move(destinationSurface) : nullptr);
         delete callback;
     };
 
     NSDictionary *options = @{ (id)kIOSurfaceAcceleratorUnwireSurfaceKey : @YES };
 
     IOReturn ret = IOSurfaceAcceleratorTransformSurface(accelerator, inSurface->surface(), destinationIOSurfaceRef, (CFDictionaryRef)options, nullptr, &completion, nullptr, nullptr);
-    ASSERT_UNUSED(ret, ret == kIOReturnSuccess);
+    if (ret != kIOReturnSuccess) {
+        RELEASE_LOG_ERROR(IOSurface, "IOSurface::convertToFormat: IOSurfaceAcceleratorTransformSurface failed for size (%d, %d), error %d", inSurface->size().width(), inSurface->size().height(), ret);
+        completion.completionCallback(completion.completionRefCon, ret, completion.completionRefCon2);
+        return;
+    }
 }
 
 #endif // HAVE(IOSURFACE_ACCELERATOR)

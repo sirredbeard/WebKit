@@ -469,6 +469,14 @@ PutByStatus PutByStatus::computeFor(JSGlobalObject* globalObject, const Structur
     result.shrinkToFit();
     return result;
 }
+
+PutByStatus PutByStatus::computeFor(CodeBlock* profiledBlock, BytecodeIndex bytecodeIndex, JSGlobalObject* globalObject, const StructureSet& set, CacheableIdentifier identifier, bool isDirect, PrivateFieldPutKind privateFieldPutKind)
+{
+    if (hasBadCacheExitSite(profiledBlock, bytecodeIndex))
+        return PutByStatus(LikelyTakesSlowPath);
+
+    return computeFor(globalObject, set, identifier, isDirect, privateFieldPutKind);
+}
 #endif
 
 bool PutByStatus::makesCalls() const
@@ -526,10 +534,10 @@ void PutByStatus::markIfCheap(Visitor& visitor)
 template void PutByStatus::markIfCheap(AbstractSlotVisitor&);
 template void PutByStatus::markIfCheap(SlotVisitor&);
 
-bool PutByStatus::finalize(VM& vm)
+bool PutByStatus::isStillLive(VM& vm)
 {
     for (PutByVariant& variant : m_variants) {
-        if (!variant.finalize(vm))
+        if (!variant.isStillLive(vm))
             return false;
     }
     return true;

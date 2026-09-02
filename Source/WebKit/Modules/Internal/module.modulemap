@@ -59,6 +59,12 @@ module WebKit_Internal [system] {
         export *
     }
 
+    module RunJavaScriptResult {
+        requires cplusplus20
+        header "../../Shared/RunJavaScriptResult.h"
+        export *
+    }
+
     module MessageReceiver {
         requires cplusplus20
         header "../../Platform/IPC/MessageReceiver.h"
@@ -72,13 +78,13 @@ module WebKit_Internal [system] {
     }
 
     module WKObject {
-        requires cplusplus20
+        requires cplusplus20,objc
         header "../../Shared/Cocoa/WKObject.h"
         export *
     }
 
     module WKTextSelectionController {
-        requires cplusplus20
+        requires cplusplus20,objc
         header "../../UIProcess/mac/WKTextSelectionController.h"
         export *
     }
@@ -102,12 +108,13 @@ module WebKit_Internal [system] {
     }
 
     module WKTextSelectionRect {
-        requires cplusplus20
+        requires cplusplus20,objc
         header "../../UIProcess/Cocoa/WKTextSelectionRect.h"
         export *
     }
 
     module WKWebViewIOS {
+        requires objc
         header "../../UIProcess/API/ios/WKWebViewIOS.h"
         export *
     }
@@ -308,6 +315,12 @@ module WebKit_Internal [system] {
         requires objc
     }
 
+    module TransferString {
+        requires cplusplus23
+        header "../../Platform/IPC/TransferString.h"
+        export *
+    }
+
     module WKDeferringGestureRecognizer {
         header "../../UIProcess/Cocoa/WKDeferringGestureRecognizer.h"
         export *
@@ -334,6 +347,12 @@ module WebKit_Internal [system] {
 
     module WKPreferencesInternal {
         header "../../UIProcess/API/Cocoa/WKPreferencesInternal.h"
+        export *
+        requires objc
+    }
+
+    module WKBackForwardListItemInternal {
+        header "../../UIProcess/API/Cocoa/WKBackForwardListItemInternal.h"
         export *
         requires objc
     }
@@ -393,8 +412,14 @@ module WebKit_Internal [system] {
     }
 
     module WKAppKitGestureController {
-        requires cplusplus20
-        header "../../UIProcess/mac/WKAppKitGestureController.h"
+        requires cplusplus20,objc
+        header "../../UIProcess/mac/AppKitGestures/WKAppKitGestureController.h"
+        export *
+    }
+
+    module WKMouseTrackingGestureRecognizer {
+        requires objc
+        header "../../UIProcess/mac/AppKitGestures/WKMouseTrackingGestureRecognizer.h"
         export *
     }
 

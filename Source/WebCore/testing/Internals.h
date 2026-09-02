@@ -268,6 +268,7 @@ public:
 
     unsigned imageFrameIndex(HTMLImageElement&);
     unsigned imageFrameCount(HTMLImageElement&);
+    bool forceDecodeImageFrameAtIndex(HTMLImageElement&, unsigned index);
     float imageFrameDurationAtIndex(HTMLImageElement&, unsigned index);
     void setImageFrameDecodingDuration(HTMLImageElement&, float duration);
     void resetImageAnimation(HTMLImageElement&);
@@ -319,6 +320,8 @@ public:
     double requestAnimationFrameInterval() const;
     bool NODELETE scriptedAnimationsAreSuspended() const;
     bool NODELETE areTimersThrottled() const;
+    double domTimerAlignmentInterval() const;
+    double domTimerAlignmentIntervalIncreaseLimit() const;
 
     enum EventThrottlingBehavior { Responsive, Unresponsive };
     void NODELETE setEventThrottlingBehaviorOverride(std::optional<EventThrottlingBehavior>);
@@ -417,6 +420,8 @@ public:
     ExceptionOr<void> setUnderPageBackgroundColorOverride(const String& colorValue);
 
     ExceptionOr<String> documentBackgroundColor();
+
+    ExceptionOr<String> paintedCaretColor();
 
     ExceptionOr<bool> displayP3Available()
     {
@@ -701,6 +706,8 @@ public:
     void setHeaderHeight(float);
     void setFooterHeight(float);
 
+    float obscuredContentInsetTop();
+
     struct FullscreenInsets {
         float top { 0 };
         float left { 0 };
@@ -793,6 +800,7 @@ public:
     String toolTipFromElement(Element&) const;
 
     void forceAXObjectCacheUpdate() const;
+    void setAccessibilityAnnouncementTranslationTimeout(double seconds);
     unsigned liveRegionSnapshotBuildCount() const;
     void resetLiveRegionSnapshotBuildCount() const;
     void setShouldMockParentSearchResultsForTesting(bool);
@@ -939,6 +947,7 @@ public:
     ExceptionOr<String> mediaSessionRestrictions(const String& mediaType) const;
     void setMediaElementRestrictions(HTMLMediaElement&, StringView restrictionsString);
     ExceptionOr<void> postRemoteControlCommand(const String&, float argument);
+    ExceptionOr<void> postSystemRemoteControlCommand(const String&, float argument);
     void activeAudioRouteDidChange(bool shouldPause);
     bool NODELETE elementIsBlockingDisplaySleep(const HTMLMediaElement&) const;
     bool NODELETE isPlayerVisibleInViewport(const HTMLMediaElement&) const;
@@ -958,6 +967,7 @@ public:
     void setMockMediaPlaybackTargetPickerEnabled(bool);
     ExceptionOr<void> setMockMediaPlaybackTargetPickerState(const String& deviceName, const String& deviceState);
     void mockMediaPlaybackTargetPickerDismissPopup();
+    void mockMediaPlaybackTargetPickerRect(DOMPromiseDeferred<IDLInterface<DOMRect>>&&);
 #endif
 
     bool isMonitoringWirelessRoutes() const;
@@ -1150,6 +1160,8 @@ public:
 
     bool NODELETE supportsAudioSession() const;
     AudioSessionCategory audioSessionCategory() const;
+    void systemAudioSessionCategory(DOMPromiseDeferred<IDLEnumeration<AudioSessionCategory>>&&);
+    void systemAudioSessionActivationCount(DOMPromiseDeferred<IDLUnsignedLongLong>&&);
     AudioSessionMode audioSessionMode() const;
     RouteSharingPolicy routeSharingPolicy() const;
 #if ENABLE(VIDEO)
@@ -1174,6 +1186,7 @@ public:
     void updateQuotaBasedOnSpaceUsage();
 
     void setConsoleMessageListener(RefPtr<StringCallback>&&);
+    void configureLoggingChannel(const String& channelName, bool enabled);
 
     using HasRegistrationPromise = DOMPromiseDeferred<IDLBoolean>;
     void hasServiceWorkerRegistration(const String& clientURL, HasRegistrationPromise&&);
@@ -1340,6 +1353,8 @@ public:
 #endif
 
     bool elementIsActiveNowPlayingSession(HTMLMediaElement&) const;
+    void elementIsActiveNowPlayingSessionInGPUProcess(HTMLMediaElement&, DOMPromiseDeferred<IDLBoolean>&&);
+    void elementIsRemoteCommandTargetInGPUProcess(HTMLMediaElement&, DOMPromiseDeferred<IDLBoolean>&&);
 
 #endif // ENABLE(VIDEO)
 
@@ -1553,6 +1568,7 @@ public:
     bool destroySleepDisabler(unsigned identifier);
 
     void setTopDocumentURLForQuirks(const String&);
+    Vector<String> activeQuirks() const;
 
 #if ENABLE(APP_HIGHLIGHTS)
     Vector<String> appHighlightContextMenuItemTitles() const;
@@ -1695,7 +1711,6 @@ public:
 
 #if ENABLE(SPATIAL_PORTAL)
     unsigned NODELETE numberOfHostedModelsInSpatialPortal(Element&);
-    unsigned NODELETE numberOfLoadedModelsInSpatialPortal(Element&);
     bool NODELETE establishesSpatialPortal(Element&);
     std::optional<Vector<double>> NODELETE spatialPortalResolvedTransform(Element&);
 #endif

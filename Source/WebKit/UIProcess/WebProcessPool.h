@@ -64,6 +64,7 @@ OBJC_CLASS WKProcessPoolWeakObserver;
 
 #if PLATFORM(MAC)
 #include <WebCore/PowerObserverMac.h>
+#include <WebCore/ScreenProperties.h>
 #include <pal/system/SystemSleepListener.h>
 #endif
 
@@ -106,6 +107,7 @@ enum class GamepadHapticEffectType : uint8_t;
 enum class ProcessSwapDisposition : uint8_t;
 struct GamepadEffectParameters;
 struct MockMediaDevice;
+struct ScreenProperties;
 #if PLATFORM(COCOA)
 class PowerSourceNotifier;
 #endif
@@ -190,14 +192,12 @@ public:
 
     WebBackForwardCache& backForwardCache() { return m_backForwardCache.get(); }
     
-    template<typename RawValue>
-    void addMessageReceiver(IPC::ReceiverName messageReceiverName, const ObjectIdentifierGenericBase<RawValue>& destinationID, IPC::MessageReceiver& receiver)
+    void addMessageReceiver(IPC::ReceiverName messageReceiverName, const ObjectIdentifierGenericBase& destinationID, IPC::MessageReceiver& receiver)
     {
         addMessageReceiver(messageReceiverName, destinationID.toUInt64(), receiver);
     }
     
-    template<typename RawValue>
-    void removeMessageReceiver(IPC::ReceiverName messageReceiverName, const ObjectIdentifierGenericBase<RawValue>& destinationID)
+    void removeMessageReceiver(IPC::ReceiverName messageReceiverName, const ObjectIdentifierGenericBase& destinationID)
     {
         removeMessageReceiver(messageReceiverName, destinationID.toUInt64());
     }
@@ -253,6 +253,7 @@ public:
     void setProcessesShouldSuspend(bool);
 #endif
 
+    void reclaimIdleProcesses();
     void handleMemoryPressureWarning(Critical);
 
 #if PLATFORM(COCOA)
@@ -260,6 +261,7 @@ public:
 #endif
 
 #if PLATFORM(MAC)
+    const WebCore::ScreenProperties& cachedScreenProperties();
     void displayPropertiesChanged(WebCore::PlatformDisplayID, CGDisplayChangeSummaryFlags);
 #endif
 
@@ -330,8 +332,7 @@ public:
 
     void reportWebContentCPUTime(Seconds cpuTime, uint64_t activityState);
 
-    Ref<WebProcessProxy> processForSite(WebsiteDataStore&, WebProcessProxy::IsolatedProcessType, const std::optional<WebCore::Site>&, const std::optional<WebCore::Site>& mainFrameSite, const HashSet<WebCore::RegistrableDomain>& isolatedDomains,
-        WebProcessProxy::LockdownMode, EnhancedSecurity, const API::PageConfiguration&, WebCore::ProcessSwapDisposition); // Will return an existing one if limit is met or due to caching.
+    Ref<WebProcessProxy> processForSite(WebsiteDataStore&, WebProcessProxy::IsolatedProcessType, const std::optional<WebCore::Site>&, const std::optional<WebCore::Site>& mainFrameSite, WebProcessProxy::LockdownMode, EnhancedSecurity, const API::PageConfiguration&, WebCore::ProcessSwapDisposition); // Will return an existing one if limit is met or due to caching.
 
     void prewarmProcess();
 
@@ -627,6 +628,7 @@ public:
     Seconds pltResourceDelayInterval() const { return m_pltResourceDelayInterval; }
 
     bool hasUsedSiteIsolation() const { return m_hasUsedSiteIsolation; }
+    static bool hasAnyProcessPoolUsedSiteIsolation();
 
     unsigned prewarmedProcessCountLimit() const;
 
@@ -744,7 +746,15 @@ private:
     void clearAudibleActivity();
 
 #if PLATFORM(COCOA)
+    enum class ScreenPropertiesState : uint8_t {
+        Idle,
+        Collecting,
+        CollectingWithUpdatePending,
+    };
+
     void screenPropertiesUpdateTimerFired();
+    void didCollectScreenProperties(WebCore::ScreenProperties&&);
+    void applyEDRSuppressionIfNeeded(WebCore::ScreenProperties&);
 #endif
 
 #if PLATFORM(IOS_FAMILY)
@@ -882,6 +892,7 @@ private:
     ProcessSuppressionDisabledCounter m_processSuppressionDisabledForPageCounter;
     HiddenPageThrottlingAutoIncreasesCounter m_hiddenPageThrottlingAutoIncreasesCounter;
     RunLoop::Timer m_hiddenPageThrottlingTimer;
+    Seconds m_hiddenPageDOMTimerThrottlingIncreaseLimit;
 
 #if ENABLE(GPU_PROCESS)
     RunLoop::Timer m_resetGPUProcessCrashCountTimer;
@@ -1027,6 +1038,11 @@ private:
 
     ApproximateTime m_lastScreenPropertiesUpdateTime;
     RunLoop::Timer m_screenPropertiesUpdateTimer;
+    ScreenPropertiesState m_screenPropertiesState { ScreenPropertiesState::Idle };
+#endif
+
+#if PLATFORM(MAC)
+    std::optional<WebCore::ScreenProperties> m_cachedScreenProperties;
 #endif
 
 #if ENABLE(IPC_TESTING_API)

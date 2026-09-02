@@ -123,7 +123,7 @@ public:
     virtual HashSet<WebCore::SecurityOriginData> originsWithCredentials() { return { }; }
     virtual void removeCredentialsForOrigins(const Vector<WebCore::SecurityOriginData>&) { }
     virtual void clearCredentials(WallTime) { }
-    virtual void loadImageForDecoding(WebCore::ResourceRequest&&, WebPageProxyIdentifier, size_t, CompletionHandler<void(Expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&&) { ASSERT_NOT_REACHED(); }
+    virtual void loadImageForDecoding(WebCore::ResourceRequest&&, WebPageProxyIdentifier, size_t, CompletionHandler<void(std::expected<Ref<WebCore::FragmentedSharedBuffer>, WebCore::ResourceError>&&)>&&) { ASSERT_NOT_REACHED(); }
 
     // CanMakeCheckedPtr.
     uint32_t checkedPtrCount() const final { return CanMakeCheckedPtr::checkedPtrCount(); }
@@ -216,6 +216,7 @@ public:
     bool shouldRunServiceWorkersOnMainThreadForTesting() const { return m_shouldRunServiceWorkersOnMainThreadForTesting; }
     std::optional<unsigned> overrideServiceWorkerRegistrationCountTestingValue() const { return m_overrideServiceWorkerRegistrationCountTestingValue; }
     bool isStaleWhileRevalidateEnabled() const { return m_isStaleWhileRevalidateEnabled; }
+    bool qualifiedServerTrustDebugEnabledForTesting() const { return m_qualifiedServerTrustDebugEnabledForTesting; }
 
     void lowMemoryHandler(WTF::Critical);
 
@@ -384,6 +385,7 @@ protected:
     bool m_allowsServerPreconnect { true };
     bool m_shouldRunServiceWorkersOnMainThreadForTesting { false };
     bool m_shouldSendPrivateTokenIPCForTesting { false };
+    const bool m_qualifiedServerTrustDebugEnabledForTesting { false };
     std::optional<unsigned> m_overrideServiceWorkerRegistrationCountTestingValue;
     HashSet<Ref<ServiceWorkerSoftUpdateLoader>> m_softUpdateLoaders;
     HashMap<WebCore::FetchIdentifier, WeakRef<ServiceWorkerFetchTask>> m_navigationPreloaders;

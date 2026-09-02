@@ -170,16 +170,17 @@ NSURL *WebExtensionAPIRuntime::getURL(const String& resourcePath, NSString **out
     return URL { extensionContext().baseURL(), resourcePath }.createNSURL().autorelease();
 }
 
-NSDictionary *WebExtensionAPIRuntime::getManifest()
+RefPtr<JSON::Object> WebExtensionAPIRuntime::getManifest()
 {
     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/runtime/getManifest
 
-    return extensionContext().manifest();
+    return protect(extensionContext())->manifest();
 }
 
 String WebExtensionAPIRuntime::getVersion()
 {
-    return objectForKey<NSString>(extensionContext().manifest(), versionKey);
+    RefPtr manifest = protect(extensionContext())->manifest();
+    return manifest ? manifest->getString(versionKey) : nullString();
 }
 
 String WebExtensionAPIRuntime::runtimeIdentifier()
@@ -226,7 +227,7 @@ void WebExtensionAPIRuntime::getBackgroundPage(Ref<WebExtensionCallbackHandler>&
         return;
     }
 
-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeGetBackgroundPage(), [protectedThis = Ref { *this }, callback = WTF::move(callback)](Expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&& result) {
+    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeGetBackgroundPage(), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<std::optional<WebCore::PageIdentifier>, WebExtensionError>&& result) {
         if (!result) {
             callback->reportError(result.error().createNSString().get());
             return;
@@ -293,7 +294,7 @@ void WebExtensionAPIRuntime::openOptionsPage(Ref<WebExtensionCallbackHandler>&& 
 {
     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/runtime/openOptionsPage
 
-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeOpenOptionsPage(), [protectedThis = Ref { *this }, callback = WTF::move(callback)](Expected<void, WebExtensionError>&& result) {
+    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeOpenOptionsPage(), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<void, WebExtensionError>&& result) {
         if (!result) {
             callback->reportError(result.error().createNSString().get());
             return;
@@ -347,7 +348,7 @@ void WebExtensionAPIRuntime::sendMessage(WebPageProxyIdentifier webPageProxyIden
     };
 
     bool userGesture = WebCore::UserGestureIndicator::processingUserGesture();
-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeSendMessage(extensionID, messageJSON, senderParameters, userGesture), [protectedThis = Ref { *this }, callback = WTF::move(callback)](Expected<String, WebExtensionError>&& result) {
+    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeSendMessage(extensionID, messageJSON, senderParameters, userGesture), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<String, WebExtensionError>&& result) {
         if (!result) {
             callback->reportError(result.error().createNSString().get());
             return;
@@ -386,7 +387,7 @@ RefPtr<WebExtensionAPIPort> WebExtensionAPIRuntime::connect(WebPageProxyIdentifi
     Ref port = WebExtensionAPIPort::create(*this, webPageProxyIdentifier, WebExtensionContentWorldType::Main, resolvedName);
 
     bool userGesture = WebCore::UserGestureIndicator::processingUserGesture();
-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeConnect(extensionID, port->channelIdentifier(), resolvedName, senderParameters, userGesture), [=, this, protectedThis = Ref { *this }, globalContext = JSRetainPtr { JSContextGetGlobalContext(context) }](Expected<void, WebExtensionError>&& result) {
+    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeConnect(extensionID, port->channelIdentifier(), resolvedName, senderParameters, userGesture), [=, this, protectedThis = Ref { *this }, globalContext = JSRetainPtr { JSContextGetGlobalContext(context) }](std::expected<void, WebExtensionError>&& result) {
         if (result)
             return;
 
@@ -401,7 +402,7 @@ void WebExtensionAPIRuntime::sendNativeMessage(WebFrame& frame, const String& ap
 {
     // Documentation: https://developer.mozilla.org/docs/Mozilla/Add-ons/WebExtensions/API/runtime/sendNativeMessage
 
-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeSendNativeMessage(applicationID, messageJSON), [protectedThis = Ref { *this }, callback = WTF::move(callback)](Expected<String, WebExtensionError>&& result) {
+    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeSendNativeMessage(applicationID, messageJSON), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<String, WebExtensionError>&& result) {
         if (!result) {
             callback->reportError(result.error().createNSString().get());
             return;
@@ -417,7 +418,7 @@ RefPtr<WebExtensionAPIPort> WebExtensionAPIRuntime::connectNative(WebPageProxyId
 
     Ref port = WebExtensionAPIPort::create(*this, webPageProxyIdentifier, WebExtensionContentWorldType::Native, applicationID);
 
-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeConnectNative(applicationID, port->channelIdentifier(), webPageProxyIdentifier), [=, this, protectedThis = Ref { *this }, globalContext = JSRetainPtr { JSContextGetGlobalContext(context) }](Expected<void, WebExtensionError>&& result) {
+    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeConnectNative(applicationID, port->channelIdentifier(), webPageProxyIdentifier), [=, this, protectedThis = Ref { *this }, globalContext = JSRetainPtr { JSContextGetGlobalContext(context) }](std::expected<void, WebExtensionError>&& result) {
         if (result)
             return;
 
@@ -463,7 +464,7 @@ void WebExtensionAPIWebPageRuntime::sendMessage(WebPage& page, WebFrame& frame, 
         return;
     }
 
-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeWebPageSendMessage(extensionID, messageJSON, senderParameters), [protectedThis = Ref { *this }, callback = WTF::move(callback)](Expected<String, WebExtensionError>&& result) {
+    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeWebPageSendMessage(extensionID, messageJSON, senderParameters), [protectedThis = Ref { *this }, callback = WTF::move(callback)](std::expected<String, WebExtensionError>&& result) {
         if (!result) {
             callback->call();
             return;
@@ -513,7 +514,7 @@ RefPtr<WebExtensionAPIPort> WebExtensionAPIWebPageRuntime::connect(WebPage& page
 
     Ref port = WebExtensionAPIPort::create(contentWorldType(), protect(runtime()), *destinationExtensionContext, page.webPageProxyIdentifier(), WebExtensionContentWorldType::Main, resolvedName);
 
-    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeWebPageConnect(extensionID, port->channelIdentifier(), resolvedName, senderParameters), [=, this, protectedThis = Ref { *this }, globalContext = JSRetainPtr { JSContextGetGlobalContext(context) }](Expected<void, WebExtensionError>&& result) {
+    WebProcess::singleton().sendWithAsyncReply(Messages::WebExtensionContext::RuntimeWebPageConnect(extensionID, port->channelIdentifier(), resolvedName, senderParameters), [=, this, protectedThis = Ref { *this }, globalContext = JSRetainPtr { JSContextGetGlobalContext(context) }](std::expected<void, WebExtensionError>&& result) {
         if (result)
             return;
 
@@ -690,7 +691,7 @@ void WebExtensionContextProxy::internalDispatchRuntimeMessageEvent(WebExtensionC
         std::optional<WebCore::UserGestureIndicator> gestureIndicator;
         if (userGesture) {
             RefPtr coreFrame = frame.coreLocalFrame();
-            gestureIndicator.emplace(WebCore::IsProcessingUserGesture::Yes, coreFrame ? coreFrame->document() : nullptr);
+            gestureIndicator.emplace(WebCore::IsProcessingUserGesture::Yes, protect(coreFrame ? coreFrame->document() : nullptr));
         }
 
         for (auto& listener : listeners) {
@@ -783,7 +784,7 @@ void WebExtensionContextProxy::internalDispatchRuntimeConnectEvent(WebExtensionC
         std::optional<WebCore::UserGestureIndicator> gestureIndicator;
         if (userGesture) {
             RefPtr coreFrame = frame.coreLocalFrame();
-            gestureIndicator.emplace(WebCore::IsProcessingUserGesture::Yes, coreFrame ? coreFrame->document() : nullptr);
+            gestureIndicator.emplace(WebCore::IsProcessingUserGesture::Yes, protect(coreFrame ? coreFrame->document() : nullptr));
         }
 
         auto globalContext = frame.jsContextForWorld(toDOMWrapperWorld(contentWorldType));

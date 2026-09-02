@@ -296,10 +296,6 @@ set(libangle_headers
     "src/libANGLE/MemoryProgramCache.h"
     "src/libANGLE/MemoryShaderCache.h"
     "src/libANGLE/Observer.h"
-    "src/libANGLE/Overlay.h"
-    "src/libANGLE/OverlayWidgets.h"
-    "src/libANGLE/Overlay_autogen.h"
-    "src/libANGLE/Overlay_font_autogen.h"
     "src/libANGLE/PixelLocalStorage.h"
     "src/libANGLE/Program.h"
     "src/libANGLE/ProgramExecutable.h"
@@ -359,7 +355,6 @@ set(libangle_headers
     "src/libANGLE/renderer/gl/functionsgl_enums.h"
     "src/libANGLE/renderer/ImageImpl.h"
     "src/libANGLE/renderer/MemoryObjectImpl.h"
-    "src/libANGLE/renderer/OverlayImpl.h"
     "src/libANGLE/renderer/ProgramImpl.h"
     "src/libANGLE/renderer/ProgramExecutableImpl.h"
     "src/libANGLE/renderer/ProgramPipelineImpl.h"
@@ -442,10 +437,6 @@ set(libangle_sources
     "src/libANGLE/MemoryProgramCache.cpp"
     "src/libANGLE/MemoryShaderCache.cpp"
     "src/libANGLE/Observer.cpp"
-    "src/libANGLE/Overlay.cpp"
-    "src/libANGLE/OverlayWidgets.cpp"
-    "src/libANGLE/Overlay_autogen.cpp"
-    "src/libANGLE/Overlay_font_autogen.cpp"
     "src/libANGLE/PixelLocalStorage.cpp"
     "src/libANGLE/Platform.cpp"
     "src/libANGLE/Program.cpp"
@@ -666,6 +657,13 @@ set(libglesv2_entry_point_sources
     "src/libGLESv2/global_state.h"
     "src/libGLESv2/resource.h"
 )
+
+if(angle_enable_explicit_context)
+    list(APPEND libglesv2_entry_point_sources
+        "src/libGLESv2/entry_points_gles_ext_explicit_context_autogen.cpp"
+        "src/libGLESv2/entry_points_gles_ext_explicit_context_autogen.h"
+    )
+endif()
 
 set(libglesv2_sources "src/libGLESv2/libGLESv2_autogen.cpp")
 

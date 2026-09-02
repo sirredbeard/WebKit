@@ -56,6 +56,7 @@
 #include "PositionedLayoutConstraints.h"
 #include "RelayoutScopeForScrollbarChange.h"
 #include "RenderBlockFlow.h"
+#include "RenderBlockFlowInlines.h"
 #include "RenderBlockInlines.h"
 #include "RenderBoxFragmentInfo.h"
 #include "RenderBoxInlines.h"
@@ -90,6 +91,7 @@
 #include "StylePrimitiveNumericTypes+Evaluation.h"
 #include "StylePrimitiveNumericTypes+EvaluationMinimum.h"
 #include "TransformState.h"
+#include <wtf/HexNumber.h>
 #include <wtf/NeverDestroyed.h>
 #include <wtf/SetForScope.h>
 #include <wtf/StackStats.h>
@@ -554,18 +556,22 @@ static EnumSet<LogicalBoxAxis> sizesAffectedByScrollbarsForSubtreeRoot(const Ren
     if (layoutContext.subtreeScrollbarChangesState())
         return { };
 
+    EnumSet<LogicalBoxAxis> sizesAffected;
+
     auto& style = renderBlock.style();
     auto& computedLogicalWidth = style.logicalWidth();
-    if (computedLogicalWidth.isFixed())
-        return { };
+    if (!computedLogicalWidth.isFixed() && (computedLogicalWidth.isIntrinsic() || computedLogicalWidth.isMinIntrinsic() || renderBlock.sizesLogicalWidthToFitContent()))
+        sizesAffected.add(LogicalBoxAxis::Inline);
 
-    if (computedLogicalWidth.isIntrinsic() || computedLogicalWidth.isMinIntrinsic())
-        return LogicalBoxAxis::Inline;
+    auto& computedLogicalHeight = style.logicalHeight();
 
-    if (renderBlock.sizesLogicalWidthToFitContent())
-        return LogicalBoxAxis::Inline;
+    if (style.display().isFlexibleBox() && renderBlock.isBlockLevelBox() && (computedLogicalHeight.isAuto() || computedLogicalHeight.isIntrinsic()))
+        sizesAffected.add(LogicalBoxAxis::Block);
 
-    return { };
+    if (renderBlock.isRenderGrid() && (computedLogicalHeight.isAuto() || computedLogicalHeight.isIntrinsic()))
+        sizesAffected.add(LogicalBoxAxis::Block);
+
+    return sizesAffected;
 }
 
 static bool canContainDescendantScrollbarChanges(const RenderBlock& renderBlock, const LocalFrameViewLayoutContext& layoutContext)
@@ -781,6 +787,10 @@ bool RenderBlock::simplifiedLayout()
     if (!canPerformSimplifiedLayout())
         return false;
 
+    // Out-of-flow movements issue their own repaints.
+    auto checkForRepaint = !needsSimplifiedNormalFlowLayout() ? std::optional { LayoutRepainter::CheckForRepaint::No } : std::nullopt;
+    auto repainter = LayoutRepainter { *this, checkForRepaint };
+
     LayoutStateMaintainer statePusher(*this, locationOffset(), isTransformed() || hasReflection() || writingMode().isBlockFlipped());
     bool didOutOfFlowMovement = false;
     if (needsOutOfFlowMovementLayout()) {
@@ -824,6 +834,7 @@ bool RenderBlock::simplifiedLayout()
         RelayoutScopeForScrollbarChange relayoutScope { *this, InOverflowRelayout::No };
     }
     clearNeedsLayout();
+    repainter.repaintAfterLayout();
     return true;
 }
 
@@ -867,9 +878,9 @@ std::pair<LayoutUnit, LayoutUnit> RenderBlock::intrinsicLogicalMarginStartAndEnd
     auto& marginEnd = child.style().marginEnd(writingMode());
     auto startValue = LayoutUnit { };
     auto endValue = LayoutUnit { };
-    if (!marginStart.isAuto() && !shouldTrimChildMargin(Style::MarginTrimSide::InlineStart, child))
+    if (!marginStart.isAuto())
         startValue = Style::evaluateMinimum<LayoutUnit>(marginStart, 0_lu, child.style().usedZoomForLength());
-    if (!marginEnd.isAuto() && !shouldTrimChildMargin(Style::MarginTrimSide::InlineEnd, child))
+    if (!marginEnd.isAuto())
         endValue = Style::evaluateMinimum<LayoutUnit>(marginEnd, 0_lu, child.style().usedZoomForLength());
     return { startValue, endValue };
 }
@@ -1375,9 +1386,9 @@ bool RenderBlock::establishesIndependentFormattingContext() const
         // https://drafts.csswg.org/css-grid-2/#grid-item-display
         if (!style.gridTemplateColumns().subgrid && !style.gridTemplateRows().subgrid)
             return true;
-        // Masonry makes grid items not subgrids.
+        // Grid lanes layout makes grid items not subgrids.
         if (auto* parentGridBox = dynamicDowncast<RenderGrid>(parent()))
-            return parentGridBox->isMasonry();
+            return parentGridBox->isGridLanes();
     }
 
     return false;
@@ -2216,8 +2227,30 @@ PositionWithAffinity RenderBlock::positionForPoint(const LayoutPoint& point, Hit
     if (!isHorizontalWritingMode())
         pointInLogicalContents = pointInLogicalContents.transposedPoint();
 
-    if (childrenInline())
+    if (childrenInline()) {
+        // The line boxes this walk visits do not include the floats, so a container with a block level box on a line
+        // answers a point above its content with that box. Take the leading floats here instead, the way the block
+        // level children walk below does.
+        auto positionForPointOnLeadingFloat = [&]() -> std::optional<PositionWithAffinity> {
+            if (!containsFloats())
+                return { };
+            CheckedPtr blockFlow = dynamicDowncast<RenderBlockFlow>(*this);
+            if (!blockFlow || !blockFlow->hasBlocksInInlineLayout())
+                return { };
+            for (auto& childBox : childrenOfType<RenderBox>(*this)) {
+                if (!childBox.isFloating())
+                    return { };
+                if (!isChildHitTestCandidate(childBox, source))
+                    continue;
+                if (pointInLogicalContents.y() < logicalTopForChild(childBox) + logicalHeightForChild(childBox))
+                    return positionForPointRespectingEditingBoundaries(*this, childBox, pointInContents, source);
+            }
+            return { };
+        };
+        if (auto position = positionForPointOnLeadingFloat())
+            return *position;
         return positionForPointWithInlineChildren(pointInLogicalContents, source);
+    }
 
     RenderBox* lastCandidateBox = lastChildBox();
 
@@ -2807,25 +2840,6 @@ bool RenderBlock::updateFragmentRangeForBoxChild(const RenderBox& box) const
     return false;
 }
 
-void RenderBlock::setTrimmedMarginForChild(RenderBox& child, Style::MarginTrimSide side)
-{
-    // Only the block-axis sides: margin-trim applies to block containers and multi-column containers, and it has no
-    // effect on the inline-axis margins of their children.
-    switch (side) {
-    case Style::MarginTrimSide::BlockStart:
-        setMarginBeforeForChild(child, 0_lu);
-        break;
-    case Style::MarginTrimSide::BlockEnd:
-        setMarginAfterForChild(child, 0_lu);
-        break;
-    default:
-        ASSERT_NOT_REACHED();
-        break;
-    }
-
-    child.markMarginAsTrimmed(side);
-}
-
 LayoutUnit RenderBlock::collapsedMarginBeforeForChild(const RenderBox& child) const
 {
     // If the child has the same directionality as we do, then we can just return its
@@ -3209,8 +3223,9 @@ void RenderBlock::layoutExcludedChildren(RelayoutChildren relayoutChildren)
     
     LayoutUnit fieldsetBorderBefore = borderBefore();
     LayoutUnit legendLogicalHeight = logicalHeightForChild(legend);
-    LayoutUnit legendBeforeMargin = marginBeforeForChild(legend);
-    LayoutUnit legendAfterMargin = marginAfterForChild(legend);
+    CheckedPtr blockFlow = dynamicDowncast<RenderBlockFlow>(*this);
+    LayoutUnit legendBeforeMargin = blockFlow && blockFlow->shouldTrimChildMargin(Style::MarginTrimSide::BlockStart, legend) ? 0_lu : marginBeforeForChild(legend);
+    LayoutUnit legendAfterMargin = blockFlow && blockFlow->shouldTrimChildMargin(Style::MarginTrimSide::BlockEnd, legend) ? 0_lu : marginAfterForChild(legend);
     LayoutUnit topPositionForLegend = std::max(0_lu, (fieldsetBorderBefore - legendLogicalHeight) / 2);
     LayoutUnit bottomPositionForLegend = topPositionForLegend + legendLogicalHeight + legendAfterMargin;
 

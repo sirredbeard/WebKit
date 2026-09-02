@@ -1738,7 +1738,7 @@ static ALWAYS_INLINE JSString* arrayJoinWithStringSeparator(JSGlobalObject* glob
     if (!separator->length() && (array->indexingType() == ArrayWithContiguous || array->indexingType() == ArrayWithInt32)) {
         auto* butterfly = array->butterfly();
         JSOnlyStringsAndInt32sJoiner joiner(StringView { });
-        auto* joined = joiner.tryJoin(globalObject, butterfly->contiguous().data(), length);
+        auto* joined = joiner.tryJoin<ContiguousShape>(globalObject, butterfly->contiguous().data(), length);
         RETURN_IF_EXCEPTION(scope, { });
         if (joined)
             return joined;
@@ -3873,7 +3873,7 @@ JSC_DEFINE_JIT_OPERATION(operationToUpperCase, JSString*, (JSGlobalObject* globa
     if (!inputString->length())
         OPERATION_RETURN(scope, vm.smallStrings.emptyString());
 
-    String uppercasedString = inputString->is8Bit() ? inputString->convertToUppercaseWithoutLocaleStartingAtFailingIndex8Bit(failingIndex) : inputString->convertToUppercaseWithoutLocale();
+    String uppercasedString = inputString->is8Bit() ? inputString->convertToUppercaseWithoutLocaleStartingAtFailingIndex8Bit(failingIndex) : inputString->convertToUppercaseWithoutLocaleStartingAtFailingIndex16Bit(failingIndex);
     if (uppercasedString.impl() == inputString->impl())
         OPERATION_RETURN(scope, string);
     OPERATION_RETURN(scope, jsString(vm, WTF::move(uppercasedString)));
@@ -3892,7 +3892,7 @@ JSC_DEFINE_JIT_OPERATION(operationToLowerCase, JSString*, (JSGlobalObject* globa
     if (!inputString->length())
         OPERATION_RETURN(scope, vm.smallStrings.emptyString());
 
-    String lowercasedString = inputString->is8Bit() ? inputString->convertToLowercaseWithoutLocaleStartingAtFailingIndex8Bit(failingIndex) : inputString->convertToLowercaseWithoutLocale();
+    String lowercasedString = inputString->is8Bit() ? inputString->convertToLowercaseWithoutLocaleStartingAtFailingIndex8Bit(failingIndex) : inputString->convertToLowercaseWithoutLocaleStartingAtFailingIndex16Bit(failingIndex);
     if (lowercasedString.impl() == inputString->impl())
         OPERATION_RETURN(scope, string);
     OPERATION_RETURN(scope, jsString(vm, WTF::move(lowercasedString)));
@@ -3977,13 +3977,16 @@ JSC_DEFINE_JIT_OPERATION(operationStringIndexOf, UCPUStrictInt32, (JSGlobalObjec
 
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    unsigned baseLength = base->length();
+    unsigned argumentLength = argument->length();
+    if (baseLength < argumentLength)
+        OPERATION_RETURN(scope, toUCPUStrictInt32(-1));
+
     auto otherView = argument->view(globalObject);
     OPERATION_RETURN_IF_EXCEPTION(scope, 0);
 
-    unsigned argumentLength = otherView->length();
-
     unsigned pos = 0;
-    if (argumentLength == 1 && base->isRope() && base->length() >= JSString::minLengthForRopeWalk) {
+    if (argumentLength == 1 && base->isRope() && baseLength >= JSString::minLengthForRopeWalk) {
         if (auto result = base->tryFindOneChar(globalObject, otherView[0], pos)) {
             if (*result != notFound)
                 OPERATION_RETURN(scope, toUCPUStrictInt32(static_cast<int32_t>(*result)));
@@ -4036,11 +4039,8 @@ JSC_DEFINE_JIT_OPERATION(operationStringIndexOfWithIndex, UCPUStrictInt32, (JSGl
 
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto otherView = argument->view(globalObject);
-    OPERATION_RETURN_IF_EXCEPTION(scope, 0);
-
     int32_t length = base->length();
-    unsigned argumentLength = otherView->length();
+    unsigned argumentLength = argument->length();
     unsigned pos = 0;
     if (position >= 0)
         pos = std::min<uint32_t>(position, length);
@@ -4048,7 +4048,10 @@ JSC_DEFINE_JIT_OPERATION(operationStringIndexOfWithIndex, UCPUStrictInt32, (JSGl
     if (static_cast<unsigned>(length) < static_cast<uint64_t>(argumentLength) + pos)
         OPERATION_RETURN(scope, toUCPUStrictInt32(-1));
 
-    if (argumentLength == 1 && base->isRope() && base->length() >= JSString::minLengthForRopeWalk) {
+    auto otherView = argument->view(globalObject);
+    OPERATION_RETURN_IF_EXCEPTION(scope, 0);
+
+    if (argumentLength == 1 && base->isRope() && static_cast<unsigned>(length) >= JSString::minLengthForRopeWalk) {
         if (auto result = base->tryFindOneChar(globalObject, otherView[0], pos)) {
             if (*result != notFound)
                 OPERATION_RETURN(scope, toUCPUStrictInt32(static_cast<int32_t>(*result)));
@@ -4131,13 +4134,13 @@ JSC_DEFINE_JIT_OPERATION(operationStringLastIndexOf, UCPUStrictInt32, (JSGlobalO
 
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto otherView = argument->view(globalObject);
-    OPERATION_RETURN_IF_EXCEPTION(scope, 0);
-
     unsigned length = base->length();
-    unsigned argumentLength = otherView->length();
+    unsigned argumentLength = argument->length();
     if (length < argumentLength)
         OPERATION_RETURN(scope, toUCPUStrictInt32(-1));
+
+    auto otherView = argument->view(globalObject);
+    OPERATION_RETURN_IF_EXCEPTION(scope, 0);
 
     unsigned startPosition = length - argumentLength;
 
@@ -4181,11 +4184,8 @@ JSC_DEFINE_JIT_OPERATION(operationStringLastIndexOfWithIndex, UCPUStrictInt32, (
 
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto otherView = argument->view(globalObject);
-    OPERATION_RETURN_IF_EXCEPTION(scope, 0);
-
     unsigned length = base->length();
-    unsigned argumentLength = otherView->length();
+    unsigned argumentLength = argument->length();
     if (length < argumentLength)
         OPERATION_RETURN(scope, toUCPUStrictInt32(-1));
 
@@ -4195,6 +4195,9 @@ JSC_DEFINE_JIT_OPERATION(operationStringLastIndexOfWithIndex, UCPUStrictInt32, (
         startPosition = 0;
     else
         startPosition = std::min<uint32_t>(position, maxStart);
+
+    auto otherView = argument->view(globalObject);
+    OPERATION_RETURN_IF_EXCEPTION(scope, 0);
 
     if (argumentLength == 1)
         OPERATION_RETURN(scope, stringLastIndexOfOneCharOperation(globalObject, scope, base, otherView[0], startPosition));
@@ -4242,10 +4245,15 @@ JSC_DEFINE_JIT_OPERATION(operationStringStartsWith, bool, (JSGlobalObject* globa
 
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    unsigned length = base->length();
+    unsigned prefixLength = prefix->length();
+    if (length < prefixLength)
+        OPERATION_RETURN(scope, false);
+
     auto prefixView = prefix->view(globalObject);
     OPERATION_RETURN_IF_EXCEPTION(scope, false);
 
-    if (prefixView->length() == 1 && base->isRope() && base->length() >= JSString::minLengthForRopeWalk) {
+    if (prefixLength == 1 && base->isRope() && length >= JSString::minLengthForRopeWalk) {
         if (auto character = base->tryGetCharAt(globalObject, 0))
             OPERATION_RETURN(scope, *character == prefixView[0]);
     }
@@ -4264,17 +4272,19 @@ JSC_DEFINE_JIT_OPERATION(operationStringStartsWithWithIndex, bool, (JSGlobalObje
 
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto prefixView = prefix->view(globalObject);
-    OPERATION_RETURN_IF_EXCEPTION(scope, false);
-
     unsigned length = base->length();
     unsigned start = 0;
     if (position >= 0)
         start = std::min<uint32_t>(position, length);
 
-    if (prefixView->length() == 1 && base->isRope() && length >= JSString::minLengthForRopeWalk) {
-        if (start >= length)
-            OPERATION_RETURN(scope, false);
+    unsigned prefixLength = prefix->length();
+    if (length - start < prefixLength)
+        OPERATION_RETURN(scope, false);
+
+    auto prefixView = prefix->view(globalObject);
+    OPERATION_RETURN_IF_EXCEPTION(scope, false);
+
+    if (prefixLength == 1 && base->isRope() && length >= JSString::minLengthForRopeWalk) {
         if (auto character = base->tryGetCharAt(globalObject, start))
             OPERATION_RETURN(scope, *character == prefixView[0]);
     }
@@ -4293,11 +4303,16 @@ JSC_DEFINE_JIT_OPERATION(operationStringEndsWith, bool, (JSGlobalObject* globalO
 
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    unsigned length = base->length();
+    unsigned suffixLength = suffix->length();
+    if (length < suffixLength)
+        OPERATION_RETURN(scope, false);
+
     auto suffixView = suffix->view(globalObject);
     OPERATION_RETURN_IF_EXCEPTION(scope, false);
 
-    if (suffixView->length() == 1 && base->isRope() && base->length() >= JSString::minLengthForRopeWalk) {
-        if (auto character = base->tryGetCharAt(globalObject, base->length() - 1))
+    if (suffixLength == 1 && base->isRope() && length >= JSString::minLengthForRopeWalk) {
+        if (auto character = base->tryGetCharAt(globalObject, length - 1))
             OPERATION_RETURN(scope, *character == suffixView[0]);
     }
 
@@ -4315,27 +4330,23 @@ JSC_DEFINE_JIT_OPERATION(operationStringEndsWithWithEndPosition, bool, (JSGlobal
 
     auto scope = DECLARE_THROW_SCOPE(vm);
 
+    unsigned length = base->length();
+    unsigned end = endPosition >= 0 ? std::min<uint32_t>(endPosition, length) : 0;
+
+    unsigned suffixLength = suffix->length();
+    if (end < suffixLength)
+        OPERATION_RETURN(scope, false);
+
     auto suffixView = suffix->view(globalObject);
     OPERATION_RETURN_IF_EXCEPTION(scope, false);
 
-    if (suffixView->length() == 1 && base->isRope() && base->length() >= JSString::minLengthForRopeWalk) {
-        unsigned length = base->length();
-        unsigned end = endPosition >= 0 ? std::min<uint32_t>(endPosition, length) : 0;
-        if (!end)
-            OPERATION_RETURN(scope, false);
+    if (suffixLength == 1 && base->isRope() && length >= JSString::minLengthForRopeWalk) {
         if (auto character = base->tryGetCharAt(globalObject, end - 1))
             OPERATION_RETURN(scope, *character == suffixView[0]);
     }
 
     auto baseView = base->view(globalObject);
     OPERATION_RETURN_IF_EXCEPTION(scope, false);
-
-    int32_t length = baseView->length();
-    unsigned end = length;
-    if (endPosition >= 0)
-        end = std::min<uint32_t>(endPosition, length);
-    else
-        end = 0;
 
     OPERATION_RETURN(scope, baseView->hasInfixEndingAt(suffixView, end));
 }
@@ -4390,10 +4401,10 @@ JSC_DEFINE_JIT_OPERATION(operationStringSplitRegExp, EncodedJSValue, (JSGlobalOb
             throwTypeError(globalObject, scope, "@@split method is not callable"_s);
             OPERATION_RETURN(scope, encodedJSValue());
         }
-        std::array<EncodedJSValue, 2> args { {
+        auto args = WTF::toArray<EncodedJSValue>({
             JSValue::encode(thisString),
             JSValue::encode(limitValue),
-        } };
+        });
         JSValue result = call(globalObject, splitter, callData, separator, ArgList { args.data(), args.size() });
         OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
         OPERATION_RETURN(scope, JSValue::encode(result));
@@ -4437,9 +4448,9 @@ JSC_DEFINE_JIT_OPERATION(operationStringMatchRegExp, EncodedJSValue, (JSGlobalOb
             throwTypeError(globalObject, scope, "@@match method is not callable"_s);
             OPERATION_RETURN(scope, encodedJSValue());
         }
-        std::array<EncodedJSValue, 1> args { {
+        auto args = WTF::toArray<EncodedJSValue>({
             JSValue::encode(thisString),
-        } };
+        });
         JSValue result = call(globalObject, matcher, callData, regexp, ArgList { args.data(), args.size() });
         OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
         OPERATION_RETURN(scope, JSValue::encode(result));
@@ -4475,9 +4486,9 @@ JSC_DEFINE_JIT_OPERATION(operationStringSearchRegExp, EncodedJSValue, (JSGlobalO
             throwTypeError(globalObject, scope, "@@search method is not callable"_s);
             OPERATION_RETURN(scope, encodedJSValue());
         }
-        std::array<EncodedJSValue, 1> args { {
+        auto args = WTF::toArray<EncodedJSValue>({
             JSValue::encode(thisString),
-        } };
+        });
         JSValue result = call(globalObject, searcher, callData, regexp, ArgList { args.data(), args.size() });
         OPERATION_RETURN_IF_EXCEPTION(scope, encodedJSValue());
         OPERATION_RETURN(scope, JSValue::encode(result));
@@ -5091,7 +5102,7 @@ JSC_DEFINE_JIT_OPERATION(operationCompareStringGreaterEq, uintptr_t, (JSGlobalOb
     OPERATION_RETURN(scope, !codePointCompareLessThan(asString(a)->view(globalObject), asString(b)->view(globalObject)));
 }
 
-JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationNotifyWrite, void, (VM* vmPointer, WatchpointSet* set))
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationNotifyWrite, void, (VM* vmPointer, InlineWatchpointSet* set))
 {
     VM& vm = *vmPointer;
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
@@ -5813,10 +5824,10 @@ JSC_DEFINE_JIT_OPERATION(operationSpreadGeneric, JSCell*, (JSGlobalObject* globa
         auto callData = JSC::getCallData(iterationFunction);
         ASSERT(callData.type != CallData::Type::None);
 
-        MarkedArgumentBuffer arguments;
-        arguments.append(iterable);
-        ASSERT(!arguments.hasOverflowed());
-        JSValue arrayResult = call(globalObject, iterationFunction, callData, jsNull(), arguments);
+        auto arguments = WTF::toArray<EncodedJSValue>({
+            JSValue::encode(iterable),
+        });
+        JSValue arrayResult = call(globalObject, iterationFunction, callData, jsNull(), ArgList { arguments.data(), arguments.size() });
         OPERATION_RETURN_IF_EXCEPTION(scope, nullptr);
         array = uncheckedDowncast<JSArray>(arrayResult);
     }
@@ -5838,10 +5849,10 @@ JSC_DEFINE_JIT_OPERATION(operationSpreadSet, JSCell*, (JSGlobalObject* globalObj
         JSFunction* iterationFunction = globalObject->iteratorProtocolFunction();
         auto callData = JSC::getCallData(iterationFunction);
         ASSERT(callData.type != CallData::Type::None);
-        MarkedArgumentBuffer arguments;
-        arguments.append(set);
-        ASSERT(!arguments.hasOverflowed());
-        JSValue arrayResult = call(globalObject, iterationFunction, callData, jsNull(), arguments);
+        auto arguments = WTF::toArray<EncodedJSValue>({
+            JSValue::encode(set),
+        });
+        JSValue arrayResult = call(globalObject, iterationFunction, callData, jsNull(), ArgList { arguments.data(), arguments.size() });
         OPERATION_RETURN_IF_EXCEPTION(scope, nullptr);
         JSArray* array = uncheckedDowncast<JSArray>(arrayResult);
         OPERATION_RETURN(scope, JSCellButterfly::createFromArray(globalObject, vm, array));
@@ -6085,85 +6096,26 @@ JSC_DEFINE_JIT_OPERATION(operationSetGet, JSValue*, (JSGlobalObject* globalObjec
     OPERATION_RETURN(scope, keySlot);
 }
 
-JSC_DEFINE_JIT_OPERATION(operationMapIterationNext, EncodedJSValue, (JSGlobalObject* globalObject, JSCell* cell, int32_t index))
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationMapIterationNext, EncodedJSValue, (VM* vmPointer, JSCell* cell, int32_t index))
 {
-    VM& vm = globalObject->vm();
+    VM& vm = *vmPointer;
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    if (cell == vm.orderedHashTableSentinel())
-        OPERATION_RETURN(scope, JSValue::encode(vm.orderedHashTableSentinel()));
-
-    JSMap::Storage& storage = *uncheckedDowncast<JSMap::Storage>(cell);
-    OPERATION_RETURN(scope, JSValue::encode(JSMap::Helper::nextAndUpdateIterationEntry(vm, storage, index)));
-}
-JSC_DEFINE_JIT_OPERATION(operationMapIterationEntry, EncodedJSValue, (JSGlobalObject* globalObject, JSCell* cell))
-{
-    VM& vm = globalObject->vm();
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
 
     ASSERT(cell != vm.orderedHashTableSentinel());
     JSMap::Storage& storage = *uncheckedDowncast<JSMap::Storage>(cell);
-    OPERATION_RETURN(scope, JSValue::encode(JSMap::Helper::getIterationEntry(storage)));
-}
-JSC_DEFINE_JIT_OPERATION(operationMapIterationEntryKey, EncodedJSValue, (JSGlobalObject* globalObject, JSCell* cell))
-{
-    VM& vm = globalObject->vm();
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    ASSERT(cell != vm.orderedHashTableSentinel());
-    JSMap::Storage& storage = *uncheckedDowncast<JSMap::Storage>(cell);
-    OPERATION_RETURN(scope, JSValue::encode(JSMap::Helper::getIterationEntryKey(storage)));
-}
-JSC_DEFINE_JIT_OPERATION(operationMapIterationEntryValue, EncodedJSValue, (JSGlobalObject* globalObject, JSCell* cell))
-{
-    VM& vm = globalObject->vm();
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    ASSERT(cell != vm.orderedHashTableSentinel());
-    JSMap::Storage& storage = *uncheckedDowncast<JSMap::Storage>(cell);
-    OPERATION_RETURN(scope, JSValue::encode(JSMap::Helper::getIterationEntryValue(storage)));
+    return JSValue::encode(JSMap::Helper::nextAndUpdateIterationEntry(vm, storage, index));
 }
 
-JSC_DEFINE_JIT_OPERATION(operationSetIterationNext, EncodedJSValue, (JSGlobalObject* globalObject, JSCell* cell, int32_t index))
+JSC_DEFINE_NOEXCEPT_JIT_OPERATION(operationSetIterationNext, EncodedJSValue, (VM* vmPointer, JSCell* cell, int32_t index))
 {
-    VM& vm = globalObject->vm();
+    VM& vm = *vmPointer;
     CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
     JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-    if (cell == vm.orderedHashTableSentinel())
-        OPERATION_RETURN(scope, JSValue::encode(vm.orderedHashTableSentinel()));
-
-    JSSet::Storage& storage = *uncheckedDowncast<JSSet::Storage>(cell);
-    OPERATION_RETURN(scope, JSValue::encode(JSSet::Helper::nextAndUpdateIterationEntry(vm, storage, index)));
-}
-JSC_DEFINE_JIT_OPERATION(operationSetIterationEntry, EncodedJSValue, (JSGlobalObject* globalObject, JSCell* cell))
-{
-    VM& vm = globalObject->vm();
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
 
     ASSERT(cell != vm.orderedHashTableSentinel());
     JSSet::Storage& storage = *uncheckedDowncast<JSSet::Storage>(cell);
-    OPERATION_RETURN(scope, JSValue::encode(JSSet::Helper::getIterationEntry(storage)));
-}
-JSC_DEFINE_JIT_OPERATION(operationSetIterationEntryKey, EncodedJSValue, (JSGlobalObject* globalObject, JSCell* cell))
-{
-    VM& vm = globalObject->vm();
-    CallFrame* callFrame = DECLARE_CALL_FRAME(vm);
-    JITOperationPrologueCallFrameTracer tracer(vm, callFrame);
-    auto scope = DECLARE_THROW_SCOPE(vm);
-
-    ASSERT(cell != vm.orderedHashTableSentinel());
-    JSSet::Storage& storage = *uncheckedDowncast<JSSet::Storage>(cell);
-    OPERATION_RETURN(scope, JSValue::encode(JSSet::Helper::getIterationEntryKey(storage)));
+    return JSValue::encode(JSSet::Helper::nextAndUpdateIterationEntry(vm, storage, index));
 }
 
 JSC_DEFINE_JIT_OPERATION(operationStringIteratorNext, UGPRPair, (JSGlobalObject* globalObject, JSString* string, int32_t position))

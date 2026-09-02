@@ -128,11 +128,13 @@ double ViewGestureController::resistanceForDelta(double deltaScale, double curre
     return resistance;
 }
 
-void ViewGestureController::handleMagnificationGesture(double scale, WebEventPhase phase, FloatPoint origin)
+void ViewGestureController::handleMagnificationGesture(double scale, WebEventPhase phase, FloatPoint origin, WebEventInputSource inputSource)
 {
     RefPtr page = m_webPageProxy.get();
     if (!page)
         return;
+
+    m_magnificationGestureInputSource = inputSource;
 
     auto obscuredContentInsets = page->obscuredContentInsets();
     origin.move(-obscuredContentInsets.left(), -obscuredContentInsets.top());
@@ -264,17 +266,17 @@ void ViewGestureController::didCollectGeometryForSmartMagnificationGesture(Float
     m_lastMagnificationGestureWasSmartMagnification = true;
 }
 
-bool ViewGestureController::PendingSwipeTracker::scrollEventCanStartSwipe(NativeWebWheelEvent event)
+bool ViewGestureController::PendingSwipeTracker::scrollEventCanStartSwipe(const NativeWebWheelEvent& event)
 {
     return event.phase() == WebWheelEvent::Phase::Began;
 }
 
-bool ViewGestureController::PendingSwipeTracker::scrollEventCanEndSwipe(NativeWebWheelEvent event)
+bool ViewGestureController::PendingSwipeTracker::scrollEventCanEndSwipe(const NativeWebWheelEvent& event)
 {
     return event.phase() == WebWheelEvent::Phase::Ended;
 }
 
-bool ViewGestureController::PendingSwipeTracker::scrollEventCanInfluenceSwipe(NativeWebWheelEvent event)
+bool ViewGestureController::PendingSwipeTracker::scrollEventCanInfluenceSwipe(const NativeWebWheelEvent& event)
 {
     if (!event.hasPreciseScrollingDeltas())
         return false;
@@ -285,12 +287,12 @@ bool ViewGestureController::PendingSwipeTracker::scrollEventCanInfluenceSwipe(Na
 #endif
 }
 
-FloatSize ViewGestureController::PendingSwipeTracker::scrollEventGetScrollingDeltas(NativeWebWheelEvent event)
+FloatSize ViewGestureController::PendingSwipeTracker::scrollEventGetScrollingDeltas(const NativeWebWheelEvent& event)
 {
     return event.delta();
 }
 
-bool ViewGestureController::handleScrollWheelEvent(NativeWebWheelEvent event)
+bool ViewGestureController::handleScrollWheelEvent(const NativeWebWheelEvent& event)
 {
     if (m_swipeProgressTracker && protect(*m_swipeProgressTracker)->handleEvent(event))
         return true;

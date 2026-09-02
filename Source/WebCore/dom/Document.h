@@ -117,7 +117,6 @@ class CanvasRenderingContext2D;
 class CaretPosition;
 class CharacterData;
 class Comment;
-class ConstantPropertyMap;
 class ContentVisibilityDocumentState;
 class CustomElementRegistry;
 class DOMImplementation;
@@ -840,8 +839,15 @@ public:
     const Style::ComputedStyle& initialStyle() const LIFETIME_BOUND;
     void invalidateCachedInitialStyle();
 
-    bool renderTreeBeingDestroyed() const { return m_renderTreeBeingDestroyed; }
-    bool hasLivingRenderTree() const { return renderView() && !renderTreeBeingDestroyed(); }
+    enum class RenderTreeState : uint8_t {
+        NotBuilt,
+        Built,
+        BeingDestroyed,
+    };
+    RenderTreeState renderTreeState() const { return m_renderTreeState; }
+
+    WEBCORE_EXPORT bool canEverRender() const;
+
     void updateRenderTree(std::unique_ptr<Style::Update> styleUpdate);
 
     bool updateLayoutIfDimensionsOutOfDate(Element&, OptionSet<DimensionsCheck> = { DimensionsCheck::Width, DimensionsCheck::Height }, OptionSet<LayoutOptions> = { });
@@ -1362,6 +1368,8 @@ public:
 
     void finishedParsing();
 
+    void queueCompressionDictionaryLoad(Function<void()>&&);
+
     enum BackForwardCacheState : uint8_t { NotInBackForwardCache, AboutToEnterBackForwardCache, InBackForwardCache };
 
     BackForwardCacheState backForwardCacheState() const { return m_backForwardCacheState; }
@@ -1544,7 +1552,7 @@ public:
 
     MonotonicTime lastHandledUserGestureTimestamp() const { return m_lastHandledUserGestureTimestamp; }
     bool hasHadUserInteraction() const { return static_cast<bool>(m_lastHandledUserGestureTimestamp); }
-    void updateLastHandledUserGestureTimestamp(MonotonicTime);
+    WEBCORE_EXPORT void updateLastHandledUserGestureTimestamp(MonotonicTime);
     bool processingUserGestureForMedia() const;
 
     // Identifies which branch of processingUserGestureForMedia() authorizes media playback.
@@ -1847,8 +1855,6 @@ public:
     void attachToCachedFrame(CachedFrameBase&);
     void detachFromCachedFrame(CachedFrameBase&);
 
-    ConstantPropertyMap& constantProperties() const;
-
     void orientationChanged(IntDegrees orientation);
     OrientationNotifier& orientationNotifier();
 
@@ -2150,6 +2156,8 @@ private:
     friend class Page;
     friend class ThrowOnDynamicMarkupInsertionCountIncrementer;
     friend class UnloadCountIncrementer;
+
+    void flushPendingCompressionDictionaryLoads();
 
     void updateTitleElement(Element& changingTitleElement);
     void willDetachPage() final;
@@ -2467,8 +2475,6 @@ private:
 
     std::optional<HashMap<String, WeakPtr<Element, WeakPtrImplWithEventTargetData>, ASCIICaseInsensitiveHash>> m_accessKeyCache;
 
-    std::unique_ptr<ConstantPropertyMap> m_constantPropertyMap;
-
     RenderPtr<RenderView> m_renderView;
     std::unique_ptr<Style::ComputedStyle> m_initialContainingBlockStyle;
 
@@ -2781,6 +2787,8 @@ private:
     bool m_processingLoadEvent { false };
     bool m_loadEventFinished { false };
 
+    Vector<Function<void()>> m_pendingCompressionDictionaryLoads;
+
     bool m_visuallyOrdered { false };
     bool m_bParsing { false }; // FIXME: rename
 
@@ -2798,7 +2806,7 @@ private:
     bool m_sawElementsInKnownNamespaces { false };
     bool m_isSrcdocDocument { false };
 
-    bool m_renderTreeBeingDestroyed { false };
+    RenderTreeState m_renderTreeState { RenderTreeState::NotBuilt };
     bool m_hasPreparedForDestruction { false };
 
     bool m_hasStyleWithViewportUnits { false };

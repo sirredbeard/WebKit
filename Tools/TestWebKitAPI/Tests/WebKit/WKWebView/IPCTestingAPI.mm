@@ -38,9 +38,11 @@
 #import <WebKit/WKProcessPoolPrivate.h>
 #import <WebKit/WKWebView.h>
 #import <WebKit/WKWebViewPrivate.h>
+#import <WebKit/WKWebsiteDataStorePrivate.h>
 #import <WebKit/_WKFeature.h>
 #import <WebKit/_WKRemoteObjectInterface.h>
 #import <WebKit/_WKRemoteObjectRegistry.h>
+#import <WebKit/_WKWebsiteDataStoreConfiguration.h>
 #import <wtf/RetainPtr.h>
 #import <wtf/cocoa/TypeCastsCocoa.h>
 
@@ -474,7 +476,7 @@ TEST(IPCTestingAPI, InvalidURLsDeleteCookie)
     EXPECT_STREQ([alertMessage UTF8String], "[]");
 }
 
-TEST(IPCTestingAPI, EmptyFirstPartyForCookiesCookieRequestHeaderFieldValue)
+TEST(IPCTestingAPI, EmptyFirstPartyForCookiesCookieRequestHeaderFieldValueDigest)
 {
     RetainPtr webView = createWebViewWithIPCTestingAPI();
     RetainPtr delegate = adoptNS([[IPCTestingAPIDelegate alloc] init]);
@@ -484,29 +486,25 @@ TEST(IPCTestingAPI, EmptyFirstPartyForCookiesCookieRequestHeaderFieldValue)
     auto sendMessage = @"const connection = IPC.connectionForProcessTarget('Networking');"
         "const result = connection.sendSyncMessage("
         "    0,"
-        "    IPC.messages.NetworkConnectionToWebProcess_CookieRequestHeaderFieldValue.name,"
+        "    IPC.messages.NetworkConnectionToWebProcess_CookieRequestHeaderFieldValueDigest.name,"
         "    1000,"
         "    ["
         "        {type: 'String', value: null},"
         "        {type: 'uint8_t', value: 1},"
         "        {type: 'uint8_t', value: 1},"
         "        {type: 'uint8_t', value: 1},"
-        "        {type: 'String', value: location.href},"
+        "        {type: 'URL', value: location.href},"
         "        {type: 'uint8_t', value: 1},"
-        "        {type: 'FrameID', value: IPC.frameID},"
-        "        {type: 'uint8_t', value: 1},"
-        "        {type: 'uint64_t', value: IPC.pageID},"
-        "        {type: 'uint8_t', value: 1},"
-        "        {type: 'uint64_t', value: IPC.webPageProxyID},"
         "    ]"
         ");";
     [webView evaluateJavaScript:sendMessage completionHandler:nil];
     while (![webView objectByEvaluatingJavaScript:@"result"])
         TestWebKitAPI::Util::spinRunLoop();
-    EXPECT_STREQ([[webView stringByEvaluatingJavaScript:@"result.arguments[0].value"] UTF8String], "<null>");
+    // std::nullopt decodes to undefined.
+    EXPECT_STREQ([[webView stringByEvaluatingJavaScript:@"typeof result.arguments[0]"] UTF8String], "undefined");
 }
 
-TEST(IPCTestingAPI, InvalidSameSiteInfoCookieRequestHeaderFieldValue)
+TEST(IPCTestingAPI, InvalidSameSiteInfoCookieRequestHeaderFieldValueDigest)
 {
     RetainPtr webView = createWebViewWithIPCTestingAPI();
     [webView synchronouslyLoadHTMLString:@"<!DOCTYPE html><script>document.cookie='a=b';</script>" baseURL:[NSURL URLWithString:@"https://webkit.org/"]];
@@ -514,26 +512,22 @@ TEST(IPCTestingAPI, InvalidSameSiteInfoCookieRequestHeaderFieldValue)
     auto sendMessage = @"const connection = IPC.connectionForProcessTarget('Networking');"
         "const result = connection.sendSyncMessage("
         "    0,"
-        "    IPC.messages.NetworkConnectionToWebProcess_CookieRequestHeaderFieldValue.name,"
+        "    IPC.messages.NetworkConnectionToWebProcess_CookieRequestHeaderFieldValueDigest.name,"
         "    1000,"
         "    ["
-        "        {type: 'String', value: location.href},"
+        "        {type: 'URL', value: location.href},"
         "        {type: 'uint8_t', value: 1},"
         "        {type: 'uint8_t', value: 1},"
         "        {type: 'uint8_t', value: 1},"
-        "        {type: 'String', value: 'https://webkit.org'},"
+        "        {type: 'URL', value: 'https://webkit.org'},"
         "        {type: 'uint8_t', value: 1},"
-        "        {type: 'FrameID', value: IPC.frameID},"
-        "        {type: 'uint8_t', value: 1},"
-        "        {type: 'uint64_t', value: IPC.pageID},"
-        "        {type: 'uint8_t', value: 1},"
-        "        {type: 'uint64_t', value: IPC.webPageProxyID},"
         "    ]"
         ");";
     [webView evaluateJavaScript:sendMessage completionHandler:nil];
     while (![webView objectByEvaluatingJavaScript:@"result"])
         TestWebKitAPI::Util::spinRunLoop();
-    EXPECT_STREQ([[webView stringByEvaluatingJavaScript:@"result.arguments[0].value"] UTF8String], "<null>");
+    // std::nullopt decodes to undefined.
+    EXPECT_STREQ([[webView stringByEvaluatingJavaScript:@"typeof result.arguments[0]"] UTF8String], "undefined");
 }
 
 TEST(IPCTestingAPI, DescribesArguments)
@@ -1036,6 +1030,88 @@ TEST(IPCTestingAPI, InstallMockContentFilterRedirectsWithTestOnlyIPC)
 }
 
 #endif // ENABLE(CONTENT_FILTERING)
+
+static constexpr auto fileSystemGoodPageHTML = R"TESTRESOURCE(
+<script>
+var capturedIdentifier = null;
+IPC.addOutgoingMessageListener('Networking', function(msg) {
+    if (msg.name === IPC.messages.NetworkStorageManager_GetHandleNames.name && !capturedIdentifier) {
+        var buf = new DataView(msg.buffer);
+        capturedIdentifier = buf.getBigUint64(16, true);
+    }
+});
+
+var run = async() => {
+    var root = await navigator.storage.getDirectory();
+    await root.getFileHandle('test.txt', { create: true });
+    for await (var entry of root.entries()) { }
+    if (capturedIdentifier !== null)
+        alert('id:' + capturedIdentifier.toString());
+    else
+        alert('error:no-identifier-captured');
+};
+run();
+</script>
+)TESTRESOURCE"_s;
+
+static constexpr auto fileSystemBadPageHTML = R"TESTRESOURCE(
+<script>
+var attack = (stolenId) => {
+    var net = IPC.connectionForProcessTarget('Networking');
+    var onReply = (reply) => {
+        var buf = new DataView(reply.buffer);
+        var hasValue = !!buf.getUint8(16);
+        if (hasValue)
+            alert('FAIL:access-granted');
+        else
+            alert('PASS:access-denied');
+    };
+    net.sendWithAsyncReply(0, IPC.messages.NetworkStorageManager_GetHandleNames.name, [ { type: 'uint64_t', value: BigInt(stolenId) } ], onReply);
+};
+</script>
+)TESTRESOURCE"_s;
+
+TEST(IPCTestingAPI, FileSystemForgedHandleIdentifierRejected)
+{
+    using namespace TestWebKitAPI;
+
+    RetainPtr tempDir = retainPtr([[NSFileManager defaultManager] URLForDirectory:NSItemReplacementDirectory inDomain:NSUserDomainMask appropriateForURL:[NSURL fileURLWithPath:NSTemporaryDirectory()] create:YES error:nil]);
+    RetainPtr dataStoreConfiguration = adoptNS([[_WKWebsiteDataStoreConfiguration alloc] init]);
+    [dataStoreConfiguration setGeneralStorageDirectory:[tempDir URLByAppendingPathComponent:@"Storage"]];
+    RetainPtr dataStore = adoptNS([[WKWebsiteDataStore alloc] _initWithConfiguration:dataStoreConfiguration.get()]);
+    [dataStore _setStorageSiteValidationEnabled:YES];
+
+    RetainPtr configuration = adoptNS([[WKWebViewConfiguration alloc] init]);
+    for (_WKFeature *feature in [WKPreferences _features]) {
+        if ([feature.key isEqualToString:@"IPCTestingAPIEnabled"]) {
+            [[configuration preferences] _setEnabled:YES forFeature:feature];
+            break;
+        }
+    }
+    [configuration setWebsiteDataStore:dataStore.get()];
+
+    RetainPtr goodUIDelegate = adoptNS([TestUIDelegate new]);
+    RetainPtr goodView = adoptNS([[TestWKWebView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600) configuration:configuration.get()]);
+    [goodView setUIDelegate:goodUIDelegate.get()];
+    [goodView synchronouslyLoadHTMLString:[NSString stringWithUTF8String:fileSystemGoodPageHTML.characters()] baseURL:[NSURL URLWithString:@"https://good.example/"]];
+
+    NSString *goodMessage = [goodUIDelegate waitForAlert];
+    EXPECT_TRUE([goodMessage hasPrefix:@"id:"]);
+    NSString *stolenIdentifier = [goodMessage substringFromIndex:3];
+
+    auto goodPID = [goodView _webProcessIdentifier];
+
+    RetainPtr badUIDelegate = adoptNS([TestUIDelegate new]);
+    RetainPtr badView = adoptNS([[TestWKWebView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600) configuration:configuration.get()]);
+    [badView setUIDelegate:badUIDelegate.get()];
+    [badView synchronouslyLoadHTMLString:[NSString stringWithUTF8String:fileSystemBadPageHTML.characters()] baseURL:[NSURL URLWithString:@"https://bad.example/"]];
+
+    auto badPID = [badView _webProcessIdentifier];
+    EXPECT_NE(goodPID, badPID);
+
+    [badView evaluateJavaScript:[NSString stringWithFormat:@"attack('%@')", stolenIdentifier] completionHandler:nil];
+    EXPECT_WK_STREQ(@"PASS:access-denied", [badUIDelegate waitForAlert]);
+}
 
 #endif
 

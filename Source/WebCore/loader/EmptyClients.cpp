@@ -500,7 +500,7 @@ public:
         return adoptRef(*new EmptyCredentialRequestCoordinatorClient);
     }
 
-    void showDigitalCredentialsChooser(std::optional<FrameIdentifier>, DigitalCredentialsRawRequests&&, const DigitalCredentialsRequestData&, CompletionHandler<void(Expected<DigitalCredentialsResponseData, ExceptionData>&&)>&& completionHandler)
+    void showDigitalCredentialsChooser(std::optional<FrameIdentifier>, DigitalCredentialsRawRequests&&, const DigitalCredentialsRequestData&, CompletionHandler<void(std::expected<DigitalCredentialsResponseData, ExceptionData>&&)>&& completionHandler)
     {
         callOnMainThread([completionHandler = WTF::move(completionHandler)]() mutable {
             completionHandler(makeUnexpected(ExceptionData { ExceptionCode::NotSupportedError, "Empty client."_s }));
@@ -1183,7 +1183,7 @@ Ref<FrameNetworkingContext> EmptyFrameLoaderClient::createNetworkingContext()
     return EmptyFrameNetworkingContext::create();
 }
 
-void EmptyFrameLoaderClient::sendH2Ping(const URL& url, CompletionHandler<void(Expected<Seconds, ResourceError>&&)>&& completionHandler)
+void EmptyFrameLoaderClient::sendH2Ping(const URL& url, CompletionHandler<void(std::expected<Seconds, ResourceError>&&)>&& completionHandler)
 {
     ASSERT_NOT_REACHED();
     completionHandler(makeUnexpected(internalError(url)));
@@ -1242,7 +1242,7 @@ class EmptyWebTransportSession final : public WebTransportSession, public Thread
 public:
     WTF_ABSTRACT_THREAD_SAFE_REF_COUNTED_AND_CAN_MAKE_WEAK_PTR_IMPL;
 
-    Ref<WebTransportSessionInitializationPromise> initialize(ScriptExecutionContext&, const URL&, const WebTransportOptions&, const ClientOrigin&) final { return WebTransportSessionInitializationPromise::createAndReject(); }
+    Ref<WebTransportSessionInitializationPromise> initialize(ScriptExecutionContext&, const URL&, const WebTransportOptions&, const Vector<KeyValuePair<String, String>>&, const ClientOrigin&) final { return WebTransportSessionInitializationPromise::createAndReject(); }
     Ref<WebTransportSendPromise> sendDatagram(std::optional<WebTransportSendGroupIdentifier>, std::span<const uint8_t>) final { return WebTransportSendPromise::createAndReject(); }
     Ref<WebTransportStreamPromise> createOutgoingUnidirectionalStream() final { return WebTransportStreamPromise::createAndReject(); }
     Ref<WebTransportStreamPromise> createBidirectionalStream() final { return WebTransportStreamPromise::createAndReject(); }

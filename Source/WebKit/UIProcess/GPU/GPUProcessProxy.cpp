@@ -39,6 +39,8 @@
 #include "OverrideLanguages.h"
 #include "ProcessTerminationReason.h"
 #include "ProvisionalPageProxy.h"
+#include "RemoteMediaSessionManagerProxy.h"
+#include "SecurityFlagsController.h"
 #include "SharedFileHandle.h"
 #include "WebKitServiceNames.h"
 #include "WebPageGroup.h"
@@ -173,6 +175,7 @@ GPUProcessProxy::GPUProcessProxy()
 
     GPUProcessCreationParameters parameters;
     parameters.auxiliaryProcessParameters = auxiliaryProcessParameters();
+    parameters.securityFlags.replaceWith(SecurityFlagsController::singleton().securityFlags());
     parameters.overrideLanguages = overrideLanguages();
 
 #if ENABLE(MEDIA_STREAM)
@@ -205,6 +208,11 @@ GPUProcessProxy::GPUProcessProxy()
 
 #if USE(GBM)
     parameters.drmDevice = drmMainDevice();
+#endif
+
+#if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
+    if (RefPtr mediaSessionManagerProxy = RemoteMediaSessionManagerProxy::singletonIfCreated())
+        parameters.nowPlayingFallbackSession = mediaSessionManagerProxy->computeNowPlayingFallbackSession();
 #endif
 
 #if PLATFORM(COCOA)
@@ -505,13 +513,6 @@ void GPUProcessProxy::cancelGetDisplayMediaPrompt()
 }
 #endif
 
-#if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
-Ref<GenericPromise> GPUProcessProxy::tryToSetAudioSessionActiveForProcess(WebCore::ProcessIdentifier identifier, bool active)
-{
-    return protect(connection())->sendWithPromisedReply<WTF::GenericPromiseConverter>(Messages::GPUProcess::TryToSetAudioSessionActiveForProcess(identifier, active));
-}
-#endif
-
 void GPUProcessProxy::getLaunchOptions(ProcessLauncher::LaunchOptions& launchOptions)
 {
     launchOptions.processType = ProcessLauncher::ProcessType::GPU;
@@ -551,6 +552,11 @@ void GPUProcessProxy::createGPUProcessConnection(WebProcessProxy& webProcessProx
 void GPUProcessProxy::sharedPreferencesForWebProcessDidChange(WebProcessProxy& webProcessProxy, SharedPreferencesForWebProcess&& sharedPreferencesForWebProcess, CompletionHandler<void()>&& completionHandler)
 {
     sendWithAsyncReply(Messages::GPUProcess::SharedPreferencesForWebProcessDidChange { webProcessProxy.coreProcessIdentifier(), WTF::move(sharedPreferencesForWebProcess) }, WTF::move(completionHandler));
+}
+
+void GPUProcessProxy::securityFlagsDidChange(const SecurityFlags& securityFlags)
+{
+    send(Messages::GPUProcess::SecurityFlagsDidChange { securityFlags }, 0);
 }
 
 void GPUProcessProxy::gpuProcessExited(ProcessTerminationReason reason)
@@ -648,7 +654,7 @@ void GPUProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::Connect
     }
 
 #if PLATFORM(COCOA)
-    if (auto networkProcess = NetworkProcessProxy::defaultNetworkProcess())
+    if (RefPtr networkProcess = NetworkProcessProxy::defaultNetworkProcess())
         networkProcess->sendXPCEndpointToProcess(*this);
 #endif
 
@@ -662,9 +668,8 @@ void GPUProcessProxy::didFinishLaunching(ProcessLauncher* launcher, IPC::Connect
         if (!isPowerLoggingInTaskMode())
             return;
         RunLoop::mainSingleton().dispatch([weakThis = WTF::move(weakThis)] () {
-            if (!weakThis)
-                return;
-            weakThis->enablePowerLogging();
+            if (RefPtr protectedThis = weakThis)
+                protectedThis->enablePowerLogging();
         });
     }).get());
 #endif
@@ -827,13 +832,15 @@ void GPUProcessProxy::updatePreferences(WebProcessProxy& webProcess)
     send(Messages::GPUProcess::UpdateGPUProcessPreferences(gpuPreferences), 0);
 }
 
-void GPUProcessProxy::updateScreenPropertiesIfNeeded()
+void GPUProcessProxy::updateScreenPropertiesIfNeeded(WebProcessPool& processPool)
 {
 #if PLATFORM(MAC)
     if (!canSendMessage())
         return;
 
-    setScreenProperties(collectScreenProperties());
+    setScreenProperties(processPool.cachedScreenProperties());
+#else
+    UNUSED_PARAM(processPool);
 #endif
 }
 

@@ -74,6 +74,7 @@ NonInheritedRareData::NonInheritedRareData()
     , portalTransform(CSS::Keyword::Auto { })
 #endif
     , containerNames(ComputedStyle::initialContainerNames())
+    , linkParameters(ComputedStyle::initialLinkParameters())
     , viewTransitionClasses(ComputedStyle::initialViewTransitionClasses())
     , viewTransitionName(ComputedStyle::initialViewTransitionName())
     , columnGap(ComputedStyle::initialColumnGap())
@@ -108,6 +109,7 @@ NonInheritedRareData::NonInheritedRareData()
     , blockStepInsert(static_cast<unsigned>(ComputedStyle::initialBlockStepInsert()))
     , blockStepRound(static_cast<unsigned>(ComputedStyle::initialBlockStepRound()))
     , spatial(static_cast<unsigned>(SpatialType::None))
+    , portalAction(static_cast<unsigned>(PortalActionType::None))
     , overscrollBehaviorX(static_cast<unsigned>(ComputedStyle::initialOverscrollBehaviorX()))
     , overscrollBehaviorY(static_cast<unsigned>(ComputedStyle::initialOverscrollBehaviorY()))
     , transformStyle3D(static_cast<unsigned>(ComputedStyle::initialTransformStyle3D()))
@@ -187,6 +189,7 @@ inline NonInheritedRareData::NonInheritedRareData(const NonInheritedRareData& o)
     , translate(o.translate)
     , portalTransform(o.portalTransform)
     , containerNames(o.containerNames)
+    , linkParameters(o.linkParameters)
     , viewTransitionClasses(o.viewTransitionClasses)
     , viewTransitionName(o.viewTransitionName)
     , columnGap(o.columnGap)
@@ -221,6 +224,7 @@ inline NonInheritedRareData::NonInheritedRareData(const NonInheritedRareData& o)
     , blockStepInsert(o.blockStepInsert)
     , blockStepRound(o.blockStepRound)
     , spatial(o.spatial)
+    , portalAction(o.portalAction)
     , overscrollBehaviorX(o.overscrollBehaviorX)
     , overscrollBehaviorY(o.overscrollBehaviorY)
     , transformStyle3D(o.transformStyle3D)
@@ -308,6 +312,7 @@ bool NonInheritedRareData::operator==(const NonInheritedRareData& o) const
         && translate == o.translate
         && portalTransform == o.portalTransform
         && containerNames == o.containerNames
+        && linkParameters == o.linkParameters
         && columnGap == o.columnGap
         && rowGap == o.rowGap
         && offsetPath == o.offsetPath
@@ -339,6 +344,7 @@ bool NonInheritedRareData::operator==(const NonInheritedRareData& o) const
         && blockStepInsert == o.blockStepInsert
         && blockStepRound == o.blockStepRound
         && spatial == o.spatial
+        && portalAction == o.portalAction
         && overscrollBehaviorX == o.overscrollBehaviorX
         && overscrollBehaviorY == o.overscrollBehaviorY
         && transformStyle3D == o.transformStyle3D
@@ -450,6 +456,7 @@ void NonInheritedRareData::dumpDifferences(TextStream& ts, const NonInheritedRar
     LOG_IF_DIFFERENT(portalTransform);
 
     LOG_IF_DIFFERENT(containerNames);
+    LOG_IF_DIFFERENT(linkParameters);
 
     LOG_IF_DIFFERENT(viewTransitionClasses);
     LOG_IF_DIFFERENT(viewTransitionName);
@@ -497,6 +504,7 @@ void NonInheritedRareData::dumpDifferences(TextStream& ts, const NonInheritedRar
     LOG_IF_DIFFERENT_WITH_CAST(BlockStepInsert, blockStepInsert);
     LOG_IF_DIFFERENT_WITH_CAST(BlockStepRound, blockStepRound);
     LOG_IF_DIFFERENT_WITH_CAST(SpatialType, spatial);
+    LOG_IF_DIFFERENT_WITH_CAST(PortalActionType, portalAction);
 
     LOG_IF_DIFFERENT_WITH_CAST(OverscrollBehavior, overscrollBehaviorX);
     LOG_IF_DIFFERENT_WITH_CAST(OverscrollBehavior, overscrollBehaviorY);

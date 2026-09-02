@@ -127,6 +127,11 @@ public:
             if (isAlignedForUnder(a) || isAlignedForUnder(b))
                 return true;
 
+            // A percentage value resolves against the decorating box size, which is not known here,
+            // so two different percentages would compare equal below at inkOverflowForDecorations where percent values are resolved against 0.
+            if (a.textDecorationInset() != b.textDecorationInset() && (a.textDecorationInset().hasPercentage() || b.textDecorationInset().hasPercentage()))
+                return true;
+
             if (inkOverflowForDecorations(a) != inkOverflowForDecorations(b))
                 return true;
         }
@@ -242,6 +247,9 @@ public:
 
         // If the counter directives change, trigger a relayout to re-calculate counter values and rebuild the counter node tree.
         if (a.usedCounterDirectives != b.usedCounterDirectives)
+            return true;
+
+        if (a.linkParameters != b.linkParameters)
             return true;
 
         if (a.scale != b.scale || a.rotate != b.rotate || a.translate != b.translate)
@@ -453,10 +461,6 @@ public:
                 }
             }
         }
-
-        // FIXME: We should add an optimized form of layout that just recomputes visual overflow.
-        if (changeAffectsVisualOverflow(a, b))
-            return true;
 
         if (&a.nonInheritedData() != &b.nonInheritedData()) {
             SUPPRESS_UNCOUNTED_ARG if (a.nonInheritedData().miscData.ptr() != b.nonInheritedData().miscData.ptr()
@@ -800,7 +804,8 @@ public:
     {
         return a.effectiveInert != b.effectiveInert
             || a.userModify != b.userModify
-            || a.userSelect != b.userSelect
+            || a.webkitUserSelect != b.webkitUserSelect
+            || a.usedUserSelect != b.usedUserSelect
             || a.appleColorFilter != b.appleColorFilter
             || a.imageRendering != b.imageRendering
             || a.accentColor != b.accentColor
@@ -891,6 +896,46 @@ public:
         SUPPRESS_UNCOUNTED_ARG if (changedCustomPaintWatchedProperty(a, *a.nonInheritedData().rareData, b, *b.nonInheritedData().rareData))
             return true;
 
+        if (highlightPseudoElementStyleChangeRequiresRepaint(a, b))
+            return true;
+
+        return false;
+    }
+
+    // A highlight pseudo-element has no renderer of its own, so the originating element repaints for
+    // it. https://drafts.csswg.org/css-pseudo-4/#highlight-cascade
+    static bool highlightPseudoElementStyleChangeRequiresRepaint(const Style::ComputedStyle& a, const Style::ComputedStyle& b)
+    {
+        auto highlightTypes = a.highlightPseudoElementTypes();
+        if (highlightTypes != b.highlightPseudoElementTypes())
+            return true;
+
+        auto differs = [&](const PseudoElementIdentifier& identifier) {
+            auto* aStyle = a.pseudoElementStyle(identifier);
+            auto* bStyle = b.pseudoElementStyle(identifier);
+            if (!aStyle || !bStyle)
+                return aStyle != bStyle;
+            return *aStyle != *bStyle;
+        };
+
+        for (auto type : highlightTypes) {
+            // ::highlight() is the only one with a name, so it needs the cached entries rather than
+            // a single identifier.
+            if (type != PseudoElementType::Highlight) {
+                if (differs({ type }))
+                    return true;
+                continue;
+            }
+            for (auto& identifier : a.pseudoElementStyles().keys()) {
+                if (identifier.type == PseudoElementType::Highlight && differs(identifier))
+                    return true;
+            }
+            for (auto& identifier : b.pseudoElementStyles().keys()) {
+                if (identifier.type == PseudoElementType::Highlight && !a.pseudoElementStyle(identifier))
+                    return true;
+            }
+        }
+
         return false;
     }
 
@@ -980,6 +1025,9 @@ public:
 
         if (changeRequiresLayout(a, b, changedContextSensitiveProperties))
             return { DifferenceResult::Layout, changedContextSensitiveProperties };
+
+        if (changeAffectsVisualOverflow(a, b))
+            return { DifferenceResult::Overflow, changedContextSensitiveProperties };
 
         if (changeRequiresOutOfFlowMovementLayoutOnly(a, b, changedContextSensitiveProperties))
             return { DifferenceResult::LayoutOutOfFlowMovementOnly, changedContextSensitiveProperties };

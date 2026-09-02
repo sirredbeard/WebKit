@@ -87,7 +87,6 @@
 #include <JavaScriptCore/ScriptCallStackFactory.h>
 #include <WebCore/HTTPStatusCodes.h>
 #include <tuple>
-#include <wtf/Expected.h>
 #include <wtf/JSONValues.h>
 #include <wtf/Lock.h>
 #include <wtf/RefPtr.h>
@@ -125,7 +124,7 @@ Ref<Inspector::Protocol::Network::WebSocketFrame> buildWebSocketMessage(const We
 InspectorNetworkAgent::InspectorNetworkAgent(WebAgentContext& context, const NetworkResourcesData::Settings& networkResourcesDataSettings)
     : Inspector::NetworkAgentInstrumentation(context)
     , m_frontendDispatcher(makeUniqueRef<Inspector::NetworkFrontendDispatcher>(context.frontendRouter))
-    , m_backendDispatcher(Inspector::NetworkBackendDispatcher::create(context.backendDispatcher, this))
+    , m_backendDispatcher(Inspector::NetworkBackendDispatcher::create(protect(context.backendDispatcher), this))
     , m_injectedScriptManager(context.injectedScriptManager)
     , m_resourcesData(makeUniqueRef<NetworkResourcesData>(networkResourcesDataSettings))
 {
@@ -984,7 +983,7 @@ void InspectorNetworkAgent::loadResource(const Inspector::Protocol::Network::Fra
         return;
     }
 
-    ResourceUtilities::loadResource(*context, urlString, [callback = WTF::move(callback)](Expected<std::tuple<String, String, int>, String>&& result) mutable {
+    ResourceUtilities::loadResource(*context, urlString, [callback = WTF::move(callback)](std::expected<std::tuple<String, String, int>, String>&& result) mutable {
         if (result) {
             auto& [content, mimeType, status] = result.value();
             callback->sendSuccess(content, mimeType, status);
@@ -1385,10 +1384,13 @@ static std::optional<String> textContentForResourceData(const NetworkResourcesDa
     return std::nullopt;
 }
 
-void InspectorNetworkAgent::searchOtherRequests(const JSC::Yarr::RegularExpression& regex, Ref<JSON::ArrayOf<Inspector::Protocol::Page::SearchResult>>& result)
+void InspectorNetworkAgent::searchOtherRequests(const JSC::Yarr::RegularExpression& regex, Ref<JSON::ArrayOf<Inspector::Protocol::Page::SearchResult>>& result, const HashSet<String>& alreadySearchedURLs)
 {
     Vector<NetworkResourcesData::ResourceData*> resources = m_resourcesData->resources();
     for (auto* resourceData : resources) {
+        // Skip resources already reported by the page agent's cached-resource search to avoid duplicate results.
+        if (alreadySearchedURLs.contains(resourceData->url()))
+            continue;
         if (auto textContent = textContentForResourceData(*resourceData)) {
             int matchesCount = ContentSearchUtilities::countRegularExpressionMatches(regex, *textContent);
             if (matchesCount)

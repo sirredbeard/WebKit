@@ -78,19 +78,10 @@ protected:
     WEBCORE_EXPORT Recorder(IsDeferred, const GraphicsContextState&, const FloatRect& initialClip, const AffineTransform&, const DestinationColorSpace&, DrawGlyphsMode);
 
     struct ContextState {
-        GraphicsContextState state;
         AffineTransform ctm;
         FloatRect clipBounds;
-        std::optional<GraphicsContextState> lastDrawingState { std::nullopt };
-
-        ContextState cloneForTransparencyLayer() const
-        {
-            auto stateClone = state.clone(GraphicsContextState::Purpose::TransparencyLayer);
-            std::optional<GraphicsContextState> lastDrawingStateClone;
-            if (lastDrawingStateClone)
-                lastDrawingStateClone = lastDrawingState->clone(GraphicsContextState::Purpose::TransparencyLayer);
-            return ContextState { WTF::move(stateClone), ctm, clipBounds, WTF::move(lastDrawingStateClone) };
-        }
+        // GraphicsContextState properties to sync after restore().
+        GraphicsContextState::ChangeFlags committedChanges;
 
         void NODELETE translate(float x, float y);
         void rotate(float angleInRadians);
@@ -128,6 +119,11 @@ protected:
     WEBCORE_EXPORT FloatRect initialClip() const;
     DrawGlyphsMode drawGlyphsMode() const { return m_drawGlyphsMode; }
 
+    // The state difference between set GraphicsContext state and
+    // committed recording state.
+    WEBCORE_EXPORT GraphicsContextState::ChangeFlags computeStateChanges();
+    WEBCORE_EXPORT void commitStateChanges(GraphicsContextState::ChangeFlags);
+
     const DestinationColorSpace& colorSpace() const LIFETIME_BOUND final { return m_colorSpace; }
 
 private:
@@ -140,19 +136,21 @@ private:
 
     void fillRoundedRectImpl(const FloatRoundedRect&, const Color&) final { ASSERT_NOT_REACHED(); }
 
-    WEBCORE_EXPORT const GraphicsContextState& state() const final;
-
     WEBCORE_EXPORT void didUpdateState(GraphicsContextState&) final;
-    WEBCORE_EXPORT void didUpdateSingleState(GraphicsContextState&, GraphicsContextState::ChangeIndex) final;
+
     WEBCORE_EXPORT void drawConsumingImageBuffer(RefPtr<ImageBuffer>, const FloatRect& destination, const FloatRect& source, ImagePaintingOptions) final;
     WEBCORE_EXPORT AffineTransform getCTM(GraphicsContext::IncludeDeviceScale = PossiblyIncludeDeviceScale) const final;
     WEBCORE_EXPORT IntRect clipBounds() const final;
 
     virtual void appendStateChangeItemIfNecessary() = 0;
 
+    void pushStateForTransparencyLayer();
+
     const AffineTransform& NODELETE ctm() const;
 
     Vector<ContextState, 4> m_stateStack;
+    // The state the committed to the recording.
+    GraphicsContextState m_committedState;
     DestinationColorSpace m_colorSpace;
     const FloatRect m_initialClip;
     const DrawGlyphsMode m_drawGlyphsMode { DrawGlyphsMode::Normal };

@@ -120,8 +120,8 @@
 #include <wtf/Scope.h>
 #include <wtf/SetForScope.h>
 #include <wtf/TZoneMallocInlines.h>
+#include <wtf/cocoa/RuntimeApplicationChecksCocoa.h>
 #include <wtf/cocoa/TypeCastsCocoa.h>
-#include <wtf/spi/darwin/OSVariantSPI.h>
 #include <wtf/text/MakeString.h>
 #include <wtf/text/StringBuilder.h>
 #include <wtf/text/StringToIntegerConversion.h>
@@ -182,6 +182,11 @@ PDFAccessibilityDisplayMode UnifiedPDFPlugin::accessibilityDisplayMode() const
     return PDFAccessibilityDisplayMode::None;
 }
 
+PDFAccessibilityDisplayModeState UnifiedPDFPlugin::defaultAccessibilityDisplayModeStateForCurrentSettings() const
+{
+    return PDFAccessibilityDisplayModeState::Ineligible;
+}
+
 void applyPDFContentAXColorAdjustment(CGContextRef, PDFPage *, PDFAccessibilityDisplayMode)
 {
 }
@@ -189,6 +194,11 @@ void applyPDFContentAXColorAdjustment(CGContextRef, PDFPage *, PDFAccessibilityD
 WebCore::Color pdfPageBackgroundColor(PDFAccessibilityDisplayMode)
 {
     return WebCore::Color::white;
+}
+
+WebCore::Color pdfPluginBackgroundColor(PDFAccessibilityDisplayMode, const WebCore::Color& unadjustedColor)
+{
+    return unadjustedColor;
 }
 
 WebCore::BlendMode pdfSelectionBlendMode(PDFAccessibilityDisplayMode)
@@ -217,7 +227,8 @@ UnifiedPDFPlugin::UnifiedPDFPlugin(HTMLPlugInElement& element)
     this->setVerticalScrollElasticity(ScrollElasticity::Automatic);
     this->setHorizontalScrollElasticity(ScrollElasticity::Automatic);
 
-    m_accessibilityDisplayMode = accessibilityDisplayMode();
+    m_accessibilityDisplayModeState = defaultAccessibilityDisplayModeStateForCurrentSettings();
+    updateFullFramePluginBackgroundColor();
 
     Ref document = element.document();
     Ref annotationContainer = document->createElement(HTMLNames::divTag, false);
@@ -490,12 +501,12 @@ void UnifiedPDFPlugin::createPasswordEntryForm()
 
     Ref passwordForm = PDFPluginPasswordForm::create(this);
     m_passwordForm = passwordForm.ptr();
-    passwordForm->attach(m_annotationContainer.get());
+    passwordForm->attach(protect(m_annotationContainer));
 
     if (supportsForms()) {
         Ref passwordField = PDFPluginPasswordField::create(this);
         m_passwordField = passwordField.ptr();
-        passwordField->attach(m_annotationContainer.get());
+        passwordField->attach(protect(m_annotationContainer));
     }
 }
 
@@ -783,17 +794,52 @@ void UnifiedPDFPlugin::didChangeSettings()
 
     protect(m_presentationController)->updateDebugBorders(showDebugBorders, showRepaintCounter);
 
-    auto displayMode = accessibilityDisplayMode();
-    if (m_accessibilityDisplayMode != displayMode) {
-        m_accessibilityDisplayMode = displayMode;
-
-        RefPtr presentationController = m_presentationController;
-        presentationController->invalidateRenderedContentForAccessibilityDisplayModeChange();
-        presentationController->updateForAccessibilityDisplayModeChange(displayMode);
-        updateScrollbarOverlayStyle();
-        setNeedsRepaintForIncrementalLoad();
-    }
+    auto defaultDisplayModeState = defaultAccessibilityDisplayModeStateForCurrentSettings();
+    auto isEligible = defaultDisplayModeState != PDFAccessibilityDisplayModeState::Ineligible;
+    auto wasEligible = m_accessibilityDisplayModeState != PDFAccessibilityDisplayModeState::Ineligible;
+    if (isEligible != wasEligible)
+        setAccessibilityDisplayModeState(defaultDisplayModeState);
 }
+
+void UnifiedPDFPlugin::setAccessibilityDisplayModeState(PDFAccessibilityDisplayModeState state)
+{
+    if (m_accessibilityDisplayModeState == state)
+        return;
+
+    m_accessibilityDisplayModeState = state;
+
+    RefPtr presentationController = m_presentationController;
+    presentationController->updateForAccessibilityDisplayModeChange();
+
+    if (RefPtr rootLayer = m_rootLayer)
+        rootLayer->setBackgroundColor(pluginBackgroundColor());
+    updateFullFramePluginBackgroundColor();
+
+    updateScrollbarOverlayStyle();
+
+#if ENABLE(PDF_HUD) && ENABLE(AX_PDF_SUPPORT)
+    updateHUDAccessibilityDisplayMode();
+#endif
+}
+
+Color UnifiedPDFPlugin::pluginBackgroundColor() const
+{
+    return pdfPluginBackgroundColor(accessibilityDisplayMode(), PDFPluginBase::pluginBackgroundColor());
+}
+
+#if ENABLE(PDF_HUD) && ENABLE(AX_PDF_SUPPORT)
+
+void UnifiedPDFPlugin::updateHUDAccessibilityDisplayMode()
+{
+    RefPtr frame = m_frame.get();
+    if (!frame)
+        return;
+
+    if (RefPtr page = frame->page())
+        page->updatePDFHUDAccessibilityDisplayMode(*this);
+}
+
+#endif // ENABLE(PDF_HUD)
 
 void UnifiedPDFPlugin::notifyFlushRequired(const GraphicsLayer*)
 {
@@ -865,12 +911,12 @@ void UnifiedPDFPlugin::paintContents(const GraphicsLayer& layer, GraphicsContext
     };
 
     if (&layer == layerForHorizontalScrollbar()) {
-        paintScrollbar(m_horizontalScrollbar.get(), context);
+        paintScrollbar(protect(m_horizontalScrollbar), context);
         return;
     }
 
     if (&layer == layerForVerticalScrollbar()) {
-        paintScrollbar(m_verticalScrollbar.get(), context);
+        paintScrollbar(protect(m_verticalScrollbar), context);
         return;
     }
 
@@ -1341,8 +1387,12 @@ bool UnifiedPDFPlugin::geometryDidChange(const IntSize& pluginSize, const Affine
         activeAnnotation->updateGeometry();
 #endif
 
-    if (sizeChanged)
-        updateLayout();
+    // A subframe PDF should keep fitting to its frame when the frame's size changes,
+    // until the user zooms. Pinning would freeze the scale computed at install time.
+    if (sizeChanged) {
+        bool shouldRefitToFrame = !isFullMainFramePlugin() && m_shouldUpdateAutoSizeScale == ShouldUpdateAutoSizeScale::Yes;
+        updateLayout(shouldRefitToFrame ? AdjustScaleAfterLayout::Yes : AdjustScaleAfterLayout::No);
+    }
 
 #if ENABLE(PDF_PAGE_NUMBER_INDICATOR)
     updatePageNumberIndicator();
@@ -1429,7 +1479,7 @@ void UnifiedPDFPlugin::updateLayout(AdjustScaleAfterLayout shouldAdjustScale, st
         LOG_WITH_STREAM(PDF, stream << "UnifiedPDFPlugin::updateLayout - on first layout, chose scale for actual size " << initialScaleFactor);
         setScaleFactor(initialScaleFactor);
 
-        if (!shouldSizeToFitContent())
+        if (!shouldSizeToFitContent() && isFullMainFramePlugin())
             m_shouldUpdateAutoSizeScale = ShouldUpdateAutoSizeScale::No;
     }
 
@@ -2555,11 +2605,6 @@ auto UnifiedPDFPlugin::toContextMenuItemTag(int tagValue) -> ContextMenuItemTag
     return isKnownContextMenuItemTag ? static_cast<ContextMenuItemTag>(tagValue) : ContextMenuItemTag::Unknown;
 }
 
-static bool isInRecoveryOS()
-{
-    return os_variant_is_basesystem("WebKit");
-}
-
 std::optional<PDFContextMenu> UnifiedPDFPlugin::createContextMenu(const WebMouseEvent& contextMenuEvent) const
 {
     ASSERT(isContextMenuEvent(contextMenuEvent));
@@ -2581,13 +2626,13 @@ std::optional<PDFContextMenu> UnifiedPDFPlugin::createContextMenu(const WebMouse
     };
 
     if ([m_pdfDocument allowsCopying] && hasSelection()) {
-        bool shouldPresentLookupAndSearchOptions = !isInRecoveryOS();
+        bool shouldPresentLookupAndSearchOptions = !isInBaseSystem();
         menuItems.appendVector(selectionContextMenuItems(contextMenuEventRootViewPoint, shouldPresentLookupAndSearchOptions));
         addSeparator();
     }
 
     std::optional<int> openInDefaultViewerTag;
-    bool shouldPresentOpenWithDefaultViewerOption = !isInRecoveryOS();
+    bool shouldPresentOpenWithDefaultViewerOption = !isInBaseSystem();
     if (shouldPresentOpenWithDefaultViewerOption) {
         menuItems.append(contextMenuItem(ContextMenuItemTag::OpenWithDefaultViewer));
         openInDefaultViewerTag = std::to_underlying(ContextMenuItemTag::OpenWithDefaultViewer);
@@ -4000,6 +4045,21 @@ void UnifiedPDFPlugin::resetZoom()
     setScaleFactor(initialScale());
 }
 
+void UnifiedPDFPlugin::toggleAccessibilityDisplayMode()
+{
+    switch (accessibilityDisplayModeState()) {
+    case PDFAccessibilityDisplayModeState::Ineligible:
+        return;
+    case PDFAccessibilityDisplayModeState::Off:
+        setAccessibilityDisplayModeState(PDFAccessibilityDisplayModeState::On);
+        return;
+    case PDFAccessibilityDisplayModeState::On:
+        setAccessibilityDisplayModeState(PDFAccessibilityDisplayModeState::Off);
+        return;
+    }
+    ASSERT_NOT_REACHED();
+}
+
 #endif // ENABLE(PDF_HUD)
 
 #if ENABLE(PDF_PAGE_NUMBER_INDICATOR)
@@ -4227,7 +4287,7 @@ void UnifiedPDFPlugin::setActiveAnnotation(SetActiveAnnotationParams&& setActive
             }
 
             RefPtr newActiveAnnotation = PDFPluginAnnotation::create(annotation.get(), this);
-            newActiveAnnotation->attach(m_annotationContainer.get());
+            newActiveAnnotation->attach(protect(m_annotationContainer));
             m_activeAnnotation = WTF::move(newActiveAnnotation);
             revealAnnotation(protect(protect(activeAnnotation())->annotation()).get());
         } else

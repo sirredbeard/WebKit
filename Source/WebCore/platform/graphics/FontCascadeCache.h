@@ -111,7 +111,7 @@ struct FontDescriptionKey {
     FontDescriptionKey() = default;
 
     FontDescriptionKey(const FontDescription& description)
-        : m_size(description.computedSize())
+        : m_size(description.usedSize())
         , m_fontSelectionRequest(description.fontSelectionRequest())
         , m_flags(makeFlagsKey(description))
         , m_locale(description.computedLocale())
@@ -232,6 +232,8 @@ inline void add(Hasher& hasher, const FontCascadeCacheKey& key)
 {
     add(hasher, key.fontDescriptionKey, key.families, key.fontSelectorId, key.fontSelectorVersion);
 }
+
+FontCascadeCacheKey makeFontCascadeCacheKey(const FontCascadeDescription&, FontSelector*);
 
 struct FontCascadeCacheEntry {
     WTF_DEPRECATED_MAKE_STRUCT_FAST_ALLOCATED(FontCascadeCacheEntry);

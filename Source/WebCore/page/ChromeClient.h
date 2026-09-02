@@ -303,6 +303,8 @@ public:
     virtual void relayLiveRegionNotification(LiveRegionAnnouncementData&&) const = 0;
 #endif
 
+    virtual void translateAccessibilityAnnouncementStrings(const Vector<String>& strings, const String& targetLocaleIdentifier, CompletionHandler<void(Vector<String>&&)>&& completion) { UNUSED_PARAM(strings); UNUSED_PARAM(targetLocaleIdentifier); completion({ }); }
+
     virtual void mainFrameDidChange() { };
 
     virtual void didFinishLoadingImageForElement(HTMLImageElement&) = 0;
@@ -420,11 +422,12 @@ public:
     virtual void updateTextIndicator(RefPtr<TextIndicator>&&) const = 0;
 
     virtual void runOpenPanel(LocalFrame&, FileChooser&) = 0;
+    WEBCORE_EXPORT virtual void transcodeChosenFiles(Vector<String>&& transcodingPaths, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&);
     virtual void showShareSheet(ShareDataWithParsedURL&&, CompletionHandler<void(bool)>&& callback) { callback(false); }
     virtual void showContactPicker(ContactsRequestData&&, CompletionHandler<void(std::optional<Vector<ContactInfo>>&&)>&& callback) { callback(std::nullopt); }
 
 #if ENABLE(WEB_AUTHN)
-    virtual void showDigitalCredentialsChooser(const DigitalCredentialsRequestData&, CompletionHandler<void(Expected<DigitalCredentialsResponseData, ExceptionData>&&)>&& completionHandler)
+    virtual void showDigitalCredentialsChooser(const DigitalCredentialsRequestData&, CompletionHandler<void(std::expected<DigitalCredentialsResponseData, ExceptionData>&&)>&& completionHandler)
     {
         completionHandler(makeUnexpected(ExceptionData { ExceptionCode::NotSupportedError, "Digital credentials are not supported."_s }));
     }
@@ -671,11 +674,12 @@ public:
 #if ENABLE(WIRELESS_PLAYBACK_TARGET)
     virtual void addPlaybackTargetPickerClient(PlaybackTargetClientContextIdentifier) { }
     virtual void removePlaybackTargetPickerClient(PlaybackTargetClientContextIdentifier) { }
-    virtual void showPlaybackTargetPicker(PlaybackTargetClientContextIdentifier, const IntPoint&, bool /*isVideo*/) { }
+    virtual void showPlaybackTargetPicker(PlaybackTargetClientContextIdentifier, FrameIdentifier, const IntPoint&, bool /*isVideo*/) { }
     virtual void playbackTargetPickerClientStateDidChange(PlaybackTargetClientContextIdentifier, MediaProducerMediaStateFlags) { }
     virtual void setMockMediaPlaybackTargetPickerEnabled(bool)  { }
     virtual void setMockMediaPlaybackTargetPickerState(const String&, MediaPlaybackTargetMockState) { }
     virtual void mockMediaPlaybackTargetPickerDismissPopup() { }
+    virtual void mockMediaPlaybackTargetPickerRect(CompletionHandler<void(FloatRect)>&& completionHandler) { completionHandler({ }); }
 #endif
 
     virtual void imageOrMediaDocumentSizeChanged(const IntSize&) { }

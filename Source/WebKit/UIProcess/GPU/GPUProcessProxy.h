@@ -73,12 +73,14 @@ enum class ProcessTerminationReason : uint8_t;
 
 class SandboxExtensionHandle;
 class WebPageProxy;
+class WebProcessPool;
 class WebProcessProxy;
 class WebsiteDataStore;
 
 struct CoreIPCAuditToken;
 struct GPUProcessConnectionParameters;
 struct GPUProcessCreationParameters;
+struct SecurityFlags;
 struct SharedPreferencesForWebProcess;
 
 class GPUProcessProxy final : public AuxiliaryProcessProxy {
@@ -95,6 +97,7 @@ public:
     void createGPUProcessConnection(WebProcessProxy&, IPC::Connection::Handle&&, GPUProcessConnectionParameters&&);
 
     void sharedPreferencesForWebProcessDidChange(WebProcessProxy&, SharedPreferencesForWebProcess&&, CompletionHandler<void()>&&);
+    void securityFlagsDidChange(const SecurityFlags&);
 
     void updateProcessAssertion();
 
@@ -124,10 +127,6 @@ public:
     void cancelGetDisplayMediaPrompt();
 #endif
 
-#if ENABLE(VIDEO) || ENABLE(WEB_AUDIO)
-    Ref<GenericPromise> tryToSetAudioSessionActiveForProcess(WebCore::ProcessIdentifier, bool);
-#endif
-
     void removeSession(PAL::SessionID);
 
 #if PLATFORM(MAC)
@@ -143,7 +142,7 @@ public:
 #endif
 
     void updatePreferences(WebProcessProxy&);
-    void updateScreenPropertiesIfNeeded();
+    void updateScreenPropertiesIfNeeded(WebProcessPool&);
 
     void childConnectionDidBecomeUnresponsive();
 

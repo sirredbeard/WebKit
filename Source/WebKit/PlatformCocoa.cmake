@@ -74,7 +74,7 @@ list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
     "Platform/SourcesCocoa.txt"
 )
 # FIXME: Test building on iOS and then enable on iOS.
-if (NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+if (NOT WEBKIT_SDK_IS_IOS_FAMILY)
     list(APPEND WebKit_UNIFIED_SOURCE_LIST_FILES
         "SourcesCMakeCocoa.txt"
     )
@@ -122,6 +122,10 @@ list(APPEND WebKit_SOURCES
     UIProcess/API/Cocoa/_WKResourceLoadStatisticsFirstParty.mm
     UIProcess/API/Cocoa/_WKResourceLoadStatisticsThirdParty.mm
     ${WEBKIT_DIR}/UIProcess/API/Cocoa/Logger+Extras.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/ObjectiveCBlockConversions.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WebKitSwiftOverlay.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKContentWorld.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/_WKRectEdge+Extras.swift
 
     UIProcess/Cocoa/PreferenceObserver.mm
     UIProcess/Cocoa/WKShareSheet.mm
@@ -147,6 +151,7 @@ list(APPEND WebKit_PRIVATE_INCLUDE_DIRECTORIES
     "${WEBKIT_DIR}/GPUProcess/mac"
     "${WEBKIT_DIR}/GPUProcess/media/cocoa"
     "${WEBKIT_DIR}/GPUProcess/media/ios"
+    "${WEBKIT_DIR}/ModelProcess/cocoa"
     "${WEBKIT_DIR}/NetworkProcess/Downloads/cocoa"
     "${WEBKIT_DIR}/NetworkProcess/EntryPoint/Cocoa/Daemon"
     "${WEBKIT_DIR}/NetworkProcess/PrivateClickMeasurement/cocoa"
@@ -218,6 +223,7 @@ list(APPEND WebKit_PRIVATE_INCLUDE_DIRECTORIES
     "${WEBKIT_DIR}/UIProcess/ios/forms"
     "${WEBKIT_DIR}/UIProcess/ios/fullscreen"
     "${WEBKIT_DIR}/UIProcess/mac"
+    "${WEBKIT_DIR}/UIProcess/mac/AppKitGestures"
     "${WEBKIT_DIR}/WebKitSwift/GroupActivities"
     "${WEBKIT_DIR}/WebKitSwift/IdentityDocumentServices"
     "${WEBKIT_DIR}/WebKitSwift/MarketplaceKit"
@@ -395,6 +401,7 @@ unset(_webkit_additional_cocoa_sources)
 list(APPEND WebKit_SOURCES
     NetworkProcess/cocoa/DeviceManagementSoftLink.mm
     NetworkProcess/cocoa/NetworkSoftLink.mm
+    NetworkProcess/cocoa/SecuritySoftLink.mm
 
     Platform/cocoa/_WKWebViewTextInputNotifications.mm
 
@@ -463,6 +470,79 @@ list(APPEND WebKit_SOURCES
     webpushd/_WKMockUserNotificationCenter.mm
 )
 
+# Sources of the _WebKit_SwiftUI cross-import overlay, built by both the macOS
+# and the iOS-family branches below.
+set(WebKit_SWIFTUI_SOURCES
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/CrossImportOverlay.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/Empty.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/API/View+WebViewModifiers.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/API/WebPage+SwiftUI.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/API/WebPageNavigationAction+SwiftUI.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/API/WebView.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/API/WebView+ViewportConfiguration.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/Implementation/CocoaWebViewAdapter.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/Implementation/EnvironmentValues+Extras.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/Implementation/Foundation+Extras.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/Implementation/PlatformTextSearching.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/Implementation/SwiftUI+Extras.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/Implementation/ViewModifierContexts.swift
+    ${WEBKIT_DIR}/_WebKit_SwiftUI/Implementation/WebViewRepresentable.swift
+)
+
+# Swift flags shared by both _WebKit_SwiftUI targets. The -Xcc -D/-f flags come
+# from _WEBKIT_COMPUTE_SWIFT_SHARED_CLANG_FLAGS so the overlay lands in the same
+# SwiftModuleCache hash dir as WebKit, PAL and WebGPU; only -I and -F, which are
+# not hashed, are listed here.
+# @Entry and other SwiftUI macros run swift-plugin-server under sandbox-exec;
+# -disable-sandbox avoids a nested sandbox_apply failure in a sandboxed build.
+_WEBKIT_COMPUTE_SWIFT_SHARED_CLANG_FLAGS(_swiftui_shared_cc_flags)
+set(WebKit_SWIFTUI_SWIFT_FLAGS "")
+foreach (_flag IN LISTS _swiftui_shared_cc_flags)
+    list(APPEND WebKit_SWIFTUI_SWIFT_FLAGS "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc ${_flag}>")
+endforeach ()
+unset(_swiftui_shared_cc_flags)
+list(APPEND WebKit_SWIFTUI_SWIFT_FLAGS
+    "$<$<COMPILE_LANGUAGE:Swift>:-F${CMAKE_LIBRARY_OUTPUT_DIRECTORY}>"
+    "$<$<COMPILE_LANGUAGE:Swift>:-I${WEBKIT_DIR}/Platform/spi/Cocoa>"
+    "$<$<COMPILE_LANGUAGE:Swift>:-I${WEBKIT_DIR}/Platform/spi/Cocoa/Modules>"
+    "$<$<COMPILE_LANGUAGE:Swift>:-disable-sandbox>"
+    "$<$<COMPILE_LANGUAGE:Swift>:-enable-library-evolution>"
+    "$<$<COMPILE_LANGUAGE:Swift>:-parse-as-library>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${CMAKE_BINARY_DIR}>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${PAL_FRAMEWORK_HEADERS_DIR}>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${WTF_FRAMEWORK_HEADERS_DIR}>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${bmalloc_FRAMEWORK_HEADERS_DIR}>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -iquote${CMAKE_BINARY_DIR}>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -experimental-spi-only-imports>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-upcoming-feature InternalImportsByDefault>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-library-level api>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-swift-version 6>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:@${CMAKE_CURRENT_BINARY_DIR}/WebKit.platform-swift-args.resp>"
+    ${WEBKIT_PRIVATE_FRAMEWORKS_COMPILE_FLAG}
+)
+
+# _WebKit_SwiftUI, the SwiftUI cross-import overlay WebKit declares through the
+# .swiftcrossimport file staged beside its swiftmodule. Anything importing both
+# WebKit and SwiftUI loads it, and its compiled code reaches into WebPage's
+# observation state, so it has to come from the same source as this WebKit rather
+# than from the SDK. The platform branches below append their own sources, flags
+# and dependencies.
+set(_WebKit_SwiftUI_LIBRARY_TYPE SHARED)
+set(_WebKit_SwiftUI_SOURCES ${WebKit_SWIFTUI_SOURCES})
+WEBKIT_FRAMEWORK_DECLARE(_WebKit_SwiftUI)
+set_target_properties(_WebKit_SwiftUI PROPERTIES
+    OUTPUT_NAME _WebKit_SwiftUI
+    MACOSX_FRAMEWORK_IDENTIFIER com.apple.WebKit.-WebKit-SwiftUI
+    Swift_MODULE_NAME _WebKit_SwiftUI
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+)
+if (_WebKit_SwiftUI_INSTALL_NAME_DIR)
+    set_target_properties(_WebKit_SwiftUI PROPERTIES
+        INSTALL_NAME_DIR "${_WebKit_SwiftUI_INSTALL_NAME_DIR}"
+    )
+endif ()
+target_compile_options(_WebKit_SwiftUI PRIVATE ${WebKit_SWIFTUI_SWIFT_FLAGS})
+
 if (WEBKIT_SDK_IS_MACOS)
 list(APPEND WebKit_SOURCES
     NetworkProcess/mac/NetworkConnectionToWebProcessMac.mm
@@ -472,13 +552,41 @@ list(APPEND WebKit_SOURCES
     ${WEBKIT_DIR}/UIProcess/WebPageProxy.swift
     ${WEBKIT_DIR}/UIProcess/mac/_WKCaptionStyleMenuControllerAVKitMac.mm
     ${WEBKIT_DIR}/UIProcess/mac/_WKCaptionStyleMenuControllerMac.mm
+    ${WEBKIT_DIR}/UIProcess/mac/AppKitGestures/WKAppKitGestureController.swift
+    ${WEBKIT_DIR}/UIProcess/mac/AppKitGestures/WKDOMDoubleClickGestureRecognizer.swift
+    ${WEBKIT_DIR}/UIProcess/mac/AppKitGestures/WKDirectionalScrollLockTracker.swift
+    ${WEBKIT_DIR}/UIProcess/mac/AppKitGestures/WKFastScrollTracker.swift
+    ${WEBKIT_DIR}/UIProcess/mac/AppKitGestures/WKMouseTrackingGestureRecognizer.swift
     ${WEBKIT_DIR}/UIProcess/mac/SpatialShim.swift
-    ${WEBKIT_DIR}/UIProcess/mac/WKAppKitGestureController.swift
-    ${WEBKIT_DIR}/UIProcess/mac/WKDirectionalScrollLockTracker.swift
-    ${WEBKIT_DIR}/UIProcess/mac/WKFastScrollTracker.swift
     ${WEBKIT_DIR}/UIProcess/mac/WKTextSelectionController.swift
     ${WEBKIT_DIR}/UIProcess/PDF/WKAlternatePDFHUDView.swift
     ${WEBKIT_DIR}/UIProcess/PDF/WKDefaultPDFHUDView.swift
+
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKContextMenuElementInfoAdapter.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKUserContentController.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKWebView+RefreshControl.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKWebViewConfiguration+Extras.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKWebpagePreferences+Extras.swift
+    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKWebsiteDataStore+SwiftOverlay.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/URLSchemeHandler.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+BackForwardList.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+Configuration.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+DialogPresenting.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+FormInfo.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+FrameInfo.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+ImmersiveEnvironment.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+Navigation.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+NavigationDeciding.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+NavigationPreferences.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+SPI.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+Transferable.swift
+    ${WEBKIT_DIR}/UIProcess/Cocoa/TextExtraction/WKWebView+TextExtraction.swift
+    ${WEBKIT_DIR}/UIProcess/Cocoa/WKNavigationDelegateAdapter.swift
+    ${WEBKIT_DIR}/UIProcess/Cocoa/WKScrollGeometryAdapter.swift
+    ${WEBKIT_DIR}/UIProcess/Cocoa/WKUIDelegateAdapter.swift
+    ${WEBKIT_DIR}/UIProcess/Cocoa/WKURLSchemeHandlerAdapter.swift
+    ${WEBKIT_DIR}/UIProcess/Cocoa/WebPageWebView.swift
 )
 elseif (WEBKIT_SDK_IS_IOS_FAMILY)
 list(APPEND WebKit_SOURCES
@@ -497,11 +605,8 @@ list(APPEND WebKit_SOURCES
     ${WEBKIT_DIR}/ModelProcess/cocoa/WKUSDStageConverter.swift
     ${WEBKIT_DIR}/Platform/spi/visionos/WKSurroundingsEffect.swift
     ${WEBKIT_DIR}/Platform/spi/visionos/WKSurroundingsEffectView.swift
-    ${WEBKIT_DIR}/UIProcess/API/Cocoa/ObjectiveCBlockConversions.swift
-    ${WEBKIT_DIR}/UIProcess/API/Cocoa/WebKitSwiftOverlay.swift
     ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKWebViewConfiguration+Extras.swift
     ${WEBKIT_DIR}/UIProcess/API/Cocoa/WKWebpagePreferences+Extras.swift
-    ${WEBKIT_DIR}/UIProcess/API/Cocoa/_WKRectEdge+Extras.swift
     ${WEBKIT_DIR}/UIProcess/API/Swift/URLSchemeHandler.swift
     ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage.swift
     ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+BackForwardList.swift
@@ -513,6 +618,7 @@ list(APPEND WebKit_SOURCES
     ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+Navigation.swift
     ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+NavigationDeciding.swift
     ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+NavigationPreferences.swift
+    ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+SPI.swift
     ${WEBKIT_DIR}/UIProcess/API/Swift/WebPage+Transferable.swift
     ${WEBKIT_DIR}/UIProcess/Cocoa/Separated/CALayer+CoreRE.swift
     ${WEBKIT_DIR}/UIProcess/Cocoa/Separated/WKSeparatedImageView.swift
@@ -535,7 +641,6 @@ find_library(USERNOTIFICATIONS_LIBRARY UserNotifications)
 find_library(WRITINGTOOLS_LIBRARY WritingTools HINTS ${CMAKE_OSX_SYSROOT}/System/Library/PrivateFrameworks)
 find_library(APPLEPUSHSERVICE_LIBRARY ApplePushService HINTS ${CMAKE_OSX_SYSROOT}/System/Library/PrivateFrameworks)
 list(APPEND WebKit_PRIVATE_LIBRARIES
-    "-weak_framework PowerLog"
     Accessibility
     ${CORESERVICES_LIBRARY}
     ${CRYPTOTOKENKIT_LIBRARY}
@@ -553,15 +658,16 @@ if (WEBKIT_SDK_IS_MACOS)
         ${SECURITYINTERFACE_LIBRARY}
         $<$<BOOL:${AVFAUDIO_LIBRARY}>:${AVFAUDIO_LIBRARY}>
     )
+    target_link_options(WebKit PRIVATE "LINKER:-weak_framework,PowerLog")
     if (USE_APPLE_INTERNAL_SDK)
-        list(APPEND WebKit_PRIVATE_LIBRARIES
-            "-weak_framework CoreML"
-            "-weak_framework NaturalLanguage"
+        target_link_options(WebKit PRIVATE
+            "LINKER:-weak_framework,CoreML"
+            "LINKER:-weak_framework,NaturalLanguage"
         )
     endif ()
 elseif (WEBKIT_SDK_IS_IOS_FAMILY)
+    target_link_options(WebKit PRIVATE "LINKER:-delay_framework,CoreTelephony")
     list(APPEND WebKit_PRIVATE_LIBRARIES
-        -Wl,-delay_framework,CoreTelephony
         -lnetworkextension
         -lsqlite3
         ${CFNETWORK_LIBRARY}
@@ -623,34 +729,37 @@ set(WebKit_FORWARDING_HEADERS_DIRECTORIES
     WebProcess/InjectedBundle/API/mac
 )
 
-set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -compatibility_version 1 -current_version ${WEBKIT_MAC_VERSION}")
 target_link_options(WebKit PRIVATE -framework AuthKit)
 
 
 target_link_options(WebKit PRIVATE
-    -Wl,-unexported_symbol,__ZTISt9bad_alloc
-    -Wl,-unexported_symbol,__ZTISt9exception
-    -Wl,-unexported_symbol,__ZTSSt9bad_alloc
-    -Wl,-unexported_symbol,__ZTSSt9exception
-    -Wl,-unexported_symbol,__ZdlPvS_
-    -Wl,-unexported_symbol,__ZnwmPv
-    -Wl,-unexported_symbol,__Znwm
-    -Wl,-unexported_symbol,__ZTVNSt3__117bad_function_callE
-    -Wl,-unexported_symbol,__ZTCNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE0_NS_13basic_istreamIcS2_EE
-    -Wl,-unexported_symbol,__ZTCNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE0_NS_14basic_iostreamIcS2_EE
-    -Wl,-unexported_symbol,__ZTCNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE16_NS_13basic_ostreamIcS2_EE
-    -Wl,-unexported_symbol,__ZTTNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE
-    -Wl,-unexported_symbol,__ZTVNSt3__115basic_stringbufIcNS_11char_traitsIcEENS_9allocatorIcEEEE
-    -Wl,-unexported_symbol,__ZTVNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE
-    -Wl,-unexported_symbol,__ZTCNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE8_NS_13basic_ostreamIcS2_EE
-    -Wl,-unexported_symbol,__ZTAXtlN7WebCore3CSS5RangeELdfff0000000000000ELd7ff0000000000000EEE
-    "-Wl,-unexported_symbol,_$s*3Cxx*"
+    "LINKER:-unexported_symbol,__ZTISt9bad_alloc"
+    "LINKER:-unexported_symbol,__ZTISt9exception"
+    "LINKER:-unexported_symbol,__ZTSSt9bad_alloc"
+    "LINKER:-unexported_symbol,__ZTSSt9exception"
+    "LINKER:-unexported_symbol,__ZdlPvS_"
+    "LINKER:-unexported_symbol,__ZnwmPv"
+    "LINKER:-unexported_symbol,__Znwm"
+    "LINKER:-unexported_symbol,__ZTVNSt3__117bad_function_callE"
+    "LINKER:-unexported_symbol,__ZTCNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE0_NS_13basic_istreamIcS2_EE"
+    "LINKER:-unexported_symbol,__ZTCNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE0_NS_14basic_iostreamIcS2_EE"
+    "LINKER:-unexported_symbol,__ZTCNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE16_NS_13basic_ostreamIcS2_EE"
+    "LINKER:-unexported_symbol,__ZTTNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE"
+    "LINKER:-unexported_symbol,__ZTVNSt3__115basic_stringbufIcNS_11char_traitsIcEENS_9allocatorIcEEEE"
+    "LINKER:-unexported_symbol,__ZTVNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE"
+    "LINKER:-unexported_symbol,__ZTCNSt3__118basic_stringstreamIcNS_11char_traitsIcEENS_9allocatorIcEEEE8_NS_13basic_ostreamIcS2_EE"
+    "LINKER:-unexported_symbol,__ZTAXtlN7WebCore3CSS5RangeELdfff0000000000000ELd7ff0000000000000EEE"
+    "LINKER:-unexported_symbol,_$s*3Cxx*"
 )
 
 set(WebKit_OUTPUT_NAME WebKit)
-if (CMAKE_SYSTEM_NAME STREQUAL "iOS")
+if (WebKit_INSTALL_NAME_DIR)
     set_target_properties(WebKit PROPERTIES
         INSTALL_NAME_DIR "${WebKit_INSTALL_NAME_DIR}"
+    )
+endif ()
+if (WEBKIT_SDK_IS_IOS_FAMILY)
+    set_target_properties(WebKit PROPERTIES
         VERSION "${WEBKIT_MAC_VERSION}"
         SOVERSION 1
     )
@@ -695,20 +804,6 @@ set(WebKit_USE_PREFIX_HEADER ON)
 set(_private_modulemap_input "${WEBKIT_DIR}/Modules/iOS_Private.modulemap")
 set(_private_modulemap_output "${CMAKE_BINARY_DIR}/WebKit/Modules/module.private.modulemap")
 
-set(_modulemap_arch "${CMAKE_OSX_ARCHITECTURES}")
-if (NOT _modulemap_arch)
-    if (_is_simulator)
-        set(_modulemap_arch "arm64")
-    else ()
-        set(_modulemap_arch "arm64e")
-    endif ()
-endif ()
-if (CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
-    set(_modulemap_triple "${_modulemap_arch}-apple-ios${CMAKE_OSX_DEPLOYMENT_TARGET}-simulator")
-else ()
-    set(_modulemap_triple "${_modulemap_arch}-apple-ios${CMAKE_OSX_DEPLOYMENT_TARGET}")
-endif ()
-
 # Submodules to splice into the preprocessed WebKit_Private modulemap. The
 # upstream iOS_Private.modulemap is shared with Xcode and must not change for
 # cmake-port reasons; instead, write any cmake-only submodules to an addendum
@@ -737,7 +832,7 @@ add_custom_command(
     OUTPUT "${_private_modulemap_output}"
     DEPENDS "${_private_modulemap_input}" "${_private_modulemap_addendum}" "${_private_modulemap_inject_script}"
     COMMAND ${CMAKE_C_COMPILER} -E -P -w
-        -target ${_modulemap_triple}
+        -target ${WEBKIT_SDK_TARGET_TRIPLE}
         -isysroot ${CMAKE_OSX_SYSROOT}
         -x c "${_private_modulemap_input}"
         -o "${_private_modulemap_output}.preprocessed"
@@ -975,6 +1070,12 @@ file(WRITE "${WebKit_CMAKE_MODULEMAP_DIR}/module.modulemap"
         export *
     }
 
+    module WKBackForwardListItemInternal {
+        requires objc
+        header \"${WEBKIT_DIR}/UIProcess/API/Cocoa/WKBackForwardListItemInternal.h\"
+        export *
+    }
+
     module WKScrollGeometry {
         requires objc
         header \"${WEBKIT_DIR}/UIProcess/API/Cocoa/WKScrollGeometry.h\"
@@ -1053,13 +1154,6 @@ unset(_swift_tba_resp_stderr)
 unset(_swift_tba_resp_result)
 
 target_compile_options(WebKit PRIVATE
-    "$<$<COMPILE_LANGUAGE:Swift>:-DENABLE_SWIFTUI>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_MATERIAL_HOSTING>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_MOUSE_DEVICE_OBSERVATION>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DENABLE_WRITING_TOOLS>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_DIGITAL_CREDENTIALS_UI>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_MARKETPLACE_KIT>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_CREDENTIAL_UPDATE_API>"
     # Match Xcode iOS WebKit Swift compile flags from
     # WebKit.framework/Modules/WebKit.swiftmodule/*.swiftinterface.
     "$<$<COMPILE_LANGUAGE:Swift>:-cxx-interoperability-mode=default>"
@@ -1380,6 +1474,7 @@ list(APPEND WebKit_PRIVATE_FRAMEWORK_HEADERS
     UIProcess/API/Cocoa/_WKTextManipulationItem.h
     UIProcess/API/Cocoa/_WKTextManipulationToken.h
     UIProcess/API/Cocoa/_WKThumbnailView.h
+    UIProcess/API/Cocoa/_WKTranslationDelegate.h
     UIProcess/API/Cocoa/_WKUserContentWorld.h
     UIProcess/API/Cocoa/_WKUserInitiatedAction.h
     UIProcess/API/Cocoa/_WKUserStyleSheet.h
@@ -1544,24 +1639,11 @@ configure_file(${WEBKIT_DIR}/Modules/iOS.modulemap ${CMAKE_BINARY_DIR}/WebKit/Mo
 
 # FIXME: Generate module.private.modulemap. https://bugs.webkit.org/show_bug.cgi?id=312083
 
-make_directory("${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework")
+file(MAKE_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework")
 
 set(_webkit_swiftmodule_dir "${CMAKE_BINARY_DIR}/WebKit/Modules/WebKit.swiftmodule")
-make_directory(${_webkit_swiftmodule_dir})
+file(MAKE_DIRECTORY ${_webkit_swiftmodule_dir})
 set(_webkit_swift_output "${CMAKE_BINARY_DIR}/Source/WebKit")
-set(_webkit_swift_arch "${CMAKE_OSX_ARCHITECTURES}")
-if (NOT _webkit_swift_arch)
-    if (_is_simulator)
-        set(_webkit_swift_arch "arm64")
-    else ()
-        set(_webkit_swift_arch "arm64e")
-    endif ()
-endif ()
-if (CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
-    set(_webkit_swift_triple "${_webkit_swift_arch}-apple-ios-simulator")
-else ()
-    set(_webkit_swift_triple "${_webkit_swift_arch}-apple-ios")
-endif ()
 set(_webkit_fw_swiftmodule_dir "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/Modules/WebKit.swiftmodule")
 
 # Stage WebKit's Swift module via a tracked add_custom_command so ninja replays
@@ -1576,17 +1658,17 @@ set(_webkit_stage_swiftmodule_commands "")
 foreach (_dest IN LISTS _webkit_swiftmodule_dests)
     foreach (_ext IN LISTS _webkit_swiftmodule_required_exts)
         list(APPEND _webkit_staged_swiftmodule_artifacts
-            "${_dest}/${_webkit_swift_triple}.${_ext}"
+            "${_dest}/${WEBKIT_SWIFT_MODULE_TRIPLE}.${_ext}"
         )
         list(APPEND _webkit_stage_swiftmodule_commands
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${_webkit_swift_output}/WebKit.${_ext}"
-                "${_dest}/${_webkit_swift_triple}.${_ext}"
+                "${_dest}/${WEBKIT_SWIFT_MODULE_TRIPLE}.${_ext}"
         )
     endforeach ()
     foreach (_ext IN LISTS _webkit_swiftmodule_optional_exts)
         list(APPEND _webkit_stage_swiftmodule_commands
-            COMMAND sh -c "[ -f '${_webkit_swift_output}/WebKit.${_ext}' ] && ${CMAKE_COMMAND} -E copy_if_different '${_webkit_swift_output}/WebKit.${_ext}' '${_dest}/${_webkit_swift_triple}.${_ext}' || true"
+            COMMAND sh -c "[ -f '${_webkit_swift_output}/WebKit.${_ext}' ] && ${CMAKE_COMMAND} -E copy_if_different '${_webkit_swift_output}/WebKit.${_ext}' '${_dest}/${WEBKIT_SWIFT_MODULE_TRIPLE}.${_ext}' || true"
         )
     endforeach ()
 endforeach ()
@@ -1600,27 +1682,31 @@ add_custom_command(
 )
 add_custom_target(WebKit_StageSwiftModule DEPENDS ${_webkit_staged_swiftmodule_artifacts})
 
-make_directory("${CMAKE_BINARY_DIR}/WebKit/Modules/WebKit.swiftcrossimport")
+file(MAKE_DIRECTORY "${CMAKE_BINARY_DIR}/WebKit/Modules/WebKit.swiftcrossimport")
 file(WRITE "${CMAKE_BINARY_DIR}/WebKit/Modules/WebKit.swiftcrossimport/SwiftUI.swiftoverlay"
 "---\nversion: 1\nmodules:\n- name: _WebKit_SwiftUI\n")
 
 target_link_options(WebKit PRIVATE
-    "SHELL:-weak_framework BrowserEngineKit"
-    "SHELL:-weak_framework CoreML"
-    "SHELL:-weak_framework CorePrediction"
-    "SHELL:-weak_framework NaturalLanguage"
-    -Wl,-sectcreate,__TEXT,__info_plist,${CMAKE_CURRENT_BINARY_DIR}/WebKit-Info.plist
+    "LINKER:-weak_framework,BrowserEngineKit"
+    "LINKER:-weak_framework,CoreML"
+    "LINKER:-weak_framework,CorePrediction"
+    "LINKER:-weak_framework,NaturalLanguage"
+    "LINKER:-sectcreate,__TEXT,__info_plist,${CMAKE_CURRENT_BINARY_DIR}/WebKit-Info.plist"
 )
 
+if (WEBKIT_SDK_TARGET_OS STREQUAL "xros")
+    target_link_options(WebKit PRIVATE "LINKER:-weak_framework,MRUIKit")
+endif ()
+
 if (CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
-    target_link_options(WebKit PRIVATE "SHELL:-L${CMAKE_OSX_SYSROOT}/usr/local/lib/dyld" "SHELL:-Wl,-hidden-lsandbox-static")
+    target_link_options(WebKit PRIVATE "SHELL:-L${CMAKE_OSX_SYSROOT}/usr/local/lib/dyld" "LINKER:-hidden-lsandbox-static")
 else ()
     target_link_options(WebKit PRIVATE -lsandbox)
 endif ()
 
 add_dependencies(WebKit WebKitLegacy)
 target_link_options(WebKit PRIVATE
-    "-Wl,-reexport_library,$<TARGET_LINKER_FILE:WebKitLegacy>"
+    "LINKER:-reexport_library,$<TARGET_LINKER_FILE:WebKitLegacy>"
 )
 
 set(_wk_framework_dir ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework)
@@ -1759,7 +1845,7 @@ with open(sys.argv[2], 'wb') as f:
 
     function(WEBKIT_IOS_XPC_SERVICE _target _bundle_identifier _info_plist _executable_name _xpc_entitlements)
         set(_service_dir ${WebKit_XPC_SERVICE_DIR}/${_bundle_identifier}.xpc)
-        make_directory(${_service_dir})
+        file(MAKE_DIRECTORY ${_service_dir})
 
         set(BUNDLE_VERSION ${MACOSX_FRAMEWORK_BUNDLE_VERSION})
         set(SHORT_VERSION_STRING ${WEBKIT_MAC_VERSION})
@@ -1774,17 +1860,17 @@ with open(sys.argv[2], 'wb') as f:
         execute_process(COMMAND plutil -insert DTPlatformName -string "${WEBKIT_PLATFORM_NAME}" ${_service_dir}/Info.plist)
 
         target_link_options(${_target} PRIVATE
-            -Wl,-rpath,@executable_path/..
-            -Wl,-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/..
-            -Wl,-dyld_env,DYLD_LIBRARY_PATH=@executable_path/..
+            "LINKER:-rpath,@executable_path/.."
+            "LINKER:-dyld_env,DYLD_FRAMEWORK_PATH=@executable_path/.."
+            "LINKER:-dyld_env,DYLD_LIBRARY_PATH=@executable_path/.."
         )
 
         if (_is_simulator)
             set(_xpc_der "${CMAKE_CURRENT_BINARY_DIR}/${_bundle_identifier}.entitlements.der")
             WEBKIT_GENERATE_DER_ENTITLEMENTS(${_default_sim_entitlements} ${_xpc_der})
             target_link_options(${_target} PRIVATE
-                -Wl,-sectcreate,__TEXT,__entitlements,${_default_sim_entitlements}
-                -Wl,-sectcreate,__TEXT,__ents_der,${_xpc_der})
+                "LINKER:-sectcreate,__TEXT,__entitlements,${_default_sim_entitlements}"
+                "LINKER:-sectcreate,__TEXT,__ents_der,${_xpc_der}")
         endif ()
 
         target_link_libraries(${_target} PRIVATE
@@ -1893,6 +1979,15 @@ with open(sys.argv[2], 'wb') as f:
             ${WEBKIT_DIR}/Resources/TextExtractionFilter.mlmodel
             ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/TextExtractionFilter.mlmodel
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${WEBKIT_DIR}/WebKitSwift/RealityKit/studio_lighting_objectmode_v3.reibl
+            ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/studio_lighting_objectmode_v3.reibl
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${WEBKIT_DIR}/WebKitSwift/RealityKit/studio_lighting_objectmode_v3_diffmap.ktx
+            ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/studio_lighting_objectmode_v3_diffmap.ktx
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${WEBKIT_DIR}/WebKitSwift/RealityKit/studio_lighting_objectmode_v3_specmap.ktx
+            ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/studio_lighting_objectmode_v3_specmap.ktx
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${_wk_assets_staging}/Assets.car
             ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/Assets.car
         COMMAND ${CMAKE_COMMAND} -E rm -rf
@@ -1921,9 +2016,12 @@ with open(sys.argv[2], 'wb') as f:
     # after the seal, breaking codesign verification at sim runtime.
 
     function(WEBKIT_IOS_EXTENSION _name _bundle_id _info_plist _swift_source _entitlements)
+        if (NOT WEBKIT_SDK_TARGET_OS STREQUAL "ios")
+            return()
+        endif ()
         set(_appex_dir ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/${_name}.appex)
         set(_executable_name ${_bundle_id})
-        make_directory(${_appex_dir})
+        file(MAKE_DIRECTORY ${_appex_dir})
 
         set(BUNDLE_VERSION ${MACOSX_FRAMEWORK_BUNDLE_VERSION})
         set(EXECUTABLE_NAME ${_executable_name})
@@ -1963,17 +2061,17 @@ with open(sys.argv[2], 'wb') as f:
         )
 
         target_link_options(${_name} PRIVATE
-            -Wl,-rpath,@loader_path/../../Frameworks
-            -Wl,-rpath,@loader_path/../..
-            -Wl,-e,_NSExtensionMain
+            "LINKER:-rpath,@loader_path/../../Frameworks"
+            "LINKER:-rpath,@loader_path/../.."
+            "LINKER:-e,_NSExtensionMain"
         )
 
         # Simulator: embed only. Device: embed and pass to codesign.
         set(_ext_der "${CMAKE_CURRENT_BINARY_DIR}/${_name}.entitlements.der")
         WEBKIT_GENERATE_DER_ENTITLEMENTS(${_entitlements} ${_ext_der})
         target_link_options(${_name} PRIVATE
-            -Wl,-sectcreate,__TEXT,__entitlements,${_entitlements}
-            -Wl,-sectcreate,__TEXT,__ents_der,${_ext_der})
+            "LINKER:-sectcreate,__TEXT,__entitlements,${_entitlements}"
+            "LINKER:-sectcreate,__TEXT,__ents_der,${_ext_der}")
 
         if (_is_simulator)
             add_custom_command(TARGET ${_name} POST_BUILD
@@ -2028,7 +2126,7 @@ with open(sys.argv[2], 'wb') as f:
 
     set(_sb_profiles_dir "${WEBKIT_DIR}/Resources/SandboxProfiles/ios")
     set(_sb_output_dir "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/Resources")
-    make_directory(${_sb_output_dir})
+    file(MAKE_DIRECTORY ${_sb_output_dir})
 
     set(_sb_include_flags
         -I ${WEBKIT_DIR}
@@ -2131,13 +2229,8 @@ target_include_directories(WebKitSwift PRIVATE
 target_compile_options(WebKitSwift PRIVATE
     "$<$<COMPILE_LANGUAGE:Swift>:-parse-as-library>"
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-swift-version 6>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_MATERIAL_HOSTING>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_MOUSE_DEVICE_OBSERVATION>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DENABLE_WRITING_TOOLS>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_DIGITAL_CREDENTIALS_UI>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_MARKETPLACE_KIT>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DHAVE_CREDENTIAL_UPDATE_API>"
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -disable-cross-import-overlays>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:@${CMAKE_CURRENT_BINARY_DIR}/WebKit.platform-swift-args.resp>"
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:@${_swift_tba_resp}>"
     "$<$<COMPILE_LANGUAGE:Swift>:-I${WEBKIT_DIR}/Platform/spi/Cocoa>"
     "$<$<COMPILE_LANGUAGE:Swift>:-I${WEBKIT_DIR}/Platform/spi/Cocoa/Modules>"
@@ -2154,14 +2247,7 @@ target_compile_options(WebKitSwift PRIVATE
     "$<$<NOT:$<COMPILE_LANGUAGE:Swift>>:-DBUILDING_WITH_CMAKE=1>"
 )
 
-# Explicit-module-build for WebKitSwift Swift compile. Mirrors the macro
-# WEBKIT_SETUP_SWIFT_AND_GENERATE_SWIFT_CPP_INTEROP_HEADER's enablement of the
-# same flags for WebKit / WebGPU / PAL. https://bugs.webkit.org/show_bug.cgi?id=312083
 target_compile_options(WebKitSwift PRIVATE
-    "$<$<COMPILE_LANGUAGE:Swift>:-explicit-module-build>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -fexperimental-late-parse-attributes>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -fexperimental-bounds-safety-attributes>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-module-cache-path ${CMAKE_BINARY_DIR}/SwiftModuleCache>"
     # Swift macro expansion runs swift-plugin-server under sandbox-exec;
     # -disable-sandbox avoids a nested sandbox_apply failure in a sandboxed build.
     "$<$<COMPILE_LANGUAGE:Swift>:-disable-sandbox>"
@@ -2183,22 +2269,6 @@ unset(_wks_dir)
 
 set(_swiftui_dir "${WEBKIT_DIR}/_WebKit_SwiftUI")
 
-add_library(_WebKit_SwiftUI SHARED
-    ${_swiftui_dir}/CrossImportOverlay.swift
-    ${_swiftui_dir}/Empty.swift
-    ${_swiftui_dir}/API/View+WebViewModifiers.swift
-    ${_swiftui_dir}/API/WebPage+SwiftUI.swift
-    ${_swiftui_dir}/API/WebPageNavigationAction+SwiftUI.swift
-    ${_swiftui_dir}/API/WebView.swift
-    ${_swiftui_dir}/Implementation/CocoaWebViewAdapter.swift
-    ${_swiftui_dir}/Implementation/EnvironmentValues+Extras.swift
-    ${_swiftui_dir}/Implementation/Foundation+Extras.swift
-    ${_swiftui_dir}/Implementation/PlatformTextSearching.swift
-    ${_swiftui_dir}/Implementation/SwiftUI+Extras.swift
-    ${_swiftui_dir}/Implementation/ViewModifierContexts.swift
-    ${_swiftui_dir}/Implementation/WebViewRepresentable.swift
-)
-
 if (ENABLE_MODEL_ELEMENT_IMMERSIVE)
     target_sources(_WebKit_SwiftUI PRIVATE
         ${_swiftui_dir}/API/WebViewImmersiveEnvironmentView.swift
@@ -2207,51 +2277,16 @@ endif ()
 
 if (WebKit_SwiftUI_ADDITIONS_SOURCES)
     target_sources(_WebKit_SwiftUI PRIVATE ${WebKit_SwiftUI_ADDITIONS_SOURCES})
-    # Share WebKit's platform-swift-args.resp so the overlay's #if
-    # conditionals (e.g. ENABLE_WEBVIEW_ADDITIONAL_SETUP) match the main
-    # module. Re-fires propagate via add_dependencies(_WebKit_SwiftUI WebKit).
-    target_compile_options(_WebKit_SwiftUI PRIVATE
-        "$<$<COMPILE_LANGUAGE:Swift>:SHELL:@${CMAKE_CURRENT_BINARY_DIR}/WebKit.platform-swift-args.resp>"
-    )
 endif ()
 
-set_target_properties(_WebKit_SwiftUI PROPERTIES
-    OUTPUT_NAME _WebKit_SwiftUI
-    FRAMEWORK TRUE
-    MACOSX_FRAMEWORK_IDENTIFIER com.apple.WebKit._webkit_swiftui
-    Swift_MODULE_NAME _WebKit_SwiftUI
-    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
-)
-
 target_compile_options(_WebKit_SwiftUI PRIVATE
-    "$<$<COMPILE_LANGUAGE:Swift>:-parse-as-library>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-swift-version 6>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-enable-library-evolution>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-library-level api>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-upcoming-feature InternalImportsByDefault>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xfrontend -experimental-spi-only-imports>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-DENABLE_SWIFTUI>"
+    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:@${CMAKE_CURRENT_BINARY_DIR}/WebKit.platform-swift-args.resp>"
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:@${_swift_tba_resp}>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-F${CMAKE_LIBRARY_OUTPUT_DIRECTORY}>"
     "$<$<COMPILE_LANGUAGE:Swift>:-F${CMAKE_OSX_SYSROOT}/System/Cryptexes/OS/System/Library/Frameworks>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -DHAVE_CONFIG_H=1>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -DJS_EXPORT_PRIVATE=>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -DPAL_EXPORT=>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -DWK_EXPORT=>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -DWTF_EXPORT_PRIVATE=>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -DNODELETE=>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -iquote${CMAKE_BINARY_DIR}>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${CMAKE_BINARY_DIR}>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${WTF_FRAMEWORK_HEADERS_DIR}>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${bmalloc_FRAMEWORK_HEADERS_DIR}>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${PAL_FRAMEWORK_HEADERS_DIR}>"
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -fmodule-map-file=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/Modules/module.private.modulemap>"
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -fmodule-map-file=${CMAKE_OSX_SYSROOT}/usr/local/include/unicode_private.modulemap>"
     "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -ivfsoverlay -Xcc ${CMAKE_BINARY_DIR}/swift-vfs-overlay.yaml>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-I${WEBKIT_DIR}/Platform/spi/Cocoa>"
-    "$<$<COMPILE_LANGUAGE:Swift>:-I${WEBKIT_DIR}/Platform/spi/Cocoa/Modules>"
     "$<$<COMPILE_LANGUAGE:Swift>:-I${WEBKIT_DIR}/Platform/spi/ios>"
-    ${WEBKIT_PRIVATE_FRAMEWORKS_COMPILE_FLAG}
 )
 
 # SDK webrtc forwarding headers do quoted #include "api/..." lookups; expose libwebrtc src.
@@ -2267,20 +2302,6 @@ if (USE_LIBWEBRTC)
     endforeach ()
 endif ()
 
-# Explicit-module-build for _WebKit_SwiftUI Swift compile. The dep graph
-# includes WebKit (the cross-import-overlay does `@_exported public import WebKit`)
-# so libSwiftScan must be able to find WebKit.swiftmodule built by our cmake
-# WebKit target. https://bugs.webkit.org/show_bug.cgi?id=312083
-target_compile_options(_WebKit_SwiftUI PRIVATE
-    "$<$<COMPILE_LANGUAGE:Swift>:-explicit-module-build>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -fexperimental-late-parse-attributes>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -fexperimental-bounds-safety-attributes>"
-    "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-module-cache-path ${CMAKE_BINARY_DIR}/SwiftModuleCache>"
-    # @Entry and other SwiftUI macros run swift-plugin-server under sandbox-exec;
-    # -disable-sandbox avoids a nested sandbox_apply failure in a sandboxed build.
-    "$<$<COMPILE_LANGUAGE:Swift>:-disable-sandbox>"
-)
-
 target_link_libraries(_WebKit_SwiftUI PRIVATE
     "-framework SwiftUI"
     "-framework Foundation"
@@ -2294,33 +2315,21 @@ target_link_options(_WebKit_SwiftUI PRIVATE
 add_dependencies(_WebKit_SwiftUI WebKit WebKit_StageSwiftModule)
 
 set(_swiftui_module_output "${CMAKE_BINARY_DIR}/Source/WebKit")
-set(_swiftui_arch "${CMAKE_OSX_ARCHITECTURES}")
-if (NOT _swiftui_arch)
-    if (_is_simulator)
-        set(_swiftui_arch "arm64")
-    else ()
-        set(_swiftui_arch "arm64e")
-    endif ()
-endif ()
-if (CMAKE_OSX_SYSROOT MATCHES "[Ss]imulator")
-    set(_swiftui_triple "${_swiftui_arch}-apple-ios-simulator")
-else ()
-    set(_swiftui_triple "${_swiftui_arch}-apple-ios")
-endif ()
 set(_swiftui_module_dir "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/_WebKit_SwiftUI.framework/Modules/_WebKit_SwiftUI.swiftmodule")
 add_custom_command(TARGET _WebKit_SwiftUI POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_swiftui_module_dir}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${_swiftui_module_output}/_WebKit_SwiftUI.swiftmodule"
-        "${_swiftui_module_dir}/${_swiftui_triple}.swiftmodule"
+        "${_swiftui_module_dir}/${WEBKIT_SWIFT_MODULE_TRIPLE}.swiftmodule"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${_swiftui_module_output}/_WebKit_SwiftUI.swiftdoc"
-        "${_swiftui_module_dir}/${_swiftui_triple}.swiftdoc"
+        "${_swiftui_module_dir}/${WEBKIT_SWIFT_MODULE_TRIPLE}.swiftdoc"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${_swiftui_module_output}/_WebKit_SwiftUI.abi.json"
-        "${_swiftui_module_dir}/${_swiftui_triple}.abi.json"
-    COMMAND codesign --force --sign - "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/_WebKit_SwiftUI.framework"
+        "${_swiftui_module_dir}/${WEBKIT_SWIFT_MODULE_TRIPLE}.abi.json"
 )
+
+WEBKIT_FRAMEWORK(_WebKit_SwiftUI)
 
 unset(_swiftui_dir)
     return()
@@ -2446,16 +2455,16 @@ foreach (_header IN LISTS WebKit_PUBLIC_FRAMEWORK_HEADERS)
     endif ()
 endforeach ()
 
-# -Wl,-u forces a symbol reference so -dead_strip_dylibs won't prune the weak framework.
+# LINKER:-u forces a symbol reference so -dead_strip_dylibs won't prune the weak framework.
 target_link_options(WebKit PRIVATE
     -lsandbox
     -F${CMAKE_BINARY_DIR}
-    -weak_framework WebInspectorUI
-    -Wl,-u,_WebInspectorUIFrameworkLoad
-    "SHELL:-weak_framework CoreML"
-    "SHELL:-weak_framework NaturalLanguage"
+    "LINKER:-weak_framework,WebInspectorUI"
+    "LINKER:-u,_WebInspectorUIFrameworkLoad"
+    "LINKER:-weak_framework,CoreML"
+    "LINKER:-weak_framework,NaturalLanguage"
     # for bincompat, cf. rdar://117360317
-    -Wl,-reexport-lobjc
+    "LINKER:-reexport-lobjc"
 )
 add_dependencies(WebKit WebInspectorUIFramework)
 
@@ -2521,6 +2530,32 @@ add_custom_target(WebKit_CopyModules ALL DEPENDS
         "${_wk_modules_dir}/module.private.modulemap")
 list(APPEND WebKit_DEPENDENCIES WebKit_CopyModules)
 
+# The Automation protocol description and its injected-script atoms ship in
+# WebKit.framework/PrivateHeaders, where clients reach them through
+# WEBKIT2_PRIVATE_HEADERS_DIR. Safari's WebDriver framework reads both when
+# generating WDProtocol.h and the WD*ScriptSource.h sources.
+WEBKIT_SYMLINK_FILES(WebKit_CopyAutomationProtocol
+    DESTINATION ${WebKit_PRIVATE_HEADERS_DIR}
+    FILES ${WEBKIT_DIR}/UIProcess/Automation/Automation.json
+    FLATTENED
+)
+WEBKIT_SYMLINK_FILES(WebKit_CopyAutomationAtoms
+    DESTINATION ${WebKit_PRIVATE_HEADERS_DIR}/atoms
+    FILES
+        ${WEBKIT_DIR}/UIProcess/Automation/atoms/ElementAttribute.js
+        ${WEBKIT_DIR}/UIProcess/Automation/atoms/ElementDisplayed.js
+        ${WEBKIT_DIR}/UIProcess/Automation/atoms/EnterFullscreen.js
+        ${WEBKIT_DIR}/UIProcess/Automation/atoms/FindNodes.js
+        ${WEBKIT_DIR}/UIProcess/Automation/atoms/FormElementClear.js
+        ${WEBKIT_DIR}/UIProcess/Automation/atoms/FormSubmit.js
+    FLATTENED
+)
+list(APPEND WebKit_DEPENDENCIES WebKit_CopyAutomationProtocol WebKit_CopyAutomationAtoms)
+
+# The staging command above depends on WebKit, so this target must not be added
+# to WebKit_DEPENDENCIES; ALL is what gets it built.
+add_custom_target(WebKit_StageSwiftModuleMac ALL DEPENDS ${_wk_swiftmodule_outputs})
+
 add_custom_command(
     OUTPUT "${_wk_modules_dir}/WebKit.swiftcrossimport/SwiftUI.swiftoverlay"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${_wk_modules_dir}/WebKit.swiftcrossimport"
@@ -2532,6 +2567,50 @@ add_custom_target(WebKit_SwiftCrossImport ALL DEPENDS
     "${_wk_modules_dir}/WebKit.swiftcrossimport/SwiftUI.swiftoverlay")
 add_dependencies(WebKit WebKit_SwiftCrossImport)
 
+if (WebKit_SwiftUI_ADDITIONS_SOURCES)
+    target_sources(_WebKit_SwiftUI PRIVATE ${WebKit_SwiftUI_ADDITIONS_SOURCES})
+endif ()
+
+target_compile_options(_WebKit_SwiftUI PRIVATE
+    "$<$<COMPILE_LANGUAGE:Swift>:-I${WEBKIT_DIR}/Platform/spi/mac>"
+)
+
+# The overlay's @available annotations use the same custom macros as WebKit's.
+foreach (_line IN LISTS _wk_avail_lines)
+    target_compile_options(_WebKit_SwiftUI PRIVATE "$<$<COMPILE_LANGUAGE:Swift>:SHELL:${_line}>")
+endforeach ()
+
+target_link_libraries(_WebKit_SwiftUI PRIVATE
+    "-framework SwiftUI"
+    "-framework Foundation"
+)
+
+target_link_options(_WebKit_SwiftUI PRIVATE
+    "-F${CMAKE_LIBRARY_OUTPUT_DIRECTORY}"
+    "-framework" "WebKit"
+)
+
+add_dependencies(_WebKit_SwiftUI WebKit WebKit_StageSwiftModuleMac WebKit_CopyModules)
+
+# Stage the swiftmodule inside the framework under the target triple, the layout
+# the Swift importer expects when it resolves the overlay. It is found through the
+# top-level Modules symlink WEBKIT_FRAMEWORK creates; without it the importer
+# falls back to the SDK's copy and clients compile against that API while linking
+# this binary.
+set(_swiftui_framework "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/_WebKit_SwiftUI.framework")
+set(_swiftui_module_dir "${_swiftui_framework}/Versions/A/Modules/_WebKit_SwiftUI.swiftmodule")
+add_custom_command(TARGET _WebKit_SwiftUI POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${_swiftui_module_dir}"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/Source/WebKit/_WebKit_SwiftUI.swiftmodule"
+        "${_swiftui_module_dir}/${WEBKIT_SWIFT_MODULE_TRIPLE}.swiftmodule"
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CMAKE_BINARY_DIR}/Source/WebKit/_WebKit_SwiftUI.swiftdoc"
+        "${_swiftui_module_dir}/${WEBKIT_SWIFT_MODULE_TRIPLE}.swiftdoc"
+)
+
+WEBKIT_FRAMEWORK(_WebKit_SwiftUI)
+
 # XPC Services
 
 function(WEBKIT_DEFINE_XPC_SERVICES)
@@ -2540,15 +2619,15 @@ function(WEBKIT_DEFINE_XPC_SERVICES)
     set(RUNLOOP_TYPE NSRunLoop)
     set(WebKit_XPC_SERVICE_DIR ${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/Versions/A/XPCServices)
     # Relative symlink (matches Xcode layout; absolute breaks if build dir is moved).
-    make_directory("${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework")
+    file(MAKE_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework")
     file(CREATE_LINK "Versions/Current/XPCServices"
                      "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/WebKit.framework/XPCServices" SYMBOLIC)
 
     function(WEBKIT_XPC_SERVICE _target _bundle_identifier _info_plist _executable_name)
         set(_service_dir ${WebKit_XPC_SERVICE_DIR}/${_bundle_identifier}.xpc/Contents)
-        make_directory(${_service_dir}/MacOS)
-        make_directory(${_service_dir}/_CodeSignature)
-        make_directory(${_service_dir}/Resources)
+        file(MAKE_DIRECTORY ${_service_dir}/MacOS)
+        file(MAKE_DIRECTORY ${_service_dir}/_CodeSignature)
+        file(MAKE_DIRECTORY ${_service_dir}/Resources)
 
         # FIXME: These version strings don't match Xcode's.
         set(BUNDLE_VERSION ${WEBKIT_VERSION})

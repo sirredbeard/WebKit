@@ -139,6 +139,8 @@ private:
 
     WebCore::IntPoint accessibilityScreenToRootView(const WebCore::IntPoint&) const final;
     WebCore::IntRect rootViewToAccessibilityScreen(const WebCore::IntRect&) const final;
+
+    void translateAccessibilityAnnouncementStrings(const Vector<String>&, const String&, CompletionHandler<void(Vector<String>&&)>&&) final;
 #if ENABLE(ACCESSIBILITY_LOCAL_FRAME)
     void requestFrameScreenPosition(WebCore::FrameIdentifier) const final;
     void scheduleAccessibilityFrameGeometryUpdate() const final;
@@ -219,6 +221,7 @@ private:
 #endif
 
     void runOpenPanel(WebCore::LocalFrame&, WebCore::FileChooser&) final;
+    void transcodeChosenFiles(Vector<String>&&, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&) final;
     void showShareSheet(WebCore::ShareDataWithParsedURL&&, WTF::CompletionHandler<void(bool)>&&) final;
     void showContactPicker(WebCore::ContactsRequestData&&, WTF::CompletionHandler<void(std::optional<Vector<WebCore::ContactInfo>>&&)>&&) final;
 
@@ -448,11 +451,12 @@ private:
 #if ENABLE(WIRELESS_PLAYBACK_TARGET) && !PLATFORM(IOS_FAMILY)
     void addPlaybackTargetPickerClient(WebCore::PlaybackTargetClientContextIdentifier) final;
     void removePlaybackTargetPickerClient(WebCore::PlaybackTargetClientContextIdentifier) final;
-    void showPlaybackTargetPicker(WebCore::PlaybackTargetClientContextIdentifier, const WebCore::IntPoint&, bool) final;
+    void showPlaybackTargetPicker(WebCore::PlaybackTargetClientContextIdentifier, WebCore::FrameIdentifier, const WebCore::IntPoint&, bool) final;
     void playbackTargetPickerClientStateDidChange(WebCore::PlaybackTargetClientContextIdentifier, WebCore::MediaProducerMediaStateFlags) final;
     void setMockMediaPlaybackTargetPickerEnabled(bool) final;
     void setMockMediaPlaybackTargetPickerState(const String&, WebCore::MediaPlaybackTargetMockState) final;
     void mockMediaPlaybackTargetPickerDismissPopup() final;
+    void mockMediaPlaybackTargetPickerRect(CompletionHandler<void(WebCore::FloatRect)>&&) final;
 #endif
 
     void imageOrMediaDocumentSizeChanged(const WebCore::IntSize&) final;
@@ -478,7 +482,7 @@ private:
     void setUserIsInteracting(bool) final;
 
 #if ENABLE(WEB_AUTHN)
-    void showDigitalCredentialsChooser(const WebCore::DigitalCredentialsRequestData&, WTF::CompletionHandler<void(Expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&) final;
+    void showDigitalCredentialsChooser(const WebCore::DigitalCredentialsRequestData&, WTF::CompletionHandler<void(std::expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&) final;
     void dismissDigitalCredentialsChooser(WTF::CompletionHandler<void(bool)>&&) final;
     void setMockWebAuthenticationConfiguration(const WebCore::MockWebAuthenticationConfiguration&) final;
 #endif

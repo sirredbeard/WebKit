@@ -753,6 +753,7 @@
             "codegen-properties": {
                 "font-property": true,
                 "high-priority": true,
+                "computed-style-getter-exported": true,
                 "computed-style-storage-container": "opaque",
                 "computed-style-storage-path": ["m_inheritedData", "fontData", "fontCascade"],
                 "computed-style-storage-kind": "value",
@@ -780,6 +781,7 @@
                 "font-description-name-for-methods": "Weight",
                 "font-property": true,
                 "high-priority": true,
+                "computed-style-getter-exported": true,
                 "computed-style-storage-container": "opaque",
                 "computed-style-storage-path": ["m_inheritedData", "fontData", "fontCascade"],
                 "computed-style-storage-kind": "value",
@@ -939,6 +941,7 @@
                 "font-description-name-for-methods": "FeatureSettings",
                 "font-property": true,
                 "high-priority": true,
+                "computed-style-getter-nodelete": false,
                 "computed-style-storage-container": "opaque",
                 "computed-style-storage-path": ["m_inheritedData", "fontData", "fontCascade"],
                 "computed-style-storage-kind": "value",
@@ -963,6 +966,7 @@
                 "font-description-name-for-methods": "VariationSettings",
                 "font-property": true,
                 "high-priority": true,
+                "computed-style-getter-nodelete": false,
                 "computed-style-storage-container": "opaque",
                 "computed-style-storage-path": ["m_inheritedData", "fontData", "fontCascade"],
                 "computed-style-storage-kind": "value",
@@ -1169,6 +1173,7 @@
                 "font-description-name-for-methods": "VariantAlternates",
                 "font-property": true,
                 "high-priority": true,
+                "computed-style-getter-nodelete": false,
                 "computed-style-storage-container": "opaque",
                 "computed-style-storage-path": ["m_inheritedData", "fontData", "fontCascade"],
                 "computed-style-storage-kind": "value",
@@ -4834,9 +4839,6 @@
             "initial": "auto",
             "values": [
                 "auto",
-                "use-script",
-                "no-change",
-                "reset-size",
                 "ideographic",
                 "alphabetic",
                 "hanging",
@@ -4855,7 +4857,7 @@
             },
             "specification": {
                 "category": "svg",
-                "url": "https://www.w3.org/TR/SVG11/text.html#DominantBaselineProperty"
+                "url": "https://w3c.github.io/svgwg/svg2-draft/text.html#DominantBaselineProperty"
             }
         },
         "dynamic-range-limit": {
@@ -5375,24 +5377,6 @@
                 "url": "https://www.w3.org/TR/css-logical/#inset-properties"
             }
         },
-        "flow-tolerance": {
-            "animation-type": "by computed value",
-            "initial": "normal",
-            "values": [
-                "normal",
-                "infinite"
-            ],
-            "codegen-properties": {
-                "computed-style-storage-path": ["m_nonInheritedData", "rareData", "grid"],
-                "computed-style-storage-kind": "reference",
-                "computed-style-type": "Style::FlowTolerance",
-                "parser-grammar": "normal | <length-percentage [0,inf]> | infinite"
-            },
-            "specification": {
-                "category": "css-grid",
-                "url": "https://drafts.csswg.org/css-grid-3/#placement-tolerance"
-            }
-        },
         "left": {
             "animation-type": "by computed value",
             "initial": "auto",
@@ -5522,6 +5506,24 @@
             "specification": {
                 "category": "css-inline",
                 "url": "https://www.w3.org/TR/css-inline-3/#line-height-property"
+            }
+        },
+        "link-parameters": {
+            "animation-type": "discrete",
+            "initial": "none",
+            "values": [
+                "none"
+            ],
+            "codegen-properties": {
+                "settings-flag": "cssLinkParametersEnabled",
+                "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
+                "computed-style-storage-kind": "reference",
+                "computed-style-type": "Style::LinkParameters",
+                "parser-grammar": "none | <param()>#"
+            },
+            "specification": {
+                "category": "css-link-params",
+                "url": "https://drafts.csswg.org/css-link-params/#propdef-link-parameters"
             }
         },
         "list-style": {
@@ -5928,18 +5930,15 @@
             "values": [
                 "none",
                 "block",
-                "inline",
                 "block-start",
-                "inline-start",
-                "block-end",
-                "inline-end"
+                "block-end"
             ],
             "codegen-properties": {
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "raw",
                 "computed-style-type": "Style::MarginTrim",
                 "parser-function": "consumeMarginTrim",
-                "parser-grammar-unused": "none | [ block || inline ] | [ block-start || inline-start || block-end || inline-end ]",
+                "parser-grammar-unused": "none | block | [ block-start || block-end ]",
                 "parser-grammar-unused-reason": "Needs support for transforming parsed input to minimal form."
             },
             "specification": {
@@ -7944,6 +7943,26 @@
                 "url": "https://svgwg.org/svg2-draft/interact.html#PointerEventsProperty"
             }
         },
+        "portal-action": {
+            "animation-type": "discrete",
+            "initial": "none",
+            "values": [
+                "none",
+                "orbit"
+            ],
+            "codegen-properties": {
+                "enable-if": "ENABLE_SPATIAL_PORTAL",
+                "settings-flag": "spatialPortalEnabled",
+                "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
+                "computed-style-storage-kind": "enum",
+                "computed-style-type": "PortalActionType",
+                "parser-grammar": "<<values>>"
+            },
+            "specification": {
+                "url": "https://webkit.github.io/explainers/css-spatial/Overview.html#stage-interactivity"
+            },
+            "status": "in development"
+        },
         "portal-transform": {
             "animation-type": "discrete",
             "initial": "auto",
@@ -8536,6 +8555,7 @@
                 }
             ],
             "codegen-properties": {
+                "computed-style-getter-exported": true,
                 "computed-style-storage-path": ["m_inheritedFlags"],
                 "computed-style-storage-container": "struct",
                 "computed-style-storage-kind": "enum",
@@ -8676,9 +8696,9 @@
             ],
             "codegen-properties": {
                 "computed-style-storage-path": ["m_nonInheritedData", "miscData"],
-                "computed-style-storage-kind": "enum",
-                "computed-style-type": "TextOverflow",
-                "parser-grammar": "<<values>>"
+                "computed-style-storage-kind": "reference",
+                "computed-style-type": "Style::TextOverflow",
+                "parser-grammar": "clip | ellipsis | <string>"
             },
             "specification": {
                 "category": "css-overflow",
@@ -10694,20 +10714,24 @@
             "values": [
                 "nowrap",
                 "wrap",
-                "wrap-reverse"
+                "wrap-reverse",
+                {
+                    "value": "balance",
+                    "settings-flag": "cssFlexWrapBalanceEnabled"
+                }
             ],
             "codegen-properties": {
                 "aliases": [
                     "-webkit-flex-wrap"
                 ],
                 "computed-style-storage-path": ["m_nonInheritedData", "miscData", "flexibleBox"],
-                "computed-style-storage-kind": "enum",
-                "computed-style-type": "FlexWrap",
-                "parser-grammar": "<<values>>"
+                "computed-style-storage-kind": "raw",
+                "computed-style-type": "Style::FlexWrap",
+                "parser-grammar": "nowrap | [ [ wrap | wrap-reverse ] || balance@(settings-flag=cssFlexWrapBalanceEnabled) ]@(type=CSSFlexWrapValue)"
             },
             "specification": {
-                "category": "css-flexbox",
-                "url": "https://www.w3.org/TR/css-flexbox-1/#propdef-flex-wrap"
+                "category": "css-flexbox-2",
+                "url": "https://drafts.csswg.org/css-flexbox-2/#propdef-flex-wrap"
             }
         },
         "justify-content": {
@@ -11137,6 +11161,27 @@
                 "url": "https://www.w3.org/TR/css-grid-1/#propdef-grid-auto-flow"
             }
         },
+        "fit-tolerance": {
+            "animation-type": "by computed value",
+            "initial": "normal",
+            "values": [
+                "normal",
+                "infinite"
+            ],
+            "codegen-properties": {
+                "aliases": [
+                    "flow-tolerance"
+                ],
+                "computed-style-storage-path": ["m_nonInheritedData", "rareData", "grid"],
+                "computed-style-storage-kind": "reference",
+                "computed-style-type": "Style::FitTolerance",
+                "parser-grammar": "normal | <length-percentage [0,inf]> | infinite"
+            },
+            "specification": {
+                "category": "css-grid",
+                "url": "https://drafts.csswg.org/css-grid-3/#placement-tolerance"
+            }
+        },
         "hyphenate-character": {
             "animation-type": "discrete",
             "inherited": true,
@@ -11366,7 +11411,7 @@
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "reference",
                 "computed-style-type": "Style::WebkitLineClamp",
-                "parser-grammar": "none | <percentage [0,inf]> | <integer [1,inf]>"
+                "parser-grammar": "none | <integer [1,inf]>"
             },
             "status": "non-standard"
         },
@@ -11630,7 +11675,7 @@
                 "computed-style-has-explicitly-set-policy": "value-only",
                 "computed-style-has-explicitly-set-storage-path": ["m_nonInheritedData", "miscData"],
                 "computed-style-storage-path": ["m_inheritedRareData"],
-                "computed-style-storage-kind": "value",
+                "computed-style-storage-kind": "reference",
                 "computed-style-type": "Style::ColorScheme",
                 "top-priority": true,
                 "top-priority-reason": "This is a top priority property to ensure that its value can be checked when resolving colors.",
@@ -12057,7 +12102,7 @@
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "reference",
                 "computed-style-type": "Style::TextDecorationInset",
-                "parser-grammar": "auto | <length>{1,2}@(type=CSSValuePair default=previous)",
+                "parser-grammar": "auto | <length-percentage>{1,2}@(type=CSSValuePair default=previous)",
                 "applies-to-highlight-pseudo-elements": "yes"
             },
             "specification": {
@@ -12071,6 +12116,7 @@
             "initial": "none",
             "codegen-properties": {
                 "skip-style-builder": true,
+                "computed-style-getter-exported": true,
                 "computed-style-name-for-methods": "TextDecorationLineInEffect",
                 "computed-style-storage-path": ["m_inheritedFlags"],
                 "computed-style-storage-container": "struct",
@@ -12510,11 +12556,33 @@
             "status": "non-standard"
         },
         "-webkit-user-select": {
-            "animation-type": "not animatable (needs triage)",
-            "animation-type-comment": "Current spec for standard 'user-select' animation type is 'discrete'",
+            "animation-type": "not animatable (legacy)",
             "inherited": true,
             "initial": "text",
-            "initial-comment": "Current spec for standard 'user-select' initial is 'auto'",
+            "initial-comment": "Legacy behavior - 'auto' is folded into 'text'",
+            "values": [
+                "auto",
+                "text",
+                "none",
+                "all"
+            ],
+            "codegen-properties": {
+                "computed-style-has-explicitly-set-policy": "value-only",
+                "computed-style-has-explicitly-set-storage-path": ["m_nonInheritedData", "miscData"],
+                "computed-style-name-for-methods": "WebkitUserSelect",
+                "computed-style-storage-path": ["m_inheritedRareData"],
+                "computed-style-storage-kind": "enum",
+                "computed-style-type": "UserSelect",
+                "parser-grammar": "<<values>>",
+                "comment": "Not an alias of 'user-select': this property is inherited, and it only applies when it has been specified and 'user-select' has not (hence the has-explicitly-set flags on both)."
+            },
+            "status": "non-standard"
+        },
+        "user-select": {
+            "animation-type": "not animatable (needs triage)",
+            "animation-type-comment": "Current spec animation type is 'discrete'",
+            "inherited": false,
+            "initial": "auto",
             "values": [
                 "auto",
                 "text",
@@ -12526,10 +12594,13 @@
                 "all"
             ],
             "codegen-properties": {
-                "computed-style-storage-path": ["m_inheritedRareData"],
+                "computed-style-has-explicitly-set-policy": "value-only",
+                "computed-style-has-explicitly-set-storage-path": ["m_nonInheritedData", "miscData"],
+                "computed-style-storage-path": ["m_nonInheritedData", "miscData"],
                 "computed-style-storage-kind": "enum",
                 "computed-style-type": "UserSelect",
-                "parser-grammar": "<<values>>"
+                "parser-grammar": "<<values>>",
+                "settings-flag": "cssUserSelectEnabled"
             },
             "status": {
                 "status": "experimental"
@@ -13549,7 +13620,6 @@
                 "none"
             ],
             "codegen-properties": {
-                "settings-flag": "cssAnchorPositioningEnabled",
                 "computed-style-name-for-methods": "AnchorNames",
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "reference",
@@ -13568,8 +13638,7 @@
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "reference",
                 "computed-style-type": "Style::NameScope",
-                "parser-grammar": "none | all | <dashed-ident>#",
-                "settings-flag": "cssAnchorPositioningEnabled"
+                "parser-grammar": "none | all | <dashed-ident>#"
             },
             "specification": {
                 "category": "css-anchor-position",
@@ -13585,7 +13654,6 @@
                 "auto"
             ],
             "codegen-properties": {
-                "settings-flag": "cssAnchorPositioningEnabled",
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "reference",
                 "computed-style-type": "Style::PositionAnchor",
@@ -13604,7 +13672,6 @@
                 "none"
             ],
             "codegen-properties": {
-                "settings-flag": "cssAnchorPositioningEnabled",
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "value",
                 "computed-style-type": "Style::PositionArea",
@@ -13623,7 +13690,6 @@
                     "position-try-order",
                     "position-try-fallbacks"
                 ],
-                "settings-flag": "cssAnchorPositioningEnabled",
                 "parser-function": "consumePositionTryShorthand",
                 "parser-grammar-unused": "<'position-try-order'>? <'position-try-fallbacks'>",
                 "parser-grammar-unused-reason": "Needs support for shorthand grammars."
@@ -13644,7 +13710,6 @@
                 "most-inline-size"
             ],
             "codegen-properties": {
-                "settings-flag": "cssAnchorPositioningEnabled",
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "enum",
                 "computed-style-type": "Style::PositionTryOrder",
@@ -13662,7 +13727,6 @@
                 "none"
             ],
             "codegen-properties": {
-                "settings-flag": "cssAnchorPositioningEnabled",
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "reference",
                 "computed-style-type": "Style::PositionTryFallbacks",
@@ -13687,7 +13751,6 @@
                 "no-overflow"
             ],
             "codegen-properties": {
-                "settings-flag": "cssAnchorPositioningEnabled",
                 "computed-style-initial-custom": true,
                 "computed-style-storage-path": ["m_nonInheritedData", "rareData"],
                 "computed-style-storage-kind": "raw",
@@ -13915,6 +13978,19 @@
                 "parser-grammar": "<<values>>"
             },
             "status": "non-standard"
+        },
+        "size": {
+            "codegen-properties": {
+                "longhands": ["width", "height"],
+                "shorthand-pattern": "CoalescingPair",
+                "settings-flag": "cssSizeShorthandEnabled",
+                "parser-grammar-unused": "<'width'>{1,2}",
+                "parser-grammar-unused-reason": "Needs support for shorthand grammars."
+            },
+            "specification": {
+                "category": "css-sizing",
+                "url": "https://drafts.csswg.org/css-sizing-4/#sizing-properties"
+            }
         }
     },
     "descriptors": {
@@ -14247,7 +14323,7 @@
             }
         },
         "@page": {
-            "size": {
+            "page-size": {
                 "codegen-properties": {
                     "parser-grammar": "<length [0,inf]>{1,2}@(type=CSSValuePair) | auto | [ <page-size> || [ portrait | landscape ] ]@(type=CSSValuePair)"
                 },
@@ -14432,6 +14508,11 @@
             "longname": "CSS Flexible Box Module",
             "url": "https://www.w3.org/TR/css-flexbox-1/"
         },
+        "css-flexbox-2": {
+            "shortname": "CSS Flexbox Level 2",
+            "longname": "CSS Flexible Box Module Level 2",
+            "url": "https://drafts.csswg.org/css-flexbox-2/"
+        },
         "css-fonts": {
             "shortname": "CSS Fonts",
             "longname": "CSS Fonts Module",
@@ -14466,6 +14547,11 @@
             "shortname": "CSS Line Grid",
             "longname": "CSS Line Grid Module",
             "url": "https://www.w3.org/TR/css-line-grid-1/"
+        },
+        "css-link-params": {
+            "shortname": "CSS Linked Parameters",
+            "longname": "CSS Linked Parameters Module",
+            "url": "https://drafts.csswg.org/css-link-params/"
         },
         "css-lists": {
             "shortname": "CSS Lists and Counters",
@@ -15817,6 +15903,15 @@
             "specification": {
                 "category": "css-fonts-4",
                 "url": "https://drafts.csswg.org/css-fonts-4/#feature-value-name-value"
+            }
+        },
+        "<param()>": {
+            "grammar-unused": "param( <dashed-ident> , <declaration-value>? )",
+            "grammar-unused-reason": "Needs support for an optional <declaration-value> whose preceding comma is still required.",
+            "grammar-function": "consumeParamFunction",
+            "specification": {
+                "category": "css-link-params",
+                "url": "https://drafts.csswg.org/css-link-params/#funcdef-param"
             }
         }
     }

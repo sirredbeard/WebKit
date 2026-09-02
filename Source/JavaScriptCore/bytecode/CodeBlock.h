@@ -247,7 +247,7 @@ public:
 
     static size_t estimatedSize(JSCell*, VM&);
     static void destroy(JSCell*);
-    void finalizeUnconditionally(VM&, CollectionScope);
+    void reconcileWeakReferencesAtGCEnd(VM&, CollectionScope);
 
     void notifyLexicalBindingUpdate();
 
@@ -415,9 +415,6 @@ public:
     unsigned sourceOffset() const { return m_ownerExecutable->source().startOffset(); }
     unsigned firstLineColumnOffset() const { return m_ownerExecutable->startColumn(); }
 
-    size_t numberOfJumpTargets() const { return m_unlinkedCode->numberOfJumpTargets(); }
-    unsigned jumpTarget(int index) const { return m_unlinkedCode->jumpTarget(index); }
-
     String nameForRegister(VirtualRegister);
 
     static constexpr ptrdiff_t offsetOfArgumentValueProfiles() { return OBJECT_OFFSETOF(CodeBlock, m_argumentValueProfiles); }
@@ -440,7 +437,7 @@ public:
 
     ValueProfile* NODELETE tryGetValueProfileForBytecodeIndex(BytecodeIndex);
     ValueProfile& NODELETE valueProfileForBytecodeIndex(BytecodeIndex);
-    SpeculatedType valueProfilePredictionForBytecodeIndex(const ConcurrentJSLocker&, BytecodeIndex, JSValue* specFailValue = nullptr);
+    SpeculatedType valueProfilePredictionForBytecodeIndex(BytecodeIndex, JSValue* specFailValue = nullptr);
 
     template<typename Functor> void forEachValueProfile(const Functor&);
     template<typename Functor> void forEachArrayAllocationProfile(const Functor&);
@@ -454,7 +451,7 @@ public:
 
     bool NODELETE couldTakeSpecialArithFastCase(BytecodeIndex bytecodeOffset);
 
-    ArrayProfile* NODELETE getArrayProfile(const ConcurrentJSLocker&, BytecodeIndex);
+    ArrayProfile* NODELETE getArrayProfile(BytecodeIndex);
 
     // Exception handling support
 
@@ -757,8 +754,8 @@ public:
 #endif
 
     bool shouldOptimizeNowFromBaseline();
-    void updateAllNonLazyValueProfilePredictions(const ConcurrentJSLocker&);
-    void updateAllLazyValueProfilePredictions(const ConcurrentJSLocker&);
+    void updateAllNonLazyValueProfilePredictions();
+    void updateAllLazyValueProfilePredictions();
     void updateAllArrayProfilePredictions();
     void updateAllArrayAllocationProfilePredictions();
     void updateAllPredictions();
@@ -813,8 +810,6 @@ public:
     mutable ConcurrentJSLock m_lock;
 
     bool m_shouldAlwaysBeInlined { true }; // Not a bitfield because the JIT wants to store to it.
-
-    NoLockingNecessaryTag valueProfileLock() { return NoLockingNecessary; }
 
     static constexpr ptrdiff_t offsetOfShouldAlwaysBeInlined() { return OBJECT_OFFSETOF(CodeBlock, m_shouldAlwaysBeInlined); }
 
@@ -890,9 +885,9 @@ public:
     double optimizationThresholdScalingFactor() const;
 
 protected:
-    void finalizeLLIntInlineCaches();
+    void reconcileLLIntInlineCachesAtGCEnd();
 #if ENABLE(JIT)
-    void finalizeJITInlineCaches();
+    void reconcileJITInlineCachesAtGCEnd();
 #endif
 #if ENABLE(DFG_JIT)
     void tallyFrequentExitSites();
@@ -916,7 +911,7 @@ private:
     
     void noticeIncomingCall(JSCell* caller);
 
-    void updateAllNonLazyValueProfilePredictionsAndCountLiveness(const ConcurrentJSLocker&, unsigned& numberOfLiveNonArgumentValueProfiles, unsigned& numberOfSamplesInProfiles);
+    void updateAllNonLazyValueProfilePredictionsAndCountLiveness(unsigned& numberOfLiveNonArgumentValueProfiles, unsigned& numberOfSamplesInProfiles);
 
     Vector<unsigned> setConstantRegisters(const FixedVector<WriteBarrier<Unknown>>& constants, const FixedVector<SourceCodeRepresentation>& constantsSourceCodeRepresentation);
     void initializeTemplateObjects(ScriptExecutable* topLevelExecutable, const Vector<unsigned>& templateObjectIndices);

@@ -27,10 +27,10 @@
 #include <JavaScriptCore/CollectorPhase.h>
 #include <JavaScriptCore/CompleteSubspace.h>
 #include <JavaScriptCore/DeleteAllCodeEffort.h>
+#include <JavaScriptCore/GCCompletionCallback.h>
 #include <JavaScriptCore/GCConductor.h>
 #include <JavaScriptCore/GCIncomingRefCountedSet.h>
 #include <JavaScriptCore/GCRequest.h>
-#include <JavaScriptCore/HeapFinalizerCallback.h>
 #include <JavaScriptCore/HeapObserver.h>
 #include <JavaScriptCore/IsoCellSet.h>
 #include <JavaScriptCore/IsoHeapCellType.h>
@@ -604,8 +604,8 @@ public:
     
     HeapVerifier* verifier() const LIFETIME_BOUND { return m_verifier.get(); }
     
-    void addHeapFinalizerCallback(const HeapFinalizerCallback&);
-    void removeHeapFinalizerCallback(const HeapFinalizerCallback&);
+    void addGCCompletionCallback(const GCCompletionCallback&);
+    void removeGCCompletionCallback(const GCCompletionCallback&);
     
     void runTaskInParallel(RefPtr<SharedTask<void(SlotVisitor&)>>);
     
@@ -739,14 +739,14 @@ private:
     JS_EXPORT_PRIVATE void acquireAccessSlow();
     JS_EXPORT_PRIVATE void releaseAccessSlow();
     
-    bool handleNeedFinalize(unsigned);
-    void handleNeedFinalize();
+    bool handleNeedCollectionEpilogue(unsigned);
+    void handleNeedCollectionEpilogue();
     
     bool relinquishConn(unsigned);
     void finishRelinquishingConn();
     
-    void setNeedFinalize();
-    void waitWhileNeedFinalize();
+    void setNeedCollectionEpilogue();
+    void waitWhileNeedCollectionEpilogue();
     
     void setMutatorWaiting();
     void clearMutatorWaiting();
@@ -782,9 +782,9 @@ private:
     void harvestWeakReferences();
 
     template<typename CellType, typename CellSet>
-    void finalizeMarkedUnconditionalFinalizers(CellSet&, CollectionScope);
+    void reconcileWeakReferencesInMarkedCells(CellSet&, CollectionScope);
 
-    void finalizeUnconditionalFinalizers();
+    void reconcileWeakReferencesAtGCEnd();
 
     void deleteUnmarkedCompiledCode();
     JS_EXPORT_PRIVATE void addToRememberedSet(const JSCell*);
@@ -794,8 +794,8 @@ private:
     void resumeCompilerThreads();
     void gatherExtraHeapData(HeapProfiler&);
     void removeDeadHeapSnapshotNodes(HeapProfiler&);
-    void finalize();
-    void sweepInFinalize();
+    void runCollectionEpilogue();
+    void sweepEagerlyInEpilogue();
     
     void sweepAllLogicallyEmptyWeakBlocks();
     bool sweepNextLogicallyEmptyWeakBlock();
@@ -831,8 +831,6 @@ private:
     void iterateExecutingAndCompilingCodeBlocksWithoutHoldingLocks(Visitor&, const Func&);
     
     void assertMarkStacksEmpty();
-
-    void setBonusVisitorTask(RefPtr<SharedTask<void(SlotVisitor&)>>);
 
     void dumpHeapStatisticsAtVMDestruction();
 
@@ -949,7 +947,7 @@ private:
 
     Vector<HeapObserver*> m_observers;
     
-    Vector<HeapFinalizerCallback> m_heapFinalizerCallbacks;
+    Vector<GCCompletionCallback> m_gcCompletionCallbacks;
     
     std::unique_ptr<HeapVerifier> m_verifier;
 
@@ -997,12 +995,13 @@ private:
     static constexpr unsigned mutatorHasConnBit = 1u << 0u; // Must also be protected by threadLock.
     static constexpr unsigned stoppedBit = 1u << 1u; // Only set when !hasAccessBit
     static constexpr unsigned hasAccessBit = 1u << 2u;
-    static constexpr unsigned needFinalizeBit = 1u << 3u;
+    static constexpr unsigned needCollectionEpilogueBit = 1u << 3u;
     static constexpr unsigned mutatorWaitingBit = 1u << 4u; // Allows the mutator to use this as a condition variable.
     Atomic<unsigned> m_worldState;
     bool m_worldIsStopped { false };
     Lock m_markingMutex;
     Condition m_markingConditionVariable;
+    Condition m_bonusVisitorTaskConditionVariable;
 
     MonotonicTime m_beforeGC;
     MonotonicTime m_afterGC;
@@ -1215,14 +1214,14 @@ public:
         IsoSubspace space;
         IsoCellSet clearableCodeSet;
         IsoCellSet outputConstraintsSet;
-        IsoCellSet finalizerSet;
+        IsoCellSet weakReconciliationSet;
 
         template<typename... Arguments>
         ScriptExecutableSpaceAndSets(Arguments&&... arguments)
             : space(std::forward<Arguments>(arguments)...)
             , clearableCodeSet(space)
             , outputConstraintsSet(space)
-            , finalizerSet(space)
+            , weakReconciliationSet(space)
         {
         }
 
@@ -1235,7 +1234,7 @@ public:
 
         static IsoCellSet& clearableCodeSetFor(Subspace& space) { return setAndSpaceFor(space).clearableCodeSet; }
         static IsoCellSet& outputConstraintsSetFor(Subspace& space) { return setAndSpaceFor(space).outputConstraintsSet; }
-        static IsoCellSet& finalizerSetFor(Subspace& space) { return setAndSpaceFor(space).finalizerSet; }
+        static IsoCellSet& weakReconciliationSetFor(Subspace& space) { return setAndSpaceFor(space).weakReconciliationSet; }
     };
 
     DYNAMIC_SPACE_AND_SET_DEFINE_MEMBER(evalExecutableSpace, ScriptExecutableSpaceAndSets)

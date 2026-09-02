@@ -94,10 +94,23 @@ static bool isExcludedMarker(const RenderBlock& parent, const RenderObject& chil
     CheckedPtr marker = dynamicDowncast<RenderListMarker>(child);
     if (!marker || marker->isInside() || !marker->document().settings().listMarkerPositionedPostLayoutEnabled())
         return false;
-    if (parent.childrenInline())
-        return false;
     CheckedPtr listItem = dynamicDowncast<RenderListItem>(parent);
     return listItem && !markerNeedsOwnLine(*listItem);
+}
+
+static bool hasInlineInFlowChild(const RenderBlock& parent)
+{
+    for (CheckedPtr child = parent.firstChild(); child; child = child->nextSibling()) {
+        if (child->isFloatingOrOutOfFlowPositioned())
+            continue;
+        // An excluded marker takes no part in in-flow layout, so it does not make the children inline. A
+        // list item left holding nothing but its marker still has the marker's line though.
+        if (isExcludedMarker(parent, *child) && (child->previousSibling() || child->nextSibling()))
+            continue;
+        if (child->isInline())
+            return true;
+    }
+    return false;
 }
 
 static std::optional<ParentAndBeforeChild> findParentAndBeforeChildForNonSibling(RenderBlock& parent, const RenderObject& child, RenderObject& beforeChild)
@@ -171,16 +184,14 @@ void RenderTreeBuilder::Block::attach(RenderBlock& parent, RenderPtr<RenderObjec
         if (m_buildsSimpleAnonymousBlocks)
             return true;
 
-        constexpr auto parentRequiresAnonymousBlockByDisplayValue = EnumSet {
-            Style::DisplayType::BlockFlex,
-            Style::DisplayType::InlineFlex,
-            Style::DisplayType::BlockDeprecatedFlex,
-            Style::DisplayType::InlineDeprecatedFlex,
-            Style::DisplayType::BlockGrid,
-            Style::DisplayType::InlineGrid
-        };
-        if (parentRequiresAnonymousBlockByDisplayValue.contains(parent.style().display().value))
+        // A flex or grid container's children are its items, and CSS requires a box around a run of inline content
+        // to make one out of it, so this is not the anonymous block generation the feature is about.
+        if (parent.style().display().isFlexibleBoxIncludingDeprecatedOrGridFormattingContextBox())
             return true;
+        if (parent.isAnonymousBlock() && (parent.isGridItem() || parent.isFlexItemIncludingDeprecated())) {
+            // An anonymous flex or grid item takes its display value from the box it wraps, not from the flex or grid container it is an item of.
+            return true;
+        }
 #if ENABLE(MATHML)
         if (parent.isRenderMathMLBlock())
             return true;
@@ -189,10 +200,19 @@ void RenderTreeBuilder::Block::attach(RenderBlock& parent, RenderPtr<RenderObjec
     };
 
     if (!shouldBuildAnonymousBlock()) {
-        if (!parent.firstChild() && !child->isFloatingOrOutOfFlowPositioned())
+        auto hasInFlowChild = [&](auto& container) {
+            CheckedPtr firstInFlowChild = container.firstInFlowChild();
+            if (!firstInFlowChild)
+                return false;
+            // An excluded marker takes no part in in-flow layout either, so it leaves the decision to the content.
+            return !isExcludedMarker(container, *firstInFlowChild) || firstInFlowChild->nextInFlowSibling();
+        };
+        if (!child->isFloatingOrOutOfFlowPositioned() && !hasInFlowChild(parent))
             parent.setChildrenInline(child->isInline());
-        else if (child->isInline())
+        else if (child->isInline() && !isExcludedMarker(parent, *child)) {
+            // An excluded marker takes no part in in-flow layout, so it does not make the children inline.
             parent.setChildrenInline(true);
+        }
         m_builder.attachToRenderElement(parent, WTF::move(child), beforeChild);
         return;
     }
@@ -390,6 +410,9 @@ RenderPtr<RenderObject> RenderTreeBuilder::Block::detach(RenderBlock& parent, Re
         // If this was our last child be sure to clear out our line boxes.
         if (CheckedPtr blockFlow = dynamicDowncast<RenderBlockFlow>(parent); blockFlow && blockFlow->childrenInline())
             blockFlow->invalidateLineLayout(RenderBlockFlow::InvalidationReason::InternalMove);
+    } else if (!m_buildsSimpleAnonymousBlocks) {
+        if (auto hasInlineChild = hasInlineInFlowChild(parent); parent.childrenInline() != hasInlineChild)
+            parent.setChildrenInline(hasInlineChild);
     }
     return takenChild;
 }

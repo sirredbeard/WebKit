@@ -31,13 +31,13 @@
 #include "EditingRange.h"
 #include "Encoder.h"
 #include "GeneratedSerializers.h"
+#include "SecurityFlags.h"
 #include "StreamConnectionEncoder.h"
 #include "Helpers/Test.h"
 #include <WebCore/ShareableResource.h>
+#include <WebCore/TransformationMatrix.h>
 #include <limits>
 #include <wtf/StdLibExtras.h>
-#include <wtf/URL.h>
-#include <wtf/text/StringBuilder.h>
 
 namespace TestWebKitAPI {
 
@@ -779,61 +779,114 @@ TEST(ArgumentCoderShareableResourceHandle, OverflowingOffsetAndSizeIsRejectedNot
 }
 #endif // ENABLE(SHAREABLE_RESOURCE)
 
-// Builds a valid "https://webkit.org/aaa...a" URL string of exactly the requested length.
-static String makeURLStringOfLength(size_t length)
-{
-    ASSERT(length >= 19);
-    StringBuilder builder;
-    builder.append("https://webkit.org/"_s);
-    while (builder.length() < length)
-        builder.append('a');
-    return builder.toString();
-}
-
-// Round-trips a URL wire payload (a String) through an Encoder/Decoder and decodes it as a URL,
-// exercising the decode-side length validator.
-static std::optional<URL> decodeURLFromWireString(const String& wireString)
+TEST(ArgumentCoderSecurityFlags, SecureDefaultRoundTrips)
 {
     IPC::Encoder encoder(IPC::MessageName::IPCTester_EmptyMessage, 0);
-    encoder << wireString;
-    auto decoder = IPC::Decoder::create(encoder.span(), encoder.releaseAttachments());
-    if (!decoder)
-        return std::nullopt;
-    return decoder->decode<URL>();
+    encoder << WebKit::SecurityFlags { };
+
+    auto decoder = IPC::Decoder::create(encoder.span(), { });
+    ASSERT_TRUE(decoder);
+
+    auto flags = decoder->decode<WebKit::SecurityFlags>();
+    ASSERT_TRUE(flags.has_value());
+    EXPECT_TRUE(*flags == WebKit::SecurityFlags { });
 }
 
-TEST(ArgumentCoderURL, RoundTripsNormalURL)
+TEST(ArgumentCoderSecurityFlags, DisabledFlagRoundTrips)
 {
-    auto url = decodeURLFromWireString("https://webkit.org/path?q=1"_str);
-    ASSERT_TRUE(url.has_value());
-    EXPECT_TRUE(url->isValid());
-    EXPECT_EQ(url->string(), "https://webkit.org/path?q=1"_str);
+    std::array<uint64_t, WebKit::SecurityFlags::ipcWordCount> words { };
+    words[0] |= 1ULL;
+    auto original = WebKit::SecurityFlags::fromDisabledFlagsForIPC(words);
+    ASSERT_TRUE(original.has_value());
+    EXPECT_FALSE(*original == WebKit::SecurityFlags { });
+
+    IPC::Encoder encoder(IPC::MessageName::IPCTester_EmptyMessage, 0);
+    encoder << *original;
+
+    auto decoder = IPC::Decoder::create(encoder.span(), { });
+    ASSERT_TRUE(decoder);
+
+    auto flags = decoder->decode<WebKit::SecurityFlags>();
+    ASSERT_TRUE(flags.has_value());
+    EXPECT_TRUE(*flags == *original);
+    EXPECT_EQ(flags->disabledFlagsForIPC(), words);
 }
 
-TEST(ArgumentCoderURL, URLAtLengthLimitIsPreserved)
+TEST(ArgumentCoderSecurityFlags, BitBelongingToNoFlagIsRejectedNotCrashed)
 {
-    auto urlString = makeURLStringOfLength(WTF::maxURLLength);
-    ASSERT_EQ(urlString.length(), WTF::maxURLLength);
+    // A flag count that fills the last word leaves no bit for this test to set, and flagCount / 64 would then
+    // index one past the end.
+    if constexpr (!(WebKit::SecurityFlags::flagCount % 64))
+        GTEST_SKIP() << "every bit belongs to a flag at this flag count";
+    else {
+        std::array<uint64_t, WebKit::SecurityFlags::ipcWordCount> words { };
+        words[WebKit::SecurityFlags::flagCount / 64] |= 1ULL << (WebKit::SecurityFlags::flagCount % 64);
 
-    auto url = decodeURLFromWireString(urlString);
-    ASSERT_TRUE(url.has_value());
-    EXPECT_TRUE(url->isValid());
-    EXPECT_EQ(url->string().length(), WTF::maxURLLength);
+        IPC::Encoder encoder(IPC::MessageName::IPCTester_EmptyMessage, 0);
+        encoder << words;
+
+        auto decoder = IPC::Decoder::create(encoder.span(), { });
+        ASSERT_TRUE(decoder);
+
+        auto flags = decoder->decode<WebKit::SecurityFlags>();
+        EXPECT_FALSE(flags.has_value());
+    }
 }
 
-// The over-limit rejection is enforced by the WTF::URL IPC validator, which is
-// currently Cocoa-only (see WTFArgumentCoders.serialization.in).
-#if PLATFORM(COCOA)
-TEST(ArgumentCoderURL, OversizedURLIsRejectedOnDecode)
+template<size_t expectedDoubleCount>
+static void testTransformationMatrixCoding(const WebCore::TransformationMatrix& matrix)
 {
-    auto urlString = makeURLStringOfLength(WTF::maxURLLength + 1);
-    ASSERT_EQ(urlString.length(), WTF::maxURLLength + 1);
+    IPC::Encoder encoder(IPC::MessageName::IPCTester_EmptyMessage, 0);
+    encoder << matrix;
 
-    // An over-limit URL on the wire fails to decode (the message is rejected) and is
-    // never parsed, matching Chromium's GURL/KURL mojo traits.
-    auto url = decodeURLFromWireString(urlString);
-    EXPECT_FALSE(url.has_value());
+    constexpr size_t messageHeaderSize = 16;
+    size_t expectedSize = calculateEncodedSize(messageHeaderSize, EncodedValue<uint8_t, 1> { });
+    if constexpr (expectedDoubleCount)
+        expectedSize = calculateEncodedSize(expectedSize, EncodedValue<double, expectedDoubleCount> { });
+    EXPECT_EQ(expectedSize, encoder.span().size());
+
+    auto decoder = IPC::Decoder::create(encoder.span(), { });
+    ASSERT_TRUE(decoder);
+    auto decoded = decoder->decode<WebCore::TransformationMatrix>();
+    ASSERT_TRUE(decoded.has_value());
+
+    EXPECT_TRUE(matrix == *decoded);
 }
-#endif // PLATFORM(COCOA)
+
+TEST(ArgumentCoderTransformationMatrix, IdentityCostsOnlyTheVariantTag)
+{
+    testTransformationMatrixCoding<0>(WebCore::TransformationMatrix { });
+}
+
+TEST(ArgumentCoderTransformationMatrix, Translation2DCostsTwoDoubles)
+{
+    testTransformationMatrixCoding<2>(WebCore::TransformationMatrix { 10.5, -20.25 });
+
+    WebCore::TransformationMatrix zeroZ;
+    zeroZ.translate3d(1.0, 2.0, 0.0);
+    testTransformationMatrixCoding<2>(zeroZ);
+}
+
+TEST(ArgumentCoderTransformationMatrix, Translation3DCostsThreeDoubles)
+{
+    WebCore::TransformationMatrix translated3D;
+    translated3D.translate3d(1.0, 2.0, 3.0);
+    testTransformationMatrixCoding<3>(translated3D);
+}
+
+TEST(ArgumentCoderTransformationMatrix, AffineCostsSixDoubles)
+{
+    testTransformationMatrixCoding<6>(WebCore::TransformationMatrix { 6.0, 5.0, 4.0, 3.0, 2.0, 1.0 });
+}
+
+TEST(ArgumentCoderTransformationMatrix, NonAffineCostsSixteenDoubles)
+{
+    testTransformationMatrixCoding<16>(WebCore::TransformationMatrix {
+        16.0, 15.0, 14.0, 13.0,
+        12.0, 11.0, 10.0, 9.0,
+        8.0, 7.0, 6.0, 5.0,
+        4.0, 3.0, 2.0, 1.0
+    });
+}
 
 } // namespace TestWebKitAPI

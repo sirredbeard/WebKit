@@ -187,8 +187,7 @@ float SVGLengthContext::valueForLength(const Style::StrokeWidth& size, Style::Zo
 float SVGLengthContext::computeNonCalcLength(float inputValue, CSS::LengthUnit unit) const
 {
     if (!conversionToCanonicalUnitRequiresConversionData(unit))
-        return clampTo<float>(Style::resolveLength(inputValue, unit, { }));
-
+        return clampTo<float>(Style::resolveLength(inputValue, unit, NoConversionDataRequiredToken { }));
 
     auto conversionData = cssConversionData();
     if (!conversionData) {
@@ -415,11 +414,7 @@ std::optional<FloatSize> SVGLengthContext::computeViewportSize() const
     if (!svg)
         return std::nullopt;
 
-    auto viewportSize = svg->currentViewBoxRect().size();
-    if (viewportSize.isEmpty())
-        viewportSize = svg->currentViewportSizeExcludingZoom();
-
-    return viewportSize;
+    return svg->viewportSizeForLengthResolution();
 }
 
 }

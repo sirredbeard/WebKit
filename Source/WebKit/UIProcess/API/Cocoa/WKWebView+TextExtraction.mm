@@ -47,6 +47,8 @@
 #import "WebPreferences.h"
 #import "_WKTextExtractionInternal.h"
 #if PLATFORM(IOS_FAMILY)
+#import "APIPageConfiguration.h"
+#import "RemoteLayerTreeDrawingAreaProxyIOS.h"
 #import "WKContentViewInteraction.h"
 #endif
 #import <WebCore/DataDetectorType.h>
@@ -65,7 +67,16 @@
 #import <wtf/cocoa/SpanCocoa.h>
 #import <wtf/cocoa/VectorCocoa.h>
 
+constexpr Seconds defaultInteractionPresentationUpdateTimeout = 100_ms;
+
 #if PLATFORM(IOS_FAMILY)
+namespace ForcedDisplayRefreshProperties {
+constexpr Seconds refreshInterval = 100_ms;
+constexpr Seconds maximumDuration = 2_min;
+constexpr Seconds interactionPresentationUpdateTimeout = 1_s;
+static_assert(interactionPresentationUpdateTimeout > refreshInterval);
+}
+
 static std::optional<WebCore::NodeIdentifier> activeContextMenuTargetNodeIdentifier(WKContentView *contentView)
 {
     return [contentView activeContextMenuElementContext].and_then([](const auto& elementContext) {
@@ -196,6 +207,23 @@ static Vector<std::pair<String, String>> extractReplacementStrings(_WKTextExtrac
     });
     return result;
 }
+
+#if USE(APPLE_INTERNAL_SDK) || (!PLATFORM(WATCHOS) && !PLATFORM(APPLETV))
+
+static String applyReplacementsToDescription(const String& description, const Vector<String>& stringsToValidate, const Vector<std::pair<String, String>>& replacementStrings)
+{
+    if (replacementStrings.isEmpty())
+        return description;
+
+    auto result = description;
+    for (auto& string : stringsToValidate) {
+        if (auto replaced = WebKit::applyReplacements(string, replacementStrings); replaced != string)
+            result = makeStringByReplacingAll(result, string, WTF::move(replaced));
+    }
+    return result;
+}
+
+#endif // USE(APPLE_INTERNAL_SDK) || (!PLATFORM(WATCHOS) && !PLATFORM(APPLETV))
 
 static WebKit::TextExtractionOutputFormat textExtractionOutputFormat(_WKTextExtractionConfiguration *configuration)
 {
@@ -426,7 +454,7 @@ static WebKit::TextExtractionOutputFormat textExtractionOutputFormat(_WKTextExtr
     }];
 }
 
-- (Expected<std::pair<RefPtr<WebKit::WebFrameProxy>, WebCore::TextExtraction::Interaction>, RetainPtr<NSString>>)_convertToWebCoreInteraction:(_WKTextExtractionInteraction *)wkInteraction nodeIdentifier:(const String&)nodeIdentifierString
+- (std::expected<std::pair<RefPtr<WebKit::WebFrameProxy>, WebCore::TextExtraction::Interaction>, RetainPtr<NSString>>)_convertToWebCoreInteraction:(_WKTextExtractionInteraction *)wkInteraction nodeIdentifier:(const String&)nodeIdentifierString
 {
     std::optional<WebCore::FrameIdentifier> frameIdentifier;
     WebCore::TextExtraction::Interaction interaction;
@@ -502,6 +530,16 @@ static WebKit::TextExtractionOutputFormat textExtractionOutputFormat(_WKTextExtr
     if (!page || !targetFrame)
         return completionHandler(adoptNS([[_WKTextExtractionInteractionResult alloc] initWithErrorDescription:@"Web view is invalid" summary:nil interactedElementBounds:CGRectNull]));
 
+    auto presentationUpdateTimeout = defaultInteractionPresentationUpdateTimeout;
+#if PLATFORM(IOS_FAMILY)
+    if (page->configuration().backgroundTextExtractionEnabled()) {
+        if (RefPtr drawingArea = dynamicDowncast<WebKit::RemoteLayerTreeDrawingAreaProxyIOS>(page->drawingArea())) {
+            drawingArea->startForcedDisplayRefreshWindow(ForcedDisplayRefreshProperties::refreshInterval, ForcedDisplayRefreshProperties::maximumDuration);
+            presentationUpdateTimeout = ForcedDisplayRefreshProperties::interactionPresentationUpdateTimeout;
+        }
+    }
+#endif
+
     UniqueRef assertionScope = page->createTextExtractionAssertionScope();
     auto interactionForRetry = interaction;
     targetFrame->handleTextExtractionInteraction(WTF::move(interaction), [
@@ -513,8 +551,9 @@ static WebKit::TextExtractionOutputFormat textExtractionOutputFormat(_WKTextExtr
         staleNodeNote,
         shouldResolveStaleNodeIdentifier,
         interaction = WTF::move(interactionForRetry),
+        presentationUpdateTimeout,
         completionHandler = makeBlockPtr(WTF::move(completionHandler))
-    ](bool success, String&& description, WebCore::FloatRect interactedElementBounds) mutable {
+    ](bool success, String&& description, Vector<String>&& stringsToValidate, WebCore::FloatRect interactedElementBounds) mutable {
         RetainPtr strongSelf = weakSelf.get();
         RefPtr strongPage = weakPage.get();
 
@@ -540,7 +579,11 @@ static WebKit::TextExtractionOutputFormat textExtractionOutputFormat(_WKTextExtr
         RetainPtr<NSString> errorDescription;
         RetainPtr<NSString> summary;
         if (success) {
-            summary = description.createNSString();
+            String replacedDescription = description;
+            if (strongSelf)
+                replacedDescription = applyReplacementsToDescription(description, stringsToValidate, strongSelf->_lastTextExtractionReplacementStrings);
+
+            summary = replacedDescription.createNSString();
             if (!staleNodeNote.isEmpty())
                 summary = adoptNS([[NSString alloc] initWithFormat:@"%@ %@", summary.get(), staleNodeNote.createNSString().get()]);
         } else
@@ -575,7 +618,7 @@ static WebKit::TextExtractionOutputFormat textExtractionOutputFormat(_WKTextExtr
             aggregator.get()();
         });
 
-        RunLoop::mainSingleton().dispatchAfter(100_ms, [aggregator] {
+        RunLoop::mainSingleton().dispatchAfter(presentationUpdateTimeout, [aggregator] {
             aggregator.get()();
         });
     });
@@ -995,13 +1038,8 @@ static OptionSet<WebCore::DataDetectorType> NODELETE coreDataDetectorTypes(_WKTe
             }
 
             String replacedDescription = description;
-            if (RetainPtr strongSelf = weakSelf.get(); strongSelf && !strongSelf->_lastTextExtractionReplacementStrings.isEmpty()) {
-                for (auto& string : stringsToValidate) {
-                    auto replaced = WebKit::applyReplacements(string, strongSelf->_lastTextExtractionReplacementStrings);
-                    if (replaced != string)
-                        replacedDescription = makeStringByReplacingAll(replacedDescription, string, replaced);
-                }
-            }
+            if (RetainPtr strongSelf = weakSelf.get())
+                replacedDescription = applyReplacementsToDescription(description, stringsToValidate, strongSelf->_lastTextExtractionReplacementStrings);
 
             RetainPtr summary = replacedDescription.createNSString();
             if (!staleNodeNote.isEmpty())

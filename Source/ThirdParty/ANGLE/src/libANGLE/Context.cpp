@@ -694,7 +694,6 @@ Context::Context(egl::Display *display,
              shareTextures,
              shareSemaphores,
              AllocateOrUseContextMutex(sharedContextMutex),
-             &mOverlay,
              GetClientVersion(display, attribs),
              GetDebug(display->getFrontendFeatures(), attribs),
              GetBindGeneratesResource(attribs),
@@ -738,7 +737,6 @@ Context::Context(egl::Display *display,
       mProgramPipelineObserverBinding(this, kProgramPipelineSubjectIndex),
       mFrameCapture(new angle::FrameCapture),
       mRefCount(0),
-      mOverlay(mImplementation.get()),
       mIsDestroyed(false),
       mDestroyedManagers(false)
 {
@@ -884,16 +882,6 @@ void Context::initializeDefaultResources()
         mZeroTextures[TextureType::External].set(this, zeroTextureExternal);
     }
 
-    // This may change native TEXTURE_2D, TEXTURE_EXTERNAL_OES and TEXTURE_RECTANGLE,
-    // binding states. Ensure state manager is aware of this when binding
-    // this texture type.
-    if (mSupportedExtensions.videoTextureWEBGL)
-    {
-        Texture *zeroTextureVideoImage =
-            new Texture(mImplementation.get(), {0}, TextureType::VideoImage);
-        mZeroTextures[TextureType::VideoImage].set(this, zeroTextureVideoImage);
-    }
-
     mState.initializeZeroTextures(this, mZeroTextures);
 
     ANGLE_CONTEXT_TRY(mImplementation->initialize(mDisplay->getImageLoadContext()));
@@ -940,8 +928,6 @@ void Context::initializeDefaultResources()
     mCopyImageDirtyBits |= kCopyImageDirtyBitsBase;
     mCopyImageDirtyObjects |= kCopyImageDirtyObjectsBase;
     mTilingDirtyObjects |= kTilingDirtyObjectsBase;
-
-    mOverlay.init();
 }
 
 egl::Error Context::onDestroy(const egl::Display *display)
@@ -1031,8 +1017,6 @@ egl::Error Context::onDestroy(const egl::Display *display)
 
     // Backend requires implementation to be destroyed first to close down all the objects
     mState.mShareGroup->release(display);
-
-    mOverlay.destroy(this);
 
     return egl::NoError();
 }
@@ -3908,6 +3892,10 @@ Extensions Context::generateSupportedExtensions() const
         supportedExtensions.texture3DOES             = false;
         supportedExtensions.clipDistanceAPPLE        = false;
         supportedExtensions.disjointTimerQueryEXT    = false;
+        supportedExtensions.robustnessKHR            = false;
+
+        supportedExtensions.blendEquationAdvancedKHR         = false;
+        supportedExtensions.blendEquationAdvancedCoherentKHR = false;
     }
 
     if (getClientVersion() < ES_3_0)
@@ -3942,10 +3930,6 @@ Extensions Context::generateSupportedExtensions() const
         supportedExtensions.shaderMultisampleInterpolationOES  = false;
         supportedExtensions.shaderNoperspectiveInterpolationNV = false;
         supportedExtensions.sampleVariablesOES                 = false;
-
-        // Require ES 3.1 but could likely be exposed on 3.0
-        supportedExtensions.textureCubeMapArrayEXT = false;
-        supportedExtensions.textureCubeMapArrayOES = false;
 
         // Require RED and RG formats
         supportedExtensions.textureSRGBR8EXT  = false;
@@ -4010,6 +3994,8 @@ Extensions Context::generateSupportedExtensions() const
         supportedExtensions.tessellationShaderOES   = false;
         supportedExtensions.textureBufferEXT        = false;
         supportedExtensions.textureBufferOES        = false;
+        supportedExtensions.textureCubeMapArrayEXT  = false;
+        supportedExtensions.textureCubeMapArrayOES  = false;
     }
 
     if (getClientVersion() > ES_2_0)
@@ -4193,6 +4179,11 @@ Extensions Context::generateSupportedExtensions() const
         }
     }
 
+// Disable the explicit context extension if the entry points are not compiled.
+#if !defined(ANGLE_ENABLE_EXPLICIT_CONTEXT)
+    supportedExtensions.explicitContextANGLE = false;
+#endif
+
     return supportedExtensions;
 }
 
@@ -4223,18 +4214,8 @@ void Context::initCaps()
     {
         INFO() << "Limiting compressed format support.\n";
 
-        mSupportedExtensions.compressedEACR11SignedTextureOES                = false;
-        mSupportedExtensions.compressedEACR11UnsignedTextureOES              = false;
-        mSupportedExtensions.compressedEACRG11SignedTextureOES               = false;
-        mSupportedExtensions.compressedEACRG11UnsignedTextureOES             = false;
         mSupportedExtensions.compressedETC1RGB8SubTextureEXT                 = false;
         mSupportedExtensions.compressedETC1RGB8TextureOES                    = false;
-        mSupportedExtensions.compressedETC2PunchthroughARGBA8TextureOES      = false;
-        mSupportedExtensions.compressedETC2PunchthroughASRGB8AlphaTextureOES = false;
-        mSupportedExtensions.compressedETC2RGB8TextureOES                    = false;
-        mSupportedExtensions.compressedETC2RGBA8TextureOES                   = false;
-        mSupportedExtensions.compressedETC2SRGB8Alpha8TextureOES             = false;
-        mSupportedExtensions.compressedETC2SRGB8TextureOES                   = false;
         mSupportedExtensions.compressedTextureEtcANGLE                       = false;
         mSupportedExtensions.textureCompressionPvrtcIMG                      = false;
         mSupportedExtensions.pvrtcSRGBEXT                                    = false;
@@ -4982,20 +4963,6 @@ void Context::blitFramebuffer(GLint srcX0,
 
     ANGLE_CONTEXT_TRY(syncStateForBlit(mask));
     ANGLE_CONTEXT_TRY(drawFramebuffer->blit(this, srcArea, dstArea, mask, filter));
-}
-
-void Context::blitFramebufferNV(GLint srcX0,
-                                GLint srcY0,
-                                GLint srcX1,
-                                GLint srcY1,
-                                GLint dstX0,
-                                GLint dstY0,
-                                GLint dstX1,
-                                GLint dstY1,
-                                GLbitfield mask,
-                                GLenum filter)
-{
-    blitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter);
 }
 
 void Context::clear(GLbitfield mask)
@@ -6760,16 +6727,18 @@ void Context::getSynciv(SyncID syncPacked,
     ANGLE_CONTEXT_TRY(QuerySynciv(this, syncObject, pname, count, length, values));
 }
 
-void Context::getFramebufferParameteriv(GLenum target, GLenum pname, GLint *params)
+void Context::getFramebufferParameteriv(GLenum target,
+                                        FramebufferParameter pnamePacked,
+                                        GLint *params)
 {
     Framebuffer *framebuffer = mState.getTargetFramebuffer(target);
-    QueryFramebufferParameteriv(framebuffer, pname, params);
+    QueryFramebufferParameteriv(framebuffer, pnamePacked, params);
 }
 
-void Context::framebufferParameteri(GLenum target, GLenum pname, GLint param)
+void Context::framebufferParameteri(GLenum target, FramebufferParameter pnamePacked, GLint param)
 {
     Framebuffer *framebuffer = mState.getTargetFramebuffer(target);
-    SetFramebufferParameteri(this, framebuffer, pname, param);
+    SetFramebufferParameteri(this, framebuffer, pnamePacked, param);
 }
 
 bool Context::getScratchBuffer(size_t requstedSizeBytes,
@@ -7011,15 +6980,6 @@ void Context::drawArraysInstancedBaseInstance(PrimitiveMode mode,
     MarkTransformFeedbackBufferUsage(this, count, 1);
 }
 
-void Context::drawArraysInstancedBaseInstanceANGLE(PrimitiveMode mode,
-                                                   GLint first,
-                                                   GLsizei count,
-                                                   GLsizei instanceCount,
-                                                   GLuint baseInstance)
-{
-    drawArraysInstancedBaseInstance(mode, first, count, instanceCount, baseInstance);
-}
-
 void Context::drawElementsInstancedBaseInstance(PrimitiveMode mode,
                                                 GLsizei count,
                                                 DrawElementsType type,
@@ -7065,18 +7025,6 @@ void Context::drawElementsInstancedBaseVertexBaseInstance(PrimitiveMode mode,
 
     ANGLE_CONTEXT_TRY(mImplementation->drawElementsInstancedBaseVertexBaseInstance(
         this, mode, count, type, indices, instanceCount, baseVertex, baseInstance));
-}
-
-void Context::drawElementsInstancedBaseVertexBaseInstanceANGLE(PrimitiveMode mode,
-                                                               GLsizei count,
-                                                               DrawElementsType type,
-                                                               const GLvoid *indices,
-                                                               GLsizei instanceCount,
-                                                               GLint baseVertex,
-                                                               GLuint baseInstance)
-{
-    drawElementsInstancedBaseVertexBaseInstance(mode, count, type, indices, instanceCount,
-                                                baseVertex, baseInstance);
 }
 
 void Context::multiDrawArraysInstancedBaseInstance(PrimitiveMode mode,
@@ -9400,16 +9348,6 @@ void Context::maxShaderCompilerThreads(GLuint count)
     mImplementation->setMaxShaderCompilerThreads(count);
 }
 
-void Context::framebufferParameteriMESA(GLenum target, GLenum pname, GLint param)
-{
-    framebufferParameteri(target, pname, param);
-}
-
-void Context::getFramebufferParameterivMESA(GLenum target, GLenum pname, GLint *params)
-{
-    getFramebufferParameteriv(target, pname, params);
-}
-
 bool Context::isGLES1() const
 {
     return mState.isGLES1();
@@ -9554,6 +9492,7 @@ void Context::onSubjectStateChange(angle::SubjectIndex index, angle::SubjectMess
                 {
                     Program *program = mState.getProgram();
                     ASSERT(program->isLinked());
+                    mState.onCurrentExecutableRelink();
                     ANGLE_CONTEXT_TRY(mState.installProgramExecutable(this));
                     mStateCache.onProgramExecutableChange(this);
                     break;
@@ -9577,6 +9516,7 @@ void Context::onSubjectStateChange(angle::SubjectIndex index, angle::SubjectMess
                     mStateCache.onProgramExecutableChange(this);
                     break;
                 case angle::SubjectMessage::ProgramRelinked:
+                    mState.onCurrentExecutableRelink();
                     ANGLE_CONTEXT_TRY(mState.installProgramPipelineExecutable(this));
                     mStateCache.onProgramExecutableChange(this);
                     break;
@@ -10181,7 +10121,7 @@ void Context::bindMetalRasterizationRateMap(GLuint renderbufferHandle,
     getMutablePrivateState()->setVariableRasterizationRateMap(map);
 }
 
-void Context::texStorageAttribs2D(GLenum target,
+void Context::texStorageAttribs2D(TextureType targetPacked,
                                   GLsizei levels,
                                   GLenum internalFormat,
                                   GLsizei width,
@@ -10189,13 +10129,12 @@ void Context::texStorageAttribs2D(GLenum target,
                                   const GLint *attribList)
 {
     Extents size(width, height, 1);
-    TextureType textype = FromGLenum<TextureType>(target);
-    Texture *texture    = getTextureByType(textype);
+    Texture *texture = getTextureByType(targetPacked);
     ANGLE_CONTEXT_TRY(
-        texture->setStorageAttribs(this, textype, levels, internalFormat, size, attribList));
+        texture->setStorageAttribs(this, targetPacked, levels, internalFormat, size, attribList));
 }
 
-void Context::texStorageAttribs3D(GLenum target,
+void Context::texStorageAttribs3D(TextureType targetPacked,
                                   GLsizei levels,
                                   GLenum internalFormat,
                                   GLsizei width,
@@ -10204,10 +10143,9 @@ void Context::texStorageAttribs3D(GLenum target,
                                   const GLint *attribList)
 {
     Extents size(width, height, depth);
-    TextureType textype = FromGLenum<TextureType>(target);
-    Texture *texture    = getTextureByType(textype);
+    Texture *texture = getTextureByType(targetPacked);
     ANGLE_CONTEXT_TRY(
-        texture->setStorageAttribs(this, textype, levels, internalFormat, size, attribList));
+        texture->setStorageAttribs(this, targetPacked, levels, internalFormat, size, attribList));
 }
 
 size_t Context::getMemoryUsage() const
@@ -10453,7 +10391,7 @@ void ErrorSet::validationErrorF(angle::EntryPoint entryPoint,
     }
 }
 
-std::unique_lock<std::mutex> ErrorSet::getLockIfNotAlready()
+std::unique_lock<std::mutex> ErrorSet::getLockIfNotAlready() ANGLE_NO_THREAD_SAFETY_ANALYSIS
 {
     // Avoid mutex recursion and return the lock only if it is not already locked.  This can happen
     // if device loss is generated while it is being queried.
@@ -10937,7 +10875,6 @@ void StateCache::updateValidBindTextureTypes(Context *context)
         {TextureType::Rectangle, exts.textureRectangleANGLE},
         {TextureType::CubeMap, true},
         {TextureType::CubeMapArray, isGLES32 || exts.textureCubeMapArrayAny()},
-        {TextureType::VideoImage, exts.videoTextureWEBGL},
         {TextureType::Buffer, isGLES32 || exts.textureBufferAny()},
     }};
 }

@@ -83,7 +83,7 @@
 #endif
 
 #if OS(LINUX)
-#include <wtf/linux/RealTimeThreads.h>
+#include <wtf/linux/HighPriorityThreads.h>
 #endif
 
 #if USE(ATSPI)
@@ -132,8 +132,8 @@ void WebProcess::platformSetCacheModel(CacheModel cacheModel)
 void WebProcess::platformInitializeProcess(const AuxiliaryProcessInitializationParameters&)
 {
 #if OS(LINUX)
-    // Disable RealTimeThreads in WebProcess initially, since it depends on having a visible web page.
-    RealTimeThreads::singleton().setEnabled(false);
+    // Disable HighPriorityThreads in WebProcess initially, since it depends on having a visible web page.
+    HighPriorityThreads::singleton().setEnabled(false);
 #endif
 
     addSupplementWithoutRefCountedCheck<SystemSettingsManager>();
@@ -249,8 +249,11 @@ void WebProcess::platformInitializeWebProcess(WebProcessCreationParameters& para
         MemoryPressureHandler::singleton().setConfiguration(WTF::move(*parameters.memoryPressureHandlerConfiguration));
 
 #if ENABLE(REMOTE_INSPECTOR)
-    if (!parameters.inspectorServerAddress.isNull())
+    if (!parameters.inspectorServerAddress.isNull()) {
         Inspector::RemoteInspector::setInspectorServerAddress(WTF::move(parameters.inspectorServerAddress));
+        // pre-warm the inspector for the potentially early BiDi-related events like script.realmCreated
+        Inspector::RemoteInspector::singleton();
+    }
 #endif
 
 #if USE(ATSPI)

@@ -38,6 +38,7 @@ namespace JSC::B3 {
     macro(TypedArrayProperties) \
     macro(JSCellHeaderAndNamedProperties) \
     macro(OrderedHashTableData) \
+    macro(VM_heapState) \
 
 // macro(name, offset, mutability)
 #define FOR_EACH_ABSTRACT_FIELD(macro) \
@@ -88,6 +89,7 @@ namespace JSC::B3 {
     macro(FunctionRareData_internalFunctionAllocationProfile_structureID, FunctionRareData::offsetOfInternalFunctionAllocationProfile() + InternalFunctionAllocationProfile::offsetOfStructureID(), Mutability::Mutable) \
     macro(GetterSetter_getter, GetterSetter::offsetOfGetter(), Mutability::Mutable) \
     macro(GetterSetter_setter, GetterSetter::offsetOfSetter(), Mutability::Mutable) \
+    macro(InlineWatchpointSet_data, InlineWatchpointSet::offsetOfData(), Mutability::Mutable) \
     macro(JSArrayBufferView_byteOffset, JSArrayBufferView::offsetOfByteOffset(), Mutability::Mutable) \
     macro(JSArrayBufferView_length, JSArrayBufferView::offsetOfLength(), Mutability::Mutable) \
     macro(JSArrayBufferView_mode, JSArrayBufferView::offsetOfMode(), Mutability::Mutable) \
@@ -200,6 +202,7 @@ namespace JSC::B3 {
     macro(WasmRTT_displaySizeExcludingThis, Wasm::RTT::offsetOfDisplaySizeExcludingThis(), Mutability::Immutable) \
     macro(WasmRTT_kind, Wasm::RTT::offsetOfKind(), Mutability::Immutable) \
     macro(WasmTable_length, Wasm::Table::offsetOfLength(), Mutability::Mutable) \
+    macro(WasmExternOrAnyRefTable_jsValues, Wasm::ExternOrAnyRefTable::offsetOfJSValues(), Mutability::Mutable) \
     macro(WeakMapImpl_capacity, WeakMapImpl<WeakMapBucket<WeakMapBucketDataKey>>::offsetOfCapacity(), Mutability::Mutable) \
     macro(WeakMapImpl_buffer,  WeakMapImpl<WeakMapBucket<WeakMapBucketDataKey>>::offsetOfBuffer(), Mutability::Mutable) \
     macro(WeakMapImpl_keyCount, WeakMapImpl<WeakMapBucket<WeakMapBucketDataKey>>::offsetOfKeyCount(), Mutability::Mutable) \
@@ -238,6 +241,7 @@ namespace JSC::B3 {
     macro(SmallIntCache, 0, sizeof(NumericStrings::StringWithJSString)) \
     macro(IntCache, 0, sizeof(NumericStrings::CacheEntryWithJSString<int>)) \
     macro(WasmRTT_data, Wasm::RTT::offsetOfData(), sizeof(RefPtr<const Wasm::RTT>)) \
+    macro(WasmExternOrAnyRefTable_jsValuesBuffer, 0, sizeof(WriteBarrier<Unknown>)) \
     macro(WebAssemblyGCStructure_inlinedDisplay, WebAssemblyGCStructure::offsetOfInlinedDisplay(), sizeof(WriteBarrierStructureID)) \
 
 #define FOR_EACH_NUMBERED_ABSTRACT_HEAP(macro) \
@@ -266,6 +270,7 @@ namespace JSC::B3 {
     macro(JSWebAssemblyInstance_gcObjectStructureIDs) \
     macro(JSWebAssemblyInstance_importFunctionStubs) \
     macro(JSWebAssemblyInstance_tables) \
+    macro(JSWebAssemblyInstance_functionWrappers) \
 
 // This class is meant to be cacheable between compilations, but it doesn't have to be.
 // Doing so saves on creation of nodes. But clearing it will save memory.
@@ -359,8 +364,10 @@ public:
     void decorateFencedAccess(const AbstractHeap*, Value*);
     void decorateWasmStructGet(const AbstractHeap*, Value*);
     void decorateWasmStructSet(const AbstractHeap*, Value*);
+    void decorateWasmStructNew(const AbstractHeap*, Value*);
     void decorateWasmArrayGet(const AbstractHeap*, Value*);
     void decorateWasmArraySet(const AbstractHeap*, Value*);
+    void decorateWasmArrayNew(const AbstractHeap*, Value*);
     void decorateWasmArrayLength(const AbstractHeap*, Value*);
 
     void computeRangesAndDecorateInstructions();
@@ -392,8 +399,10 @@ private:
     Vector<HeapForValue> m_heapForFencedAccess;
     Vector<HeapForValue> m_heapForWasmStructGet;
     Vector<HeapForValue> m_heapForWasmStructSet;
+    Vector<HeapForValue> m_heapForWasmStructNew;
     Vector<HeapForValue> m_heapForWasmArrayGet;
     Vector<HeapForValue> m_heapForWasmArraySet;
+    Vector<HeapForValue> m_heapForWasmArrayNew;
     Vector<HeapForValue> m_heapForWasmArrayLength;
 };
 

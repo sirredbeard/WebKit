@@ -41,6 +41,7 @@
 #include <WebCore/BackForwardFrameItemIdentifier.h>
 #include <WebCore/CaptionUserPreferences.h>
 #include <WebCore/FrameIdentifier.h>
+#include <WebCore/MediaSessionIdentifier.h>
 #include <WebCore/NetworkStorageSession.h>
 #include <WebCore/PageIdentifier.h>
 #include <WebCore/ProcessIdentity.h>
@@ -530,7 +531,7 @@ public:
     void registerFontMap(HashMap<String, URL>&&, HashMap<String, Vector<String>>&&, Vector<SandboxExtension::Handle>&& sandboxExtensions);
 #endif
 
-    void didReceiveRemoteCommand(WebCore::PlatformMediaSessionRemoteControlCommandType, const WebCore::PlatformMediaSessionRemoteCommandArgument&);
+    void didReceiveRemoteCommand(WebCore::PlatformMediaSessionRemoteControlCommandType, const WebCore::PlatformMediaSessionRemoteCommandArgument&, std::optional<WebCore::MediaSessionIdentifier> targetSession);
 
 #if ENABLE(INITIALIZE_ACCESSIBILITY_ON_DEMAND)
     void initializeAccessibility(Vector<SandboxExtension::Handle>&&);
@@ -661,6 +662,7 @@ private:
     void initializeProcessName(const AuxiliaryProcessInitializationParameters&) override;
     void initializeSandbox(const AuxiliaryProcessInitializationParameters&, SandboxInitializationParameters&) override;
     void initializeConnection(IPC::Connection*) override;
+    Thread::QOS connectionReceiveQueueQOS() const override { return Thread::QOS::UserInteractive; }
     bool shouldTerminate() override;
     void terminate() override;
 
@@ -768,7 +770,7 @@ private:
 
 #if ENABLE(LOGD_BLOCKING_IN_WEBCONTENT)
 #if ENABLE(STREAMING_IPC_IN_LOG_FORWARDING)
-    void sendCreateLogStreamToParent(IPC::Connection&, IPC::StreamServerConnectionHandle&&, LogStreamIdentifier, CompletionHandler<void(IPC::Semaphore&&, IPC::Semaphore&&)>&&) override;
+    void sendCreateLogStreamToParent(IPC::Connection&, IPC::StreamServerConnectionHandle&&, LogStreamIdentifier, CompletionHandler<void()>&&) override;
 #else
     void sendCreateLogStreamToParent(IPC::Connection&, LogStreamIdentifier, CompletionHandler<void()>&&) override;
 #endif
@@ -779,6 +781,8 @@ private:
     HashMap<WebCore::PageIdentifier, Ref<WebPage>> m_pageMap;
     HashMap<PageGroupIdentifier, Ref<WebPageGroupProxy>> m_pageGroupMap;
     const RefPtr<InjectedBundle> m_injectedBundle;
+
+    Seconds m_hiddenPageDOMTimerThrottlingIncreaseLimit;
 
     EventDispatcher m_eventDispatcher;
 #if PLATFORM(IOS_FAMILY)

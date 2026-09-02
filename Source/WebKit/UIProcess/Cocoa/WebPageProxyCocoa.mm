@@ -277,7 +277,7 @@ std::optional<IPC::AsyncReplyID> WebPageProxy::grantAccessToCurrentPasteboardDat
     }
     if (RefPtr frame = WebFrameProxy::webFrame(frameID))
         return WebPasteboardProxy::singleton().grantAccessToCurrentData(protect(frame->process()), pasteboardName, WTF::move(completionHandler));
-    return WebPasteboardProxy::singleton().grantAccessToCurrentData(m_legacyMainFrameProcess, pasteboardName, WTF::move(completionHandler));
+    return WebPasteboardProxy::singleton().grantAccessToCurrentData(protect(m_legacyMainFrameProcess), pasteboardName, WTF::move(completionHandler));
 }
 
 #if USE(APPLE_INTERNAL_SDK) && __has_include(<WebKitAdditions/WebPageProxyCocoaAdditions.mm>)
@@ -1905,7 +1905,7 @@ bool WebPageProxy::tryToSendCommandToActiveControlledVideo(PlatformMediaSession:
     if (!hasActiveVideoForControlsManager())
         return false;
 
-    WeakPtr model = protect(protect(playbackSessionManager())->controlsManagerInterface())->playbackSessionModel();
+    CheckedPtr model = protect(protect(playbackSessionManager())->controlsManagerInterface())->playbackSessionModel();
     if (!model)
         return false;
 
@@ -1915,7 +1915,7 @@ bool WebPageProxy::tryToSendCommandToActiveControlledVideo(PlatformMediaSession:
 
 #endif // ENABLE(VIDEO_PRESENTATION_MODE)
 
-void WebPageProxy::getInformationFromImageData(Vector<uint8_t>&& data, CompletionHandler<void(Expected<std::pair<String, Vector<IntSize>>, WebCore::ImageDecodingError>&&)>&& completionHandler)
+void WebPageProxy::getInformationFromImageData(Vector<uint8_t>&& data, CompletionHandler<void(std::expected<std::pair<String, Vector<IntSize>>, WebCore::ImageDecodingError>&&)>&& completionHandler)
 {
     if (isClosed())
         return completionHandler(makeUnexpected(WebCore::ImageDecodingError::Internal));
@@ -1925,7 +1925,7 @@ void WebPageProxy::getInformationFromImageData(Vector<uint8_t>&& data, Completio
     }, webPageIDInMainFrameProcess());
 }
 
-void WebPageProxy::getImageMetadata(Vector<uint8_t>&& data, CompletionHandler<void(Expected<Vector<std::pair<String, float>>, WebCore::ImageDecodingError>&&)>&& completionHandler)
+void WebPageProxy::getImageMetadata(Vector<uint8_t>&& data, CompletionHandler<void(std::expected<Vector<std::pair<String, float>>, WebCore::ImageDecodingError>&&)>&& completionHandler)
 {
     if (isClosed())
         return completionHandler(makeUnexpected(WebCore::ImageDecodingError::Internal));
@@ -2012,12 +2012,13 @@ void WebPageProxy::getWebArchiveDataWithSelectedFrames(WebFrameProxy& rootFrame,
     }
 
     for (auto& [process, frameIDs] : processFrames) {
-        protect(process)->sendWithAsyncReply(Messages::WebPage::GetWebArchivesForFrames(frameIDs), [frameIDs, callbackAggregator](auto&& result) {
+        Ref protectedProcess = process;
+        protectedProcess->sendWithAsyncReply(Messages::WebPage::GetWebArchivesForFrames(frameIDs), [frameIDs, callbackAggregator](auto&& result) {
             if (result.size() > frameIDs.size())
                 return;
 
             callbackAggregator->addResult(WTF::move(result));
-        }, webPageIDInProcess(process.get()));
+        }, webPageIDInProcess(protectedProcess));
     }
 }
 
@@ -2054,15 +2055,37 @@ void WebPageProxy::getAttributedStringsForRemoteFrames(IPC::Connection& connecti
     MESSAGE_CHECK_COMPLETION(rootFrame && rootFrame->page() == this && &rootFrame->process() == WebProcessProxy::fromConnection(connection).ptr(), connection, completionHandler({ }));
     MESSAGE_CHECK_COMPLETION(validateFrameIdentifiersForAttributedStringCollection(rootFrameIdentifier, frameIdentifiers), connection, completionHandler({ }));
 
+    Ref senderProcess = WebProcessProxy::fromConnection(connection);
+
+    unsigned frameCountInRootSubtree = 1;
+    for (RefPtr frame = rootFrame->traverseNext(rootFrame.get()); frame; frame = frame->traverseNext(rootFrame.get()))
+        ++frameCountInRootSubtree;
+
     HashMap<Ref<WebProcessProxy>, Vector<FrameIdentifier>> processFrames;
+    HashSet<FrameIdentifier> expandedSubframes;
+    HashSet<FrameIdentifier> collectedFrames;
     for (auto frameIdentifier : frameIdentifiers) {
-        RefPtr frame = WebFrameProxy::webFrame(frameIdentifier);
-        if (!frame)
+        RefPtr selectedSubframe = WebFrameProxy::webFrame(frameIdentifier);
+        if (!selectedSubframe || selectedSubframe->page() != this)
             continue;
 
-        processFrames.ensure(protect(frame->process()), [] {
-            return Vector<FrameIdentifier> { };
-        }).iterator->value.append(frameIdentifier);
+        if (!expandedSubframes.add(frameIdentifier).isNewEntry)
+            continue;
+
+        if (expandedSubframes.size() > frameCountInRootSubtree)
+            break;
+
+        for (RefPtr frame = selectedSubframe; frame; frame = frame->traverseNext(selectedSubframe.get())) {
+            if (&frame->process() == senderProcess.ptr())
+                continue;
+
+            if (!collectedFrames.add(frame->frameID()).isNewEntry)
+                continue;
+
+            processFrames.ensure(protect(frame->process()), [] {
+                return Vector<FrameIdentifier> { };
+            }).iterator->value.append(frame->frameID());
+        }
     }
 
     if (processFrames.isEmpty()) {
@@ -2100,10 +2123,11 @@ void WebPageProxy::getAttributedStringsForRemoteFrames(IPC::Connection& connecti
 
     Ref aggregator = AttributedStringMapCallbackAggregator::create(WTF::move(completionHandler));
     for (auto& [process, frameIDs] : processFrames) {
-        protect(process)->sendWithAsyncReply(Messages::WebPage::GetContentsAsAttributedStringForFrames(frameIDs), [frameIDs, aggregator](auto&& result) {
+        Ref protectedProcess = process;
+        protectedProcess->sendWithAsyncReply(Messages::WebPage::GetContentsAsAttributedStringForFrames(frameIDs), [frameIDs, aggregator](auto&& result) {
             if (result.size() <= frameIDs.size())
                 aggregator->addResult(WTF::move(result));
-        }, webPageIDInProcess(process.get()));
+        }, webPageIDInProcess(protectedProcess));
     }
 }
 
@@ -2184,12 +2208,12 @@ void WebPageProxy::clearAccessibilityIsolatedTree()
 #endif
 #endif // PLATFORM(MAC)
 
-void WebPageProxy::selectWithGesture(std::optional<WebCore::FrameIdentifier> frameID, IntPoint point, GestureType gestureType, GestureRecognizerState gestureState, bool isInteractingWithFocusedElement, CompletionHandler<void(const IntPoint&, GestureType, GestureRecognizerState, OptionSet<SelectionFlags>)>&& callback)
+void WebPageProxy::selectWithGesture(std::optional<WebCore::FrameIdentifier> frameID, IntPoint point, GestureType gestureType, GestureRecognizerState gestureState, bool isInteractingWithFocusedElement, SelectWithGestureCompletionHandler&& callback)
 {
     if (!hasRunningProcess())
-        return callback({ }, GestureType::Loupe, GestureRecognizerState::Possible, { });
+        return callback({ });
 
-    sendWithAsyncReplyToProcessContainingFrame(frameID, Messages::WebPage::SelectWithGesture(frameID, point, gestureType, gestureState, isInteractingWithFocusedElement), Messages::WebPage::SelectWithGesture::Reply { [weakThis = WeakPtr { *this }, pointInContentViewCoordinates = point, gestureType, gestureState, isInteractingWithFocusedElement, callback = WTF::move(callback)](const IntPoint& point, GestureType innerGestureType, GestureRecognizerState innerGestureState, OptionSet<SelectionFlags> flags, std::optional<WebCore::RemoteUserInputEventData> remoteUserInputEventData) mutable {
+    sendWithAsyncReplyToProcessContainingFrame(frameID, Messages::WebPage::SelectWithGesture(frameID, point, gestureType, gestureState, isInteractingWithFocusedElement), Messages::WebPage::SelectWithGesture::Reply { [weakThis = WeakPtr { *this }, pointInContentViewCoordinates = point, gestureType, gestureState, isInteractingWithFocusedElement, callback = WTF::move(callback)](SelectWithGestureResult result, std::optional<WebCore::RemoteUserInputEventData> remoteUserInputEventData) mutable {
         RefPtr protectedThis = weakThis.get();
         if (protectedThis && remoteUserInputEventData) {
             // The gesture landed on a cross-origin frame; re-dispatch it into that frame's process.
@@ -2197,12 +2221,13 @@ void WebPageProxy::selectWithGesture(std::optional<WebCore::FrameIdentifier> fra
             // reports the point in its own coordinates, but selectionChangedWithGesture() (UIKit)
             // expects content-view coordinates.
             protectedThis->selectWithGesture(remoteUserInputEventData->targetFrameID, roundedIntPoint(FloatPoint { remoteUserInputEventData->transformedPoint }), gestureType, gestureState, isInteractingWithFocusedElement,
-                [pointInContentViewCoordinates, callback = WTF::move(callback)](const IntPoint&, GestureType gestureType, GestureRecognizerState gestureState, OptionSet<SelectionFlags> flags) mutable {
-                callback(pointInContentViewCoordinates, gestureType, gestureState, flags);
+                [pointInContentViewCoordinates, callback = WTF::move(callback)](SelectWithGestureResult result) mutable {
+                result.point = pointInContentViewCoordinates;
+                callback(WTF::move(result));
             });
             return;
         }
-        callback(point, innerGestureType, innerGestureState, flags);
+        callback(WTF::move(result));
     } });
 }
 

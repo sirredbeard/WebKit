@@ -39,10 +39,11 @@ public:
     int value() const;
     void updateValue();
 
-    WEBCORE_EXPORT String markerTextWithoutSuffix() const;
-    String NODELETE markerTextWithSuffix() const;
+    WEBCORE_EXPORT String markerText(RenderListMarker::IncludeSuffix = RenderListMarker::IncludeSuffix::Yes) const;
 
-    void updateListMarkerNumbers();
+    // Returns the markers whose text the renumbering invalidated, for the caller to fill in once it is done changing
+    // the tree (RenderTreeBuilder::addListMarkerNeedingContentUpdate).
+    Vector<CheckedRef<RenderListMarker>> updateListMarkerNumbers();
 
     static void updateItemValuesForOrderedList(const HTMLOListElement&);
     static unsigned itemCountForOrderedList(const HTMLOListElement&);
@@ -78,8 +79,8 @@ private:
 
     void styleDidChange(Style::Difference, const Style::ComputedStyle* oldStyle) final;
 
-    void computeIntrinsicLogicalWidthContributions() final;
 
+    void updateValueAndMarkerContent();
     void updateValueNow() const;
     void usedCounterDirectivesChanged();
 

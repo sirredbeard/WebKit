@@ -67,7 +67,7 @@ WEBKIT_FRAMEWORK_DECLARE(PAL)
 WEBKIT_INCLUDE_CONFIG_FILES_IF_EXISTS()
 WEBKIT_ADD_TARGET_UNSAFE_BUFFER_WARNINGS(PAL)
 
-if (SWIFT_REQUIRED AND NOT (PORT STREQUAL GTK OR PORT STREQUAL WPE))
+if (SWIFT_REQUIRED AND APPLE)
     set(PAL_SWIFT_INTEROP_SOURCES
         crypto/CryptoAlgorithmAESGCMCocoa.cpp
         crypto/CryptoAlgorithmAESKWCocoaBridging.cpp
@@ -98,7 +98,7 @@ WEBKIT_COPY_FILES(PAL_CopyHeaders
     FILES ${PAL_PUBLIC_HEADERS}
 )
 
-if (SWIFT_REQUIRED AND NOT (PORT STREQUAL GTK OR PORT STREQUAL WPE))
+if (SWIFT_REQUIRED AND APPLE)
     target_sources(PAL PRIVATE
         ${PAL_DIR}/pal/pal.swift
         ${PAL_DIR}/pal/system/cocoa/RegexHelper.swift
@@ -127,6 +127,11 @@ if (SWIFT_REQUIRED AND NOT (PORT STREQUAL GTK OR PORT STREQUAL WPE))
     target_compile_options(PAL PRIVATE
         "$<$<COMPILE_LANGUAGE:Swift>:-import-underlying-module>"
         "$<$<COMPILE_LANGUAGE:Swift>:-strict-memory-safety>"
+        # SafeInteropWrappers imports a lifetimebound std::span return as a Swift Span,
+        # which is what lets the byte views hand Swift a lifetime-dependent view rather
+        # than a raw pointer.
+        "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature Lifetimes>"
+        "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-enable-experimental-feature SafeInteropWrappers>"
         "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-swift-version 6>"
         "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${PAL_FRAMEWORK_HEADERS_DIR}>"
         "$<$<COMPILE_LANGUAGE:Swift>:SHELL:-Xcc -I${CMAKE_BINARY_DIR}/WTF/Headers>"

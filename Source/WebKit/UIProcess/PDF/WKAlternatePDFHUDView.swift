@@ -28,6 +28,7 @@ public import Foundation
 import WebKit_Internal
 @_weakLinked @_spi(Private) import SwiftUI
 private import Observation
+private import wtf.Core.cocoa.RuntimeApplicationChecksCocoa
 
 @Observable
 @MainActor
@@ -35,6 +36,8 @@ final class PDFHUDControlsModel {
     var isAutoHidden = false
     var isHovered = false
     private(set) var resetSeed: UInt32 = 0
+
+    var accessibilityDisplayModeState: WKPDFHUDViewAccessibilityDisplayModeState = .unavailable
 
     var isVisible: Bool {
         !isAutoHidden || isHovered
@@ -65,6 +68,28 @@ struct PDFHUDControls: View {
             Button("Zoom In", systemImage: "plus.magnifyingglass") {
                 action(.zoomIn)
             }
+
+            #if ENABLE_AX_PDF_SUPPORT
+            if model.accessibilityDisplayModeState != .unavailable {
+                Button {
+                    action(.toggleAccessibilityDisplayMode)
+                } label: {
+                    Label {
+                        Text(
+                            WKPDFHUDViewAccessibilityDisplayModeLabel(
+                                model.accessibilityDisplayModeState == .active
+                            )
+                        )
+                    } icon: {
+                        Image(
+                            _internalSystemName: WKPDFHUDViewAccessibilityDisplayModeSymbolName(
+                                model.accessibilityDisplayModeState == .active
+                            )
+                        )
+                    }
+                }
+            }
+            #endif
 
             if showSystemActions {
                 Button {
@@ -109,6 +134,9 @@ extension WKAlternatePDFHUDView {
     let frameIdentifier: UInt64
 
     @nonobjc
+    final let actionHandlerForTesting: @MainActor @Sendable (WKPDFHUDViewControlAction) -> Void
+
+    @nonobjc
     final let model = PDFHUDControlsModel()
 
     init(
@@ -118,10 +146,11 @@ extension WKAlternatePDFHUDView {
         actionHandler: @MainActor @Sendable @escaping (WKPDFHUDViewControlAction) -> Void
     ) {
         self.frameIdentifier = frameIdentifier
+        self.actionHandlerForTesting = actionHandler
 
         super.init(frame: frame)
 
-        let controls = PDFHUDControls(showSystemActions: !isInRecoveryOS(), action: actionHandler)
+        let controls = PDFHUDControls(showSystemActions: !WTF.isInBaseSystem(), action: actionHandler)
             .environment(model)
 
         let hostingView = NSHostingView(rootView: controls)
@@ -146,6 +175,10 @@ extension WKAlternatePDFHUDView {
 
     func show() {
         model.show()
+    }
+
+    func setAccessibilityDisplayModeState(_ state: WKPDFHUDViewAccessibilityDisplayModeState) {
+        model.accessibilityDisplayModeState = state
     }
 }
 

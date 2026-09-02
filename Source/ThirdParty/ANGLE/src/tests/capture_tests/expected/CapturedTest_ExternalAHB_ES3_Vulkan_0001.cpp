@@ -3,10 +3,10 @@
 
 // Private Functions
 
-void SetupReplayContext5(void)
+void SetupReplayContext10(void)
 {
-    eglMakeCurrent(gEGLDisplay, gSurfaceMap2[0], gSurfaceMap2[0], gContextMap2[5]);
-    UpdateCurrentContext(5);
+    eglMakeCurrent(gEGLDisplay, gSurfaceMap2[0], gSurfaceMap2[0], gContextMap2[10]);
+    UpdateCurrentContext(10);
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
     glUseProgram(gShaderProgramMap[1]);
     UpdateCurrentProgramPerContext(1);
@@ -95,7 +95,7 @@ void ResetReplayContextShared(void)
     DestroyEGLImageKHR(gEGLDisplay, gEGLImageMap2[3], 3);
 }
 
-void ResetReplayContext5(void)
+void ResetReplayContext10(void)
 {
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, gTextureMap[1]);
     glEGLImageTargetTexture2DOES(GL_TEXTURE_EXTERNAL_OES, gEGLImageMap2[1]);
@@ -117,15 +117,15 @@ void SetupReplay(void)
     {
         SetupReplayContextSharedInactive();
     }
-    SetCurrentContextID(5);
-    SetupReplayContext5();
+    SetCurrentContextID(10);
+    SetupReplayContext10();
 
 }
 
 void ResetReplay(void)
 {
     ResetReplayContextShared();
-    ResetReplayContext5();
+    ResetReplayContext10();
 
     // Reset main context state
     glBindTexture(GL_TEXTURE_EXTERNAL_OES, gTextureMap[1]);

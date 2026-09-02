@@ -39,13 +39,15 @@ set(TestWTF_SOURCES
     Tests/WTF/BitSet.cpp
     Tests/WTF/BitVector.cpp
     Tests/WTF/BloomFilter.cpp
-    Tests/WTF/BorrowedBytes.cpp
+    Tests/WTF/Borrow.cpp
     Tests/WTF/BoxPtr.cpp
     Tests/WTF/BumpPointerAllocator.cpp
     Tests/WTF/CString.cpp
     Tests/WTF/CStringView.cpp
     Tests/WTF/CharacterProperties.cpp
     Tests/WTF/CheckedArithmeticOperations.cpp
+    Tests/WTF/CheckedPtr.cpp
+    Tests/WTF/CheckedRef.cpp
     Tests/WTF/CompactPtr.cpp
     Tests/WTF/CompactRefPtr.cpp
     Tests/WTF/CompactRefPtrTuple.cpp
@@ -61,7 +63,7 @@ set(TestWTF_SOURCES
     Tests/WTF/DragonBoxTest.cpp
     Tests/WTF/EmbeddedFixedVector.cpp
     Tests/WTF/EnumTraits.cpp
-    Tests/WTF/Expected.cpp
+    Tests/WTF/EscapableByteSpan.cpp
     Tests/WTF/FileSystem.cpp
     Tests/WTF/FormattedLogging.cpp
     Tests/WTF/FixedBitVector.cpp
@@ -81,6 +83,7 @@ set(TestWTF_SOURCES
     Tests/WTF/IteratorRange.cpp
     Tests/WTF/JSONValue.cpp
     Tests/WTF/LEBDecoder.cpp
+    Tests/WTF/LEBEncoder.cpp
     Tests/WTF/LazyRef.cpp
     Tests/WTF/LazyUniqueRef.cpp
     Tests/WTF/LifecycleLogger.cpp
@@ -111,6 +114,7 @@ set(TestWTF_SOURCES
     Tests/WTF/RedBlackTree.cpp
     Tests/WTF/Ref.cpp
     Tests/WTF/RefCountedFixedVector.cpp
+    Tests/WTF/RefCountedWithInlineWeakPtr.cpp
     Tests/WTF/RefCounter.cpp
     Tests/WTF/RefLogger.cpp
     Tests/WTF/RefPtr.cpp
@@ -118,6 +122,7 @@ set(TestWTF_SOURCES
     Tests/WTF/RobinHoodHashSet.cpp
     Tests/WTF/RunLoop.cpp
     Tests/WTF/SHA1.cpp
+    Tests/WTF/SIMDHelpers.cpp
     Tests/WTF/SafeStrerror.cpp
     Tests/WTF/SaturatingArithmeticOperations.cpp
     Tests/WTF/Scope.cpp
@@ -154,6 +159,7 @@ set(TestWTF_SOURCES
     Tests/WTF/UniqueRef.cpp
     Tests/WTF/UniqueRefVector.cpp
     Tests/WTF/Vector.cpp
+    Tests/WTF/VectorBorrow.cpp
     Tests/WTF/WTFString.cpp
     Tests/WTF/WeakPtr.cpp
     Tests/WTF/WorkQueue.cpp
@@ -224,6 +230,7 @@ if (ENABLE_WEBCORE)
         Tests/WebCore/ComplexTextController.cpp
         Tests/WebCore/ContextMenuAction.cpp
         Tests/WebCore/CookieJar.cpp
+        Tests/WebCore/CryptoDigest.cpp
         Tests/WebCore/Decimal.cpp
         Tests/WebCore/FileMonitor.cpp
         Tests/WebCore/FloatPointTests.cpp
@@ -237,6 +244,8 @@ if (ENABLE_WEBCORE)
         Tests/WebCore/HTTPParsers.cpp
         Tests/WebCore/IDBKeyData.cpp
         Tests/WebCore/IDBSerializationTest.cpp
+        Tests/WebCore/IPAddressSpaceTests.cpp
+        Tests/WebCore/ImageBackingStoreTests.cpp
         Tests/WebCore/ImageBufferTests.cpp
         Tests/WebCore/IntPointTests.cpp
         Tests/WebCore/IntRectTests.cpp
@@ -250,6 +259,7 @@ if (ENABLE_WEBCORE)
         Tests/WebCore/MediaReorderQueue.cpp
         Tests/WebCore/MixedContentChecker.cpp
         Tests/WebCore/MonospaceFontTests.cpp
+        Tests/WebCore/NativeImageTests.cpp
         Tests/WebCore/NowPlayingInfoTests.cpp
         Tests/WebCore/PODIntervalTree.cpp
         Tests/WebCore/ParsedContentRange.cpp
@@ -258,6 +268,7 @@ if (ENABLE_WEBCORE)
         Tests/WebCore/PlatformDynamicRangeLimitTests.cpp
         Tests/WebCore/PlatformMediaSessionManagerTests.cpp
         Tests/WebCore/PublicSuffix.cpp
+        Tests/WebCore/PushMessageCrypto.cpp
         Tests/WebCore/RegionTests.cpp
         Tests/WebCore/RenderStyleChange.cpp
         Tests/WebCore/SecurityOrigin.cpp
@@ -271,6 +282,8 @@ if (ENABLE_WEBCORE)
         Tests/WebCore/TransformationMatrix.cpp
         Tests/WebCore/URLParserTextEncoding.cpp
         Tests/WebCore/URLPatternTests.cpp
+        Tests/WebCore/WebTransportHeaderValidation.cpp
+        Tests/WebCore/WellKnownOriginList.cpp
         Tests/WebCore/WritingModeTests.cpp
         Tests/WebCore/XRCompositionLayer.cpp
     )
@@ -298,12 +311,10 @@ if (ENABLE_WEBCORE)
         ${TESTWEBKITAPI_DIR}
     )
 
-    set(TestWebCore_DEFINITIONS
-      WEBKIT_SRC_DIR="${CMAKE_SOURCE_DIR}"
-    )
-
     WEBKIT_EXECUTABLE_DECLARE(TestWebCore)
-    target_compile_definitions(TestWebCore PUBLIC TestWebCore_DEFINITIONS)
+    # TestWebCore gains Swift sources via WEBKIT_TEST_ENABLE_SWIFT.
+    webkit_target_compile_definitions(TestWebCore PUBLIC
+        "WEBKIT_SRC_DIR=\"${CMAKE_SOURCE_DIR}\"")
 endif ()
 
 # TestWebKitLegacy definitions
@@ -339,6 +350,9 @@ endif ()
 if (ENABLE_WEBKIT)
     set(TestWebKit_SOURCES
         Helpers/Utilities.cpp
+
+        Tests/WebCore/Quirks.cpp
+        Tests/WebCore/URLMatch.cpp
 
         Tests/WebKit/WKPage/AboutBlankLoad.cpp
         Tests/WebKit/WKPage/CanHandleRequest.cpp
@@ -469,7 +483,7 @@ if (ENABLE_WEBKIT)
             Helpers/cocoa/UtilitiesCocoa.mm
             InjectedBundle/mac/InjectedBundleControllerMac.mm
         )
-        if (NOT CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        if (NOT WEBKIT_SDK_IS_IOS_FAMILY)
             list(APPEND TestWebKitAPIInjectedBundle_SOURCES
                 Helpers/mac/PlatformUtilitiesMac.mm
             )
@@ -505,6 +519,7 @@ if (ENABLE_WEBKIT)
             Tests/IPC/ArgumentCoderTests.cpp
             Tests/IPC/ConnectionTests.cpp
             Tests/IPC/EventTests.cpp
+            Tests/IPC/IPCEventTests.cpp
             Tests/IPC/IPCTestUtilities.cpp
             Tests/IPC/MessageLogEndToEndTests.cpp
             Tests/IPC/MessageLogTests.cpp

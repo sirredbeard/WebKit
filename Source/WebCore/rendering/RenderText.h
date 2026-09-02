@@ -70,7 +70,7 @@ public:
     Color selectionBackgroundColor() const;
     Color selectionForegroundColor() const;
     Color selectionEmphasisMarkColor() const;
-    std::unique_ptr<Style::ComputedStyle> selectionPseudoStyle() const;
+    const Style::ComputedStyle* selectionPseudoStyle() const LIFETIME_BOUND;
 
     const Style::ComputedStyle* spellingErrorPseudoStyle() const LIFETIME_BOUND;
     const Style::ComputedStyle* grammarErrorPseudoStyle() const LIFETIME_BOUND;
@@ -176,6 +176,7 @@ public:
 
     Vector<std::pair<unsigned, unsigned>> contentRangesBetweenOffsetsForType(const DocumentMarkerType, unsigned startOffset, unsigned endOffset) const;
 
+    bool hasInlineWrapperForDisplayContents() const { return m_hasInlineWrapperForDisplayContents; }
     RenderInline* NODELETE inlineWrapperForDisplayContents();
     void setInlineWrapperForDisplayContents(RenderInline*);
 
@@ -318,7 +319,7 @@ inline Color RenderText::selectionEmphasisMarkColor() const
     return Color();
 }
 
-inline std::unique_ptr<Style::ComputedStyle> RenderText::selectionPseudoStyle() const
+inline const Style::ComputedStyle* RenderText::selectionPseudoStyle() const
 {
     if (auto* ancestor = firstNonAnonymousAncestor())
         return ancestor->selectionPseudoStyle();

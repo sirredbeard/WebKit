@@ -102,7 +102,8 @@ public:
     
     static PutByStatus computeFor(CodeBlock*, ICStatusMap&, BytecodeIndex, ExitFlag, CallLinkStatus::ExitSiteData);
     static PutByStatus computeFor(JSGlobalObject*, const StructureSet&, CacheableIdentifier, bool isDirect, PrivateFieldPutKind);
-    
+    static PutByStatus computeFor(CodeBlock* profiledBlock, BytecodeIndex, JSGlobalObject*, const StructureSet&, CacheableIdentifier, bool isDirect, PrivateFieldPutKind);
+
     static PutByStatus computeFor(CodeBlock* baselineBlock, ICStatusMap& baselineMap, ICStatusContextStack&, CodeOrigin);
 
 #if ENABLE(JIT)
@@ -148,7 +149,7 @@ public:
 
     DECLARE_VISIT_AGGREGATE;
     template<typename Visitor> void markIfCheap(Visitor&);
-    bool finalize(VM&);
+    bool isStillLive(VM&);
     
     void merge(const PutByStatus&);
     

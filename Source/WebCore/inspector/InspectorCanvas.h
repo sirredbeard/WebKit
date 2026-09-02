@@ -82,10 +82,10 @@ public:
 
     JSC::JSValue resolveContext(JSC::JSGlobalObject*);
 
-    HashSet<Element*> cssCanvasClientNodes() const;
+    HashSet<Ref<Element>> cssCanvasClientNodes() const;
     size_t memoryCost() const;
 
-    void canvasChanged();
+    void canvasContentsWillChange();
 
     bool hasActiveInspectorCanvasCallTracer() const;
     void setHasActiveInspectorCanvasCallTracer(bool);
@@ -96,6 +96,7 @@ public:
 
     void recordAction(String&&, InspectorCanvasProcessedArguments&& = { });
     void recordAction(String&&, InspectorCanvasProcessedArgument&& receiver, InspectorCanvasProcessedArguments&& = { });
+    void recordActionResult(InspectorCanvasProcessedArgument&&);
 
     Ref<JSON::ArrayOf<Inspector::Protocol::Recording::Frame>> releaseFrames() { return m_frames.releaseNonNull(); }
 

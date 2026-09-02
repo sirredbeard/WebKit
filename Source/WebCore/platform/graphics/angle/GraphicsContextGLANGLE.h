@@ -46,6 +46,7 @@ public:
 
     GCGLDisplay platformDisplay() const;
     GCGLConfig platformConfig() const;
+    std::optional<size_t> NODELETE estimatedMemoryCost() final;
 
     enum class ReleaseThreadResourceBehavior {
         // Releases current context after GraphicsContextGLANGLE calls done in the thread.
@@ -347,11 +348,10 @@ public:
     void deleteShader(PlatformGLObject) final;
     void deleteTexture(PlatformGLObject) final;
     void simulateEventForTesting(SimulatedEventForTesting) override;
-    RefPtr<PixelBuffer> drawingBufferToPixelBuffer(FlipY);
 
     RefPtr<PixelBuffer> readRenderingResultsForPainting();
 
-    RefPtr<NativeImage> copyNativeImageYFlipped(SurfaceBuffer) override;
+    RefPtr<NativeImage> copyNativeImage(SurfaceBuffer) override;
 
     // Returns the span of valid data read on success.
     bool getBufferSubDataWithStatus(GCGLenum target, GCGLintptr offset, std::span<uint8_t> data);
@@ -422,8 +422,6 @@ protected:
     GCGLenum NODELETE adjustWebGL1TextureInternalFormat(GCGLenum internalformat, GCGLenum format, GCGLenum type);
     void setPackParameters(GCGLint alignment, GCGLint rowLength, GCGLboolean reverseRowOrder);
     bool NODELETE validateClearBufferv(GCGLenum buffer, size_t valuesSize);
-    void prepareForDrawingBufferWriteIfBound();
-    virtual void prepareForDrawingBufferWrite();
 
     HashSet<CString> m_allRequestableExtensions;
     HashSet<CString> m_allEnabledRequestableExtensions;
@@ -449,7 +447,7 @@ protected:
     GCGLContext m_contextObj { nullptr };
     GCGLContext m_angleSharingContextObj { nullptr };
     GCGLConfig m_configObj { nullptr };
-#if USE(TEXTURE_MAPPER)
+#if USE(TEXTURE_MAPPER) || USE(COORDINATED_GRAPHICS)
     GCEGLSurface m_surfaceObj { nullptr };
 #endif
     GCGLint m_packAlignment { 4 };

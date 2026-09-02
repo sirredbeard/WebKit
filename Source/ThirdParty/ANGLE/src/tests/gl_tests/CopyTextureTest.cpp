@@ -1292,9 +1292,6 @@ TEST_P(CopyTextureTest, CubeMapTarget)
         return;
     }
 
-    // http://anglebug.com/42260718
-    ANGLE_SKIP_TEST_IF(IsMac() && IsIntel() && IsDesktopOpenGL());
-
     // http://anglebug.com/42261821
     ANGLE_SKIP_TEST_IF(IsFuchsia() && IsIntel() && IsVulkan());
 
@@ -1453,9 +1450,6 @@ TEST_P(CopyTextureTest, CubeMapTargetRGB)
     {
         return;
     }
-
-    // http://anglebug.com/42260718
-    ANGLE_SKIP_TEST_IF(IsMac() && IsIntel() && IsDesktopOpenGL());
 
     // http://anglebug.com/42261821
     ANGLE_SKIP_TEST_IF(IsFuchsia() && IsIntel() && IsVulkan());
@@ -3022,9 +3016,6 @@ TEST_P(CopyTextureTestES3, InvalidateCopyThenBlend)
 {
     ANGLE_GL_PROGRAM(program, essl1_shaders::vs::Simple(), essl1_shaders::fs::Red());
 
-    // http://anglebug.com/42263716
-    ANGLE_SKIP_TEST_IF(IsMac() && IsIntel() && IsOpenGL());
-
     // http://anglebug.com/42263717
     ANGLE_SKIP_TEST_IF(IsWindows() && IsIntel() && IsOpenGL());
 
@@ -3097,9 +3088,6 @@ void CopyTextureTestES3::invalidateBlitThenBlendCommon(GLsizei layerCount)
 {
     // http://anglebug.com/42263713
     ANGLE_SKIP_TEST_IF(IsAndroid() && IsOpenGL());
-
-    // http://anglebug.com/42263716
-    ANGLE_SKIP_TEST_IF(IsMac() && IsIntel() && IsOpenGL());
 
     // http://anglebug.com/42263717
     ANGLE_SKIP_TEST_IF(IsWindows() && IsIntel() && IsOpenGL());
@@ -3632,6 +3620,86 @@ TEST_P(CopyTextureTest, SelfCopyOOBWrite)
     ASSERT_GL_NO_ERROR();
 }
 
+// Test that copy from non-zero level of texture works when a direct copy is possible.
+TEST_P(CopyTextureTestES3, NonZeroLevel)
+{
+    ANGLE_SKIP_TEST_IF(!EnsureGLExtensionEnabled("GL_CHROMIUM_copy_texture"));
+
+    constexpr uint32_t kBaseLevel = 1;
+    constexpr uint32_t kMaxLevel  = 4;
+    constexpr uint32_t kCopyLevel = 3;
+
+    constexpr uint32_t kSize            = 64;
+    constexpr uint32_t kSizeAtCopyLevel = kSize >> (kCopyLevel - kBaseLevel);
+    const std::vector<GLColor> kSrcColor(kSizeAtCopyLevel * kSizeAtCopyLevel, GLColor::red);
+    const std::vector<GLColor> kOtherColor(kSize * kSize, GLColor::green);
+
+    GLTexture src;
+    glBindTexture(GL_TEXTURE_2D, src);
+    for (uint32_t level = kBaseLevel; level <= kMaxLevel; ++level)
+    {
+        glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, kSize >> (level - kBaseLevel),
+                     kSize >> (level - kBaseLevel), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                     level == kCopyLevel ? kSrcColor.data() : kOtherColor.data());
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, kBaseLevel);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, kMaxLevel);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    GLTexture dst;
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glCopyTextureCHROMIUM(src, kCopyLevel, GL_TEXTURE_2D, dst, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                          GL_FALSE, GL_FALSE, GL_FALSE);
+    ASSERT_GL_NO_ERROR();
+
+    GLFramebuffer fbo;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst, 0);
+    EXPECT_PIXEL_RECT_EQ(0, 0, kSizeAtCopyLevel, kSizeAtCopyLevel, kSrcColor[0]);
+    ASSERT_GL_NO_ERROR();
+}
+
+// Test that copy from non-zero level of texture works when copy likely needs a draw call.
+TEST_P(CopyTextureTestES3, NonZeroLevelInverted)
+{
+    ANGLE_SKIP_TEST_IF(!EnsureGLExtensionEnabled("GL_CHROMIUM_copy_texture"));
+
+    constexpr uint32_t kBaseLevel = 1;
+    constexpr uint32_t kMaxLevel  = 4;
+    constexpr uint32_t kCopyLevel = 3;
+
+    constexpr uint32_t kSize            = 64;
+    constexpr uint32_t kSizeAtCopyLevel = kSize >> (kCopyLevel - kBaseLevel);
+    const std::vector<GLColor> kSrcColor(kSizeAtCopyLevel * kSizeAtCopyLevel, GLColor::red);
+    const std::vector<GLColor> kOtherColor(kSize * kSize, GLColor::green);
+
+    GLTexture src;
+    glBindTexture(GL_TEXTURE_2D, src);
+    for (uint32_t level = kBaseLevel; level <= kMaxLevel; ++level)
+    {
+        glTexImage2D(GL_TEXTURE_2D, level, GL_RGBA8, kSize >> (level - kBaseLevel),
+                     kSize >> (level - kBaseLevel), 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                     level == kCopyLevel ? kSrcColor.data() : kOtherColor.data());
+    }
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, kBaseLevel);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, kMaxLevel);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    GLTexture dst;
+    glBindTexture(GL_TEXTURE_2D, dst);
+    glCopyTextureCHROMIUM(src, kCopyLevel, GL_TEXTURE_2D, dst, 0, GL_RGBA, GL_UNSIGNED_BYTE,
+                          GL_TRUE, GL_FALSE, GL_FALSE);
+    ASSERT_GL_NO_ERROR();
+
+    GLFramebuffer fbo;
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, dst, 0);
+    EXPECT_PIXEL_RECT_EQ(0, 0, kSizeAtCopyLevel, kSizeAtCopyLevel, kSrcColor[0]);
+    ASSERT_GL_NO_ERROR();
+}
+
 ANGLE_INSTANTIATE_TEST_ES2(CopyTextureTest);
 ANGLE_INSTANTIATE_TEST_COMBINE_6(CopyTextureVariationsTest,
                                  CopyTextureVariationsTestPrint,
@@ -3641,7 +3709,6 @@ ANGLE_INSTANTIATE_TEST_COMBINE_6(CopyTextureVariationsTest,
                                  testing::Bool(),  // premultiplyAlpha
                                  testing::Bool(),  // unmultiplyAlpha
                                  testing::ValuesIn(kMesaYFlips),
-                                 ES2_D3D9(),
                                  ES2_D3D11(),
                                  ES2_OPENGL(),
                                  ES2_OPENGLES(),

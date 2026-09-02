@@ -119,9 +119,9 @@ Cache::Cache(NetworkProcess& networkProcess, const String& storageDirectory, Ref
     , m_storageDirectory(storageDirectory)
 {
     if (options.contains(CacheOption::SpeculativeRevalidation)) {
-        m_lowPowerModeNotifier = makeUnique<WebCore::LowPowerModeNotifier>([this, weakThis = WeakPtr { *this }](bool) {
-            if (RefPtr protectedThis = weakThis.get())
-                updateSpeculativeLoadManagerEnabledState();
+        m_lowPowerModeNotifier = makeUnique<WebCore::LowPowerModeNotifier>([weakThis = WeakPtr { *this }](bool) {
+            if (RefPtr protectedThis = weakThis)
+                protectedThis->updateSpeculativeLoadManagerEnabledState();
         });
         m_thermalMitigationNotifier = WebCore::ThermalMitigationNotifier::create([weakThis = WeakPtr { *this }](bool) {
             if (RefPtr protectedThis = weakThis)
@@ -614,6 +614,7 @@ std::unique_ptr<Entry> Cache::update(const WebCore::ResourceRequest& originalReq
 
     WebCore::ResourceResponse response = existingEntry.response();
     WebCore::updateResponseHeadersAfterRevalidation(response, validatingResponse);
+    response.setIPAddressSpace(validatingResponse.ipAddressSpace());
 
     auto updateEntry = makeUnique<Entry>(existingEntry.key(), response, privateRelayed, existingEntry.buffer(), WebCore::collectVaryingRequestHeaders(protect(m_networkProcess->storageSession(m_sessionID)), originalRequest, response));
     auto updateRecord = updateEntry->encodeAsStorageRecord();

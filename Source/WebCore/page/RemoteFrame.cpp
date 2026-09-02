@@ -33,6 +33,7 @@
 #include "HTMLFrameOwnerElement.h"
 #include "FrameInlines.h"
 #include "NodeDocument.h"
+#include "Page.h"
 #include "PrivateClickMeasurement.h"
 #include "RemoteDOMWindow.h"
 #include "RemoteFrameClient.h"
@@ -65,9 +66,14 @@ RemoteFrame::RemoteFrame(Page& page, ClientCreator&& clientCreator, FrameIdentif
     , m_colorSchemePreference(ColorSchemePreference::NoPreference)
 {
     setView(RemoteFrameView::create(*this));
+
+    page.didAttachRemoteFrame();
 }
 
-RemoteFrame::~RemoteFrame() = default;
+RemoteFrame::~RemoteFrame()
+{
+    detachFromPage();
+}
 
 ProcessIdentifier RemoteFrame::hostingProcessIdentifier() const
 {
@@ -76,7 +82,7 @@ ProcessIdentifier RemoteFrame::hostingProcessIdentifier() const
     // Fallback to the process encoded in the FrameIdentifier's upper bits when the
     // hosting process has not been recorded. This reproduces the legacy
     // IdentifierRegistry::protocolFrameId(FrameIdentifier) value. See webkit.org/b/310164.
-    return ObjectIdentifier<ProcessIdentifierType>(frameID().toRawValue() >> 32);
+    return ObjectIdentifier<ProcessIdentifierType>(frameID().toUInt64() >> 32);
 }
 
 DOMWindow* RemoteFrame::virtualWindow() const
@@ -158,6 +164,7 @@ void RemoteFrame::frameDetached()
 {
     m_client->frameDetached();
     m_window->frameDetached();
+    detachFromPage();
 }
 
 String RemoteFrame::renderTreeAsText(size_t baseIndent, OptionSet<RenderAsTextFlag> behavior)
@@ -250,7 +257,7 @@ ColorSchemePreference RemoteFrame::colorSchemePreference() const
 
 float RemoteFrame::usedZoomForChild(const Frame& child) const
 {
-    if (RefPtr info = frameTreeSyncData().childrenFrameLayoutInfo.get(child.frameID()))
+    if (RefPtr info = frameTreeSyncData().frameGeometry.childrenFrameLayoutInfo.get(child.frameID()))
         return info->usedZoom();
 
     return 1.0;

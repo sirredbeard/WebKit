@@ -28,11 +28,11 @@
 #include "FloatPoint.h"
 #include "FloatRect.h"
 #include "GeometryUtilities.h"
-#include "Path.h"
 #include "RectEdges.h"
 #include <algorithm>
 #include <cmath>
 #include <numbers>
+#include <optional>
 #include <utility>
 
 namespace WebCore {
@@ -206,6 +206,99 @@ static bool boxesTouchOrOverlap(const FloatRect& first, const FloatRect& second)
         && first.maxY() >= second.y() && first.y() <= second.maxY();
 }
 
+static FloatRect controlPointBounds(const BezierSegment& curve)
+{
+    FloatRect bounds { curve.start, FloatSize { } };
+    bounds.extend(curve.controlPoint1);
+    bounds.extend(curve.controlPoint2);
+    bounds.extend(curve.end);
+    return bounds;
+}
+
+// Boxes below this are treated as a point when locating a crossing, and the subdivision
+// depth is capped in case a pair of curves overlaps rather than crossing cleanly.
+constexpr float crossingTolerance = 1.0f / 256;
+constexpr unsigned maximumCrossingDepth = 40;
+
+static FloatRect monotonicBounds(const BezierSegment& curve)
+{
+    FloatRect bounds { curve.start, FloatSize { } };
+    bounds.extend(curve.end);
+    return bounds;
+}
+
+static FloatRect monotonicBounds(const Vector<BezierSegment>& curves)
+{
+    FloatRect bounds { curves.first().start, FloatSize { } };
+    bounds.extend(curves.last().end);
+    return bounds;
+}
+
+static bool boxesCanReach(FloatRect first, const FloatRect& second)
+{
+    first.inflate(crossingTolerance);
+    return boxesTouchOrOverlap(first, second);
+}
+
+struct CurveParameterPair {
+    float onFirst { 0 };
+    float onSecond { 0 };
+};
+
+static void appendCurveCrossings(const BezierSegment& first, float firstStart, float firstEnd, const BezierSegment& second, float secondStart, float secondEnd, unsigned depth, Vector<CurveParameterPair>& crossings)
+{
+    auto firstBounds = monotonicBounds(first);
+    auto secondBounds = monotonicBounds(second);
+    if (!boxesTouchOrOverlap(firstBounds, secondBounds))
+        return;
+
+    float firstExtent = std::max(firstBounds.width(), firstBounds.height());
+    float secondExtent = std::max(secondBounds.width(), secondBounds.height());
+
+    float firstMiddle = (firstStart + firstEnd) / 2;
+    float secondMiddle = (secondStart + secondEnd) / 2;
+
+    if (depth >= maximumCrossingDepth || (firstExtent <= crossingTolerance && secondExtent <= crossingTolerance)) {
+        crossings.append({ firstMiddle, secondMiddle });
+        return;
+    }
+
+    if (firstExtent >= secondExtent) {
+        auto [before, after] = splitBezier(first, 0.5f);
+        appendCurveCrossings(before, firstStart, firstMiddle, second, secondStart, secondEnd, depth + 1, crossings);
+        appendCurveCrossings(after, firstMiddle, firstEnd, second, secondStart, secondEnd, depth + 1, crossings);
+        return;
+    }
+
+    auto [before, after] = splitBezier(second, 0.5f);
+    appendCurveCrossings(first, firstStart, firstEnd, before, secondStart, secondMiddle, depth + 1, crossings);
+    appendCurveCrossings(first, firstStart, firstEnd, after, secondMiddle, secondEnd, depth + 1, crossings);
+}
+
+static Vector<BezierSegment> curvesUpToIntersection(const Vector<BezierSegment>& curves, size_t index, float parameter)
+{
+    Vector<BezierSegment> kept;
+    for (size_t position = 0; position < index; ++position)
+        kept.append(curves[position]);
+
+    if (parameter > parameterEpsilon)
+        kept.append(splitBezier(curves[index], parameter).first);
+
+    return kept;
+}
+
+static Vector<BezierSegment> curvesFromIntersection(const Vector<BezierSegment>& curves, size_t index, float parameter)
+{
+    Vector<BezierSegment> kept;
+    if (parameter < 1.0f - parameterEpsilon)
+        kept.append(splitBezier(curves[index], parameter).second);
+
+    for (size_t position = index + 1; position < curves.size(); ++position)
+        kept.append(curves[position]);
+
+    return kept;
+}
+
 } // namespace
 
 // `parameter` is the Bézier curve parameter t in [0, 1] (the variable of the Bernstein basis
@@ -225,11 +318,7 @@ FloatPoint pointOnBezierAtParameter(const BezierSegment& curve, double parameter
 
 Vector<BezierSegment> trimBezierToRect(const BezierSegment& curve, const FloatRect& rect)
 {
-    // The curve stays within its control points' convex hull
-    FloatRect controlBounds { curve.start, FloatSize { } };
-    controlBounds.extend(curve.controlPoint1);
-    controlBounds.extend(curve.controlPoint2);
-    controlBounds.extend(curve.end);
+    auto controlBounds = controlPointBounds(curve);
 
     // Inside -> no trim; disjoint -> empty. Inclusive test keeps zero-area (axis-aligned line) bounds.
     if (rect.contains(controlBounds))
@@ -255,99 +344,48 @@ Vector<BezierSegment> trimBezierToRect(const BezierSegment& curve, const FloatRe
     return curves;
 }
 
-// Resample a flattened polyline to `count` points spaced evenly along its arc length
-Vector<FloatPoint> resampleByArcLength(const Vector<FloatPoint>& polyline, unsigned count)
+std::optional<BezierCurvesIntersection> findMonotonicBezierCurvesIntersection(const Vector<BezierSegment>& first, const Vector<BezierSegment>& second)
 {
-    Vector<float> cumulativeLength;
-    cumulativeLength.reserveInitialCapacity(polyline.size());
-    cumulativeLength.append(0.0f);
-    for (size_t pointIndex = 1; pointIndex < polyline.size(); ++pointIndex)
-        cumulativeLength.append(cumulativeLength[pointIndex - 1] + (polyline[pointIndex] - polyline[pointIndex - 1]).diagonalLength());
-    float totalLength = cumulativeLength.last();
-    if (totalLength <= 0.0f)
-        totalLength = 1.0f;
-    Vector<FloatPoint> resampled;
-    resampled.reserveInitialCapacity(count);
-    size_t segmentIndex = 0;
-    for (unsigned sample = 0; sample < count; ++sample) {
-        float targetLength = totalLength * sample / (count - 1);
-        while (segmentIndex + 2 < polyline.size() && cumulativeLength[segmentIndex + 1] < targetLength)
-            ++segmentIndex;
-        float segmentLength = cumulativeLength[segmentIndex + 1] - cumulativeLength[segmentIndex];
-        float fraction = segmentLength > 0.0f ? (targetLength - cumulativeLength[segmentIndex]) / segmentLength : 0.0f;
-        resampled.append(polyline[segmentIndex] + (polyline[segmentIndex + 1] - polyline[segmentIndex]).scaled(fraction));
+    if (first.isEmpty() || second.isEmpty())
+        return { };
+
+    if (!boxesCanReach(monotonicBounds(first), monotonicBounds(second)))
+        return { };
+
+    std::optional<BezierCurvesIntersection> found;
+    for (size_t firstIndex = 0; firstIndex < first.size(); ++firstIndex) {
+        for (size_t secondIndex = 0; secondIndex < second.size(); ++secondIndex) {
+            const auto& firstCurve = first[firstIndex];
+            const auto& secondCurve = second[secondIndex];
+
+            if (!boxesCanReach(monotonicBounds(firstCurve), monotonicBounds(secondCurve)))
+                continue;
+
+            Vector<CurveParameterPair> candidates;
+            appendCurveCrossings(firstCurve, 0, 1, secondCurve, 0, 1, 0, candidates);
+
+            for (auto candidate : candidates) {
+                bool isLater = !found || firstIndex > found->indexOnFirst || (firstIndex == found->indexOnFirst && candidate.onFirst > found->parameterOnFirst);
+                if (!isLater)
+                    continue;
+
+                found = BezierCurvesIntersection {
+                    firstIndex, candidate.onFirst,
+                    secondIndex, candidate.onSecond,
+                    (firstIndex + candidate.onFirst) / static_cast<float>(first.size()),
+                    (secondIndex + candidate.onSecond) / static_cast<float>(second.size()),
+                };
+            }
+        }
     }
-    return resampled;
+
+    return found;
 }
 
-// Cubic Hermite blend of two point-for-point corresponding curves. `interpolationFraction` runs
-// from 0 (return startPoints, moving with startVelocities) to 1 (return endPoints, moving with
-// endVelocities); the velocities are the endpoint tangents that make the blend smooth.
-//
-// For each point, with t = interpolationFraction, p0 = startPoints, v0 = startVelocities,
-// p1 = endPoints, v1 = endVelocities, the standard Hermite basis is:
-//     h00(t) =  2t^3 - 3t^2 + 1   (startPositionWeight)
-//     h10(t) =   t^3 - 2t^2 + t   (startVelocityWeight)
-//     h01(t) = -2t^3 + 3t^2       (endPositionWeight)
-//     h11(t) =   t^3 -  t^2       (endVelocityWeight)
-// and the blended point is:
-//     p(t) = h00(t)*p0 + h10(t)*v0 + h01(t)*p1 + h11(t)*v1
-Vector<FloatPoint> hermiteInterpolate(const Vector<FloatPoint>& startPoints, const Vector<FloatSize>& startVelocities, const Vector<FloatPoint>& endPoints, const Vector<FloatSize>& endVelocities, double interpolationFraction)
+void trimMonotonicBezierCurvesAtIntersection(Vector<BezierSegment>& first, Vector<BezierSegment>& second, const BezierCurvesIntersection& intersection)
 {
-    double startPositionWeight = 2.0 * interpolationFraction * interpolationFraction * interpolationFraction - 3.0 * interpolationFraction * interpolationFraction + 1.0;
-    double startVelocityWeight = interpolationFraction * interpolationFraction * interpolationFraction - 2.0 * interpolationFraction * interpolationFraction + interpolationFraction;
-    double endPositionWeight = -2.0 * interpolationFraction * interpolationFraction * interpolationFraction + 3.0 * interpolationFraction * interpolationFraction;
-    double endVelocityWeight = interpolationFraction * interpolationFraction * interpolationFraction - interpolationFraction * interpolationFraction;
-    Vector<FloatPoint> blended;
-    blended.reserveInitialCapacity(startPoints.size());
-    for (size_t index = 0; index < startPoints.size(); ++index) {
-        blended.append({
-            float(startPositionWeight * startPoints[index].x() + startVelocityWeight * startVelocities[index].width() + endPositionWeight * endPoints[index].x() + endVelocityWeight * endVelocities[index].width()),
-            float(startPositionWeight * startPoints[index].y() + startVelocityWeight * startVelocities[index].height() + endPositionWeight * endPoints[index].y() + endVelocityWeight * endVelocities[index].height()),
-        });
-    }
-    return blended;
-}
-
-// Converts each Catmull-Rom span to a cubic Bézier: control points sit 1/6 of the neighbor-to-neighbor tangent out from each endpoint, giving one smooth curve through every knot
-void addCatmullRomBeziers(Path& path, const Vector<FloatPoint>& points, unsigned segmentCount, bool& started)
-{
-    if (points.size() < 2)
-        return;
-    unsigned knotCount = std::min<unsigned>(points.size(), segmentCount + 1);
-    auto knots = knotCount < points.size() ? resampleByArcLength(points, knotCount) : points;
-    if (knots.size() < 2)
-        return;
-
-    if (!started) {
-        path.moveTo(knots[0]);
-        started = true;
-    } else
-        path.addLineTo(knots[0]);
-
-    // End tangents taken from the dense curve so the fit leaves/arrives along its true direction
-    auto knotAt = [&](int index) {
-        return knots[std::clamp(index, 0, static_cast<int>(knots.size()) - 1)];
-    };
-    size_t tail = std::min<size_t>(3, points.size() - 1);
-    auto startTravel = (points[tail] - points[0]).normalized();
-    auto endTravel = (points[points.size() - 1] - points[points.size() - 1 - tail]).normalized();
-    unsigned lastSpan = knots.size() - 2;
-
-    for (unsigned spanIndex = 0; spanIndex + 1 < knots.size(); ++spanIndex) {
-        auto previous = knotAt(static_cast<int>(spanIndex) - 1);
-        auto current = knots[spanIndex];
-        auto next = knots[spanIndex + 1];
-        auto following = knotAt(static_cast<int>(spanIndex) + 2);
-        auto controlPoint1 = current + (next - previous).scaled(1.0f / 6.0f);
-        auto controlPoint2 = next - (following - current).scaled(1.0f / 6.0f);
-        float third = (next - current).diagonalLength() / 3.0f;
-        if (!spanIndex)
-            controlPoint1 = current + startTravel.scaled(third);
-        if (spanIndex == lastSpan)
-            controlPoint2 = next - endTravel.scaled(third);
-        path.addBezierCurveTo(controlPoint1, controlPoint2, next);
-    }
+    first = curvesUpToIntersection(first, intersection.indexOnFirst, intersection.parameterOnFirst);
+    second = curvesFromIntersection(second, intersection.indexOnSecond, intersection.parameterOnSecond);
 }
 
 } // namespace WebCore

@@ -119,12 +119,15 @@ Vector<HighlightHitResult> HighlightRegistry::highlightsFromPoint(Document& docu
 
 void HighlightRegistry::setFromMapLike(AtomString&& key, Ref<Highlight>&& value)
 {
+    if (RefPtr previousHighlight = m_map.get(key))
+        previousHighlight->repaint();
+
     auto addResult = m_map.set(key, WTF::move(value));
     if (addResult.isNewEntry) {
         ASSERT(!m_highlightNames.contains(key));
         m_highlightNames.append(WTF::move(key));
-        protect(addResult.iterator->value)->repaint();
     }
+    protect(addResult.iterator->value)->repaint();
 }
 
 void HighlightRegistry::clear()
@@ -159,17 +162,20 @@ void HighlightRegistry::setHighlightVisibility(HighlightVisibility highlightVisi
 }
 #endif
 
-static ASCIILiteral annotationHighlightKey()
+static const AtomString& annotationHighlightKey()
 {
-    return "annotationHighlightKey"_s;
+    static MainThreadNeverDestroyed<const AtomString> key { "annotationHighlightKey"_s };
+    return key.get();
 }
 
 void HighlightRegistry::addAnnotationHighlightWithRange(Ref<StaticRange>&& value)
 {
-    if (m_map.contains(annotationHighlightKey()))
-        protect(*m_map.get(annotationHighlightKey()))->addToSetLike(value);
-    else
-        setFromMapLike(annotationHighlightKey(), Highlight::create({ std::ref<AbstractRange>(value.get()) }));
+    auto& key = annotationHighlightKey();
+    if (RefPtr highlight = m_map.get(key)) {
+        highlight->addToSetLike(value);
+        return;
+    }
+    setFromMapLike(AtomString { key }, Highlight::create({ std::ref<AbstractRange>(value.get()) }));
 }
 
 }

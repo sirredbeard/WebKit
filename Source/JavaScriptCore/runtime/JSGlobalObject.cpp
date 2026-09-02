@@ -748,6 +748,8 @@ const GlobalObjectMethodTable* JSGlobalObject::baseGlobalObjectMethodTable()
   Set                   JSGlobalObject::m_setStructure               DontEnum|ClassStructure
   WeakMap               JSGlobalObject::m_weakMapStructure           DontEnum|ClassStructure
   WeakSet               JSGlobalObject::m_weakSetStructure           DontEnum|ClassStructure
+  WeakRef               JSGlobalObject::m_weakObjectRefStructure     DontEnum|ClassStructure
+  FinalizationRegistry  JSGlobalObject::m_finalizationRegistryStructure DontEnum|ClassStructure
 @end
 */
 
@@ -2239,8 +2241,6 @@ capitalName ## Constructor* lowerName ## Constructor = featureFlag ? capitalName
     installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, m_regExpPrototype.get(), vm.propertyNames->searchSymbol), m_regExpPrimordialPropertiesWatchpointSet);
     installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, m_regExpPrototype.get(), vm.propertyNames->matchAllSymbol), m_regExpPrimordialPropertiesWatchpointSet);
     installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, m_regExpPrototype.get(), vm.propertyNames->splitSymbol), m_regExpPrimordialPropertiesWatchpointSet);
-    installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, jsSetPrototype(), vm.propertyNames->has), m_setPrimordialPropertiesWatchpointSet);
-    installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, jsSetPrototype(), vm.propertyNames->keys), m_setPrimordialPropertiesWatchpointSet);
 
     installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, promisePrototype(), vm.propertyNames->then), m_promiseThenWatchpointSet);
     installObjectAdaptiveStructureWatchpoint(setupAbsenceAdaptiveWatchpoint(this, m_objectPrototype.get(), vm.propertyNames->then, nullptr), m_promiseThenWatchpointSet);
@@ -2359,7 +2359,7 @@ bool JSGlobalObject::defineOwnProperty(JSObject* object, JSGlobalObject* globalO
     auto scope = DECLARE_THROW_SCOPE(vm);
     JSGlobalObject* thisObject = uncheckedDowncast<JSGlobalObject>(object);
 
-    SymbolTableEntry entry;
+    SymbolTableEntry::Fast entry;
     PropertyDescriptor currentDescriptor;
     if (symbolTableGet(thisObject, propertyName, entry, currentDescriptor)) {
         bool isExtensible = false; // ignored since current descriptor is present
@@ -2377,8 +2377,13 @@ bool JSGlobalObject::defineOwnProperty(JSObject* object, JSGlobalObject* globalO
             RETURN_IF_EXCEPTION(scope, false);
         }
         if (descriptor.writablePresent() && !descriptor.writable() && !entry.isReadOnly()) {
-            entry.setReadOnly();
-            thisObject->symbolTable()->set(propertyName.uid(), entry);
+            {
+                SymbolTable* symbolTable = thisObject->symbolTable();
+                ConcurrentJSLocker locker(symbolTable->m_lock);
+                auto iter = symbolTable->find(locker, propertyName.uid());
+                ASSERT(iter != symbolTable->end(locker));
+                iter->value.setReadOnly();
+            }
             thisObject->varReadOnlyWatchpointSet().fireAll(vm, "GlobalVar was redefined as ReadOnly");
         }
         return true;
@@ -3205,7 +3210,7 @@ void JSGlobalObject::addStaticGlobals(std::span<GlobalPropertyInfo> globals)
         // the static globals because configurable = false.
         ASSERT(global.attributes & PropertyAttribute::DontDelete);
         
-        WatchpointSet* watchpointSet = nullptr;
+        InlineWatchpointSet* watchpointSet = nullptr;
         WriteBarrierBase<Unknown>* variable = nullptr;
         {
             ConcurrentJSLocker locker(symbolTable()->m_lock);
@@ -3521,6 +3526,9 @@ void JSGlobalObject::installSetPrototypeWatchpoint(SetPrototype* setPrototype)
         installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, setPrototype, vm.propertyNames->iteratorSymbol), m_setIteratorProtocolWatchpointSet);
     ASSERT(m_setAddWatchpointSet.isStillValid());
     installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, setPrototype, vm.propertyNames->add), m_setAddWatchpointSet);
+    ASSERT(m_setPrimordialPropertiesWatchpointSet.isStillValid());
+    installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, setPrototype, vm.propertyNames->has), m_setPrimordialPropertiesWatchpointSet);
+    installObjectPropertyChangeAdaptiveWatchpoint(setupAdaptiveWatchpoint(this, setPrototype, vm.propertyNames->keys), m_setPrimordialPropertiesWatchpointSet);
 }
 
 void JSGlobalObject::installObjectAdaptiveStructureWatchpoint(const ObjectPropertyCondition& key, InlineWatchpointSet& watchpointSet)

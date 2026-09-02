@@ -10,17 +10,15 @@
 #ifndef LIBANGLE_RENDERER_RENDERER_UTILS_H_
 #define LIBANGLE_RENDERER_RENDERER_UTILS_H_
 
-#ifdef UNSAFE_BUFFERS_BUILD
-#    pragma allow_unsafe_buffers
-#endif
-
 #include <cstdint>
+#include "common/unsafe_buffers.h"
 
 #include <limits>
 #include <map>
 
 #include "GLSLANG/ShaderLang.h"
 #include "common/angleutils.h"
+#include "common/hash_containers.h"
 #include "common/utilities.h"
 #include "libANGLE/ImageIndex.h"
 #include "libANGLE/angletypes.h"
@@ -343,6 +341,16 @@ void GetUniform(const gl::ProgramExecutable *executable,
                 GLenum entryPointType,
                 const DefaultUniformBlockMap *defaultUniformBlocks);
 
+// Remove `[*]` from uniform names
+std::string RemoveArraySubscripts(const std::string &uniformName);
+
+// Maps sampler-in-struct uniform names to extracted sampler names, matching the transformation done
+// by the translator (RewriteStructSamplers).  Indices must have already been stripped from the
+// uniformName.
+std::string GetExtractedStructSamplerName(
+    const std::string uniformNameWithoutIndices,
+    angle::HashMap<std::string, size_t> *extractedSamplerIndices);
+
 const angle::Format &GetFormatFromFormatType(GLenum format, GLenum type);
 
 angle::Result ComputeStartVertex(ContextImpl *contextImpl,
@@ -376,7 +384,7 @@ uint32_t LineLoopRestartIndexCountHelper(GLsizei indexCount, const uint8_t *srcP
     GLsizei loopStartIndex = 0;
     for (GLsizei curIndex = 0; curIndex < indexCount; curIndex++)
     {
-        In vertex = inIndices[curIndex];
+        In vertex = ANGLE_UNSAFE_TODO(inIndices[curIndex]);
         if (vertex != restartIndex)
         {
             numIndices++;
@@ -432,10 +440,10 @@ size_t CopyLineLoopIndicesWithRestart(GLsizei indexCount, const uint8_t *srcPtr,
     GLsizei loopStartIndex        = 0;
     for (GLsizei curIndex = 0; curIndex < indexCount; curIndex++)
     {
-        In vertex = inIndices[curIndex];
+        In vertex = ANGLE_UNSAFE_TODO(inIndices[curIndex]);
         if (vertex != restartIndex)
         {
-            *(outIndices++) = static_cast<Out>(vertex);
+            *(ANGLE_UNSAFE_TODO(outIndices++)) = static_cast<Out>(vertex);
         }
         else
         {
@@ -444,10 +452,11 @@ size_t CopyLineLoopIndicesWithRestart(GLsizei indexCount, const uint8_t *srcPtr,
                 if (curIndex > (loopStartIndex + 1))
                 {
                     // Emit an extra vertex only if the loop has more than one vertex.
-                    *(outIndices++) = inIndices[loopStartIndex];
+                    *(ANGLE_UNSAFE_TODO(outIndices++)) =
+                        ANGLE_UNSAFE_TODO(inIndices[loopStartIndex]);
                 }
                 // Then restart the strip.
-                *(outIndices++) = outRestartIndex;
+                *(ANGLE_UNSAFE_TODO(outIndices++)) = outRestartIndex;
             }
             loopStartIndex = curIndex + 1;
         }
@@ -455,7 +464,7 @@ size_t CopyLineLoopIndicesWithRestart(GLsizei indexCount, const uint8_t *srcPtr,
     if (indexCount > (loopStartIndex + 1))
     {
         // Close the last loop if it has more than one vertex.
-        *(outIndices++) = inIndices[loopStartIndex];
+        ANGLE_UNSAFE_TODO(*(outIndices++) = inIndices[loopStartIndex]);
     }
     return static_cast<size_t>(outIndices - reinterpret_cast<Out *>(outPtr));
 }

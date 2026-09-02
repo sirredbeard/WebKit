@@ -93,6 +93,7 @@ class WebMouseEvent;
 class WebWheelEvent;
 enum class SelectionEndpoint : bool;
 enum class SelectionWasFlipped : bool;
+enum class PDFAccessibilityDisplayModeState : uint8_t;
 enum class PDFPluginDisplayMode : uint8_t;
 struct DocumentEditingContextRequest;
 struct DocumentEditingContext;
@@ -274,15 +275,19 @@ public:
     virtual void didAttachScrollingNode() { }
     virtual void didChangeSettings() { }
 
+    virtual PDFAccessibilityDisplayModeState accessibilityDisplayModeState() const;
+
     // HUD Actions.
 #if ENABLE(PDF_HUD)
     virtual void zoomIn() = 0;
     virtual void zoomOut() = 0;
+
+    virtual void toggleAccessibilityDisplayMode() { }
+
     void save(CompletionHandler<void(const String&, const URL&, std::span<const uint8_t>)>&&);
     void updateHUDLocation();
-#endif
-
     void openWithPreview(CompletionHandler<void(const String&, std::optional<FrameInfoData>&&, std::span<const uint8_t>)>&&);
+#endif
 
     void notifyCursorChanged(WebCore::PlatformCursorType);
 
@@ -491,7 +496,7 @@ protected:
 
     std::optional<WebCore::PageIdentifier> NODELETE pageIdentifier() const;
 
-    WebCore::Color pluginBackgroundColor() const;
+    virtual WebCore::Color pluginBackgroundColor() const;
     void updateFullFramePluginBackgroundColor();
 
     SingleThreadWeakPtr<PluginView> m_view;

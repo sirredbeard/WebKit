@@ -45,10 +45,12 @@
 #include <WebCore/ShareableBitmap.h>
 #include <wtf/CheckedArithmetic.h>
 #include <wtf/CompletionHandler.h>
+#include <wtf/CrossThreadCopier.h>
 #include <wtf/FileHandle.h>
 #include <wtf/FileSystem.h>
 #include <wtf/RetainPtr.h>
 #include <wtf/ScopedLambda.h>
+#include <wtf/RunLoop.h>
 #include <wtf/cf/VectorCF.h>
 #include <wtf/text/Base64.h>
 #include <wtf/text/CString.h>
@@ -144,6 +146,21 @@ Vector<String> transcodeImages(const Vector<String>& paths, const String& destin
     });
 }
 
+void transcodeImagesInBackgroundQueue(Vector<String>&& paths, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&& completion)
+{
+    ASSERT(isMainThread());
+    sharedImageTranscodingQueueSingleton().dispatch([paths = crossThreadCopy(WTF::move(paths)), destinationUTI = WTF::move(destinationUTI).isolatedCopy(), destinationExtension = WTF::move(destinationExtension).isolatedCopy(), completion = WTF::move(completion)]() mutable {
+        ASSERT(!isMainThread());
+
+        auto replacementPaths = transcodeImages(paths, destinationUTI, destinationExtension);
+        ASSERT(paths.size() == replacementPaths.size());
+
+        RunLoop::mainSingleton().dispatch([replacementPaths = crossThreadCopy(WTF::move(replacementPaths)), completion = WTF::move(completion)]() mutable {
+            completion(WTF::move(replacementPaths));
+        });
+    });
+}
+
 String descriptionString(ImageDecodingError error)
 {
     switch (error) {
@@ -158,7 +175,7 @@ String descriptionString(ImageDecodingError error)
     return "Unkown error"_s;
 }
 
-Expected<std::pair<String, Vector<IntSize>>, ImageDecodingError> utiAndAvailableSizesFromImageData(std::span<const uint8_t> data)
+std::expected<std::pair<String, Vector<IntSize>>, ImageDecodingError> utiAndAvailableSizesFromImageData(std::span<const uint8_t> data)
 {
     Ref buffer = SharedBuffer::create(data);
     Ref imageDecoder = ImageDecoderCG::create(buffer.get(), AlphaOption::Premultiplied, GammaAndColorProfileOption::Applied);
@@ -183,7 +200,7 @@ Expected<std::pair<String, Vector<IntSize>>, ImageDecodingError> utiAndAvailable
     return std::make_pair(WTF::move(uti), WTF::move(sizes));
 }
 
-Expected<Vector<std::pair<String, float>>, ImageDecodingError> imageMetadataFromImageData(std::span<const uint8_t> data)
+std::expected<Vector<std::pair<String, float>>, ImageDecodingError> imageMetadataFromImageData(std::span<const uint8_t> data)
 {
     Ref buffer = SharedBuffer::create(data);
     Ref bitmapImage = BitmapImage::create();
@@ -278,7 +295,7 @@ static RefPtr<NativeImage> createNativeImageFromSVGImage(SVGImage& image, const 
     if (!buffer)
         return nullptr;
 
-    Ref svgImageContainer = SVGImageForContainer::create(&image, size, 1, { });
+    Ref svgImageContainer = SVGImageForContainer::create(&image, { .containerSize = size });
     buffer->context().drawImage(svgImageContainer.get(), FloatPoint::zero());
 
     return ImageBuffer::sinkIntoNativeImage(WTF::move(buffer));
@@ -455,7 +472,7 @@ static bool encode(CGImageRef image, const String& mimeType, std::optional<doubl
 
     CGDataConsumerCallbacks callbacks {
         [](void* context, const void* buffer, size_t count) -> size_t {
-            auto functor = *static_cast<const ScopedLambda<PutBytesCallback>*>(context);
+            auto& functor = *static_cast<const ScopedLambda<PutBytesCallback>*>(context);
             return functor(unsafeMakeSpan(static_cast<const uint8_t*>(buffer), count));
         },
         nullptr
@@ -524,10 +541,10 @@ template<typename Source> static Vector<uint8_t> encodeToVector(Source&& source,
 {
     Vector<uint8_t> result;
 
-    bool success = encode(std::forward<Source>(source), mimeType, quality, scopedLambdaRef<PutBytesCallback>([&] (std::span<const uint8_t> data) {
+    bool success = encode(std::forward<Source>(source), mimeType, quality, [&] (std::span<const uint8_t> data) {
         result.append(data);
         return data.size();
-    }));
+    });
     if (!success)
         return { };
 

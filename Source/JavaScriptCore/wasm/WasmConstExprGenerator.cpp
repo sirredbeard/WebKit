@@ -39,7 +39,6 @@
 #include "WasmParser.h"
 #include "WasmTypeDefinition.h"
 #include <wtf/Assertions.h>
-#include <wtf/Expected.h>
 #include <wtf/ForbidHeapAllocation.h>
 #include <wtf/text/MakeString.h>
 
@@ -49,7 +48,7 @@ class ConstExprGenerator {
     WTF_FORBID_HEAP_ALLOCATION;
 public:
     using ErrorType = String;
-    using PartialResult = Expected<void, ErrorType>;
+    using PartialResult = std::expected<void, ErrorType>;
     using UnexpectedResult = std::unexpected<ErrorType>;
     using CallType = CallLinkInfo::CallType;
 
@@ -302,7 +301,7 @@ public:
     [[nodiscard]] PartialResult addI64MulWideS(ExpressionType, ExpressionType, ExpressionType&, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addI64MulWideU(ExpressionType, ExpressionType, ExpressionType&, ExpressionType&) CONST_EXPR_STUB
 
-    [[nodiscard]] PartialResult NODELETE addRefI31(ExpressionType value, ExpressionType& result)
+    [[nodiscard]] PartialResult addRefI31(ExpressionType value, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate) {
             JSValue i31 = JSValue((((static_cast<int32_t>(value.getValue()) & 0x7fffffff) << 1) >> 1));
@@ -445,7 +444,7 @@ public:
         return { };
     }
 
-    [[nodiscard]] PartialResult NODELETE addExternConvertAny(ExpressionType reference, ExpressionType& result)
+    [[nodiscard]] PartialResult addExternConvertAny(ExpressionType reference, ExpressionType& result)
     {
         result = reference;
         return { };
@@ -453,13 +452,13 @@ public:
 
     [[nodiscard]] PartialResult addSelect(ExpressionType, ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
 
-    [[nodiscard]] PartialResult NODELETE addI32Add(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
+    [[nodiscard]] PartialResult addI32Add(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate)
             result = lhs + rhs;
         return { };
     }
-    [[nodiscard]] PartialResult NODELETE addI64Add(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
+    [[nodiscard]] PartialResult addI64Add(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate)
             result = lhs + rhs;
@@ -469,14 +468,14 @@ public:
     [[nodiscard]] PartialResult addF32Add(ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addF64Add(ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
 
-    [[nodiscard]] PartialResult NODELETE addI32Sub(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
+    [[nodiscard]] PartialResult addI32Sub(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate)
             result = lhs - rhs;
         return { };
     }
 
-    [[nodiscard]] PartialResult NODELETE addI64Sub(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
+    [[nodiscard]] PartialResult addI64Sub(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate)
             result = lhs - rhs;
@@ -486,14 +485,14 @@ public:
     [[nodiscard]] PartialResult addF32Sub(ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addF64Sub(ExpressionType, ExpressionType, ExpressionType&) CONST_EXPR_STUB
 
-    [[nodiscard]] PartialResult NODELETE addI32Mul(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
+    [[nodiscard]] PartialResult addI32Mul(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate)
             result = lhs * rhs;
         return { };
     }
 
-    [[nodiscard]] PartialResult NODELETE addI64Mul(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
+    [[nodiscard]] PartialResult addI64Mul(ExpressionType lhs, ExpressionType rhs, ExpressionType& result)
     {
         if (m_mode == Mode::Evaluate)
             result = lhs * rhs;
@@ -667,7 +666,7 @@ public:
     [[nodiscard]] PartialResult addFusedIfCompare(OpType, ExpressionType, BlockSignature, std::span<TypedExpression>, ControlType&) CONST_EXPR_STUB
     [[nodiscard]] PartialResult addFusedIfCompare(OpType, ExpressionType, ExpressionType, BlockSignature, std::span<TypedExpression>, ControlType&) CONST_EXPR_STUB
 
-    [[nodiscard]] PartialResult NODELETE endBlock(ControlEntry& entry, std::span<TypedExpression> enclosedStack)
+    [[nodiscard]] PartialResult endBlock(ControlEntry& entry, std::span<TypedExpression> enclosedStack)
     {
         ASSERT(enclosedStack.size() == 1);
         ASSERT_UNUSED(entry, ControlType::isTopLevel(entry.controlData));
@@ -744,7 +743,7 @@ private:
     MarkedArgumentBufferWithSize<16> m_keepAlive;
 };
 
-Expected<void, String> parseExtendedConstExpr(std::span<const uint8_t> source, size_t offsetInSource, size_t& offset, ModuleInformation& info, Type expectedType)
+std::expected<void, String> parseExtendedConstExpr(std::span<const uint8_t> source, size_t offsetInSource, size_t& offset, ModuleInformation& info, Type expectedType)
 {
     ConstExprGenerator generator(ConstExprGenerator::Mode::Validate, offsetInSource, info);
     FunctionParser<ConstExprGenerator> parser(generator, source, BlockSignature { expectedType }, info);
@@ -757,7 +756,7 @@ Expected<void, String> parseExtendedConstExpr(std::span<const uint8_t> source, s
     return { };
 }
 
-Expected<uint64_t, String> evaluateExtendedConstExpr(const ModuleInformation::ConstantExpressionAndSourceOffset& constantExpressionAndSourceOffset, JSWebAssemblyInstance* instance, const ModuleInformation& info, Type expectedType)
+std::expected<uint64_t, String> evaluateExtendedConstExpr(const ModuleInformation::ConstantExpressionAndSourceOffset& constantExpressionAndSourceOffset, JSWebAssemblyInstance* instance, const ModuleInformation& info, Type expectedType)
 {
     auto constantExpression = constantExpressionAndSourceOffset.first;
     size_t offsetInSource = constantExpressionAndSourceOffset.second;

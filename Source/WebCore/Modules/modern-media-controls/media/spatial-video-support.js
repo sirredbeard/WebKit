@@ -41,7 +41,7 @@ class SpatialVideoSupport extends MediaControllerSupport
 
     get mediaEvents()
     {
-        return ["loadedmetadata", "resize"];
+        return ["loadedmetadata", "resize", "webkitprojectionchanged"];
     }
 
     get tracksToMonitor()
@@ -72,7 +72,7 @@ class SpatialVideoSupport extends MediaControllerSupport
     _maybeEnable()
     {
         const media = this.mediaController.media;
-        if (this._active || !(media instanceof HTMLVideoElement))
+        if (!(media instanceof HTMLVideoElement))
             return;
 
         const host = this.mediaController.host;
@@ -80,8 +80,21 @@ class SpatialVideoSupport extends MediaControllerSupport
             return;
 
         const resolved = this._resolveProjection(media, host);
-        if (!resolved)
+        if (!resolved) {
+            if (this._active)
+                this._teardown();
             return;
+        }
+
+        if (this._active) {
+            if (resolved.projection === this._projection && resolved.fovDegrees === this._fovDegrees)
+                return;
+            this._projection = resolved.projection;
+            this._fovDegrees = resolved.fovDegrees;
+            this._buildMesh(this._projection);
+            return;
+        }
+
         this._projection = resolved.projection;
         this._fovDegrees = resolved.fovDegrees;
 
@@ -93,7 +106,7 @@ class SpatialVideoSupport extends MediaControllerSupport
 
     _resolveProjection(media, host)
     {
-        const declared = ProjectionAttributeValues[media.getAttribute("x-webkit-spatial")?.trim().toLowerCase()];
+        const declared = ProjectionAttributeValues[media.getAttribute("x-webkit-projection")?.trim().toLowerCase()];
         if (declared)
             return { projection: declared, fovDegrees: null };
 

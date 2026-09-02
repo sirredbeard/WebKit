@@ -473,7 +473,7 @@ id<DOMEventTarget> kit(WebCore::EventTarget* target)
     auto* style = core(self)->renderStyle();
     if (!style)
         return 0.0f;
-    return style->fontDescription().computedSize();
+    return style->fontDescription().usedSize();
 }
 
 - (DOMNode *)nextFocusNode
@@ -662,7 +662,7 @@ id<DOMEventTarget> kit(WebCore::EventTarget* target)
     auto* renderer = core(self)->renderer();
     if (!renderer)
         return nil;
-    return WebCore::Style::fontCascade(renderer->style()).primaryFont().ctFont();
+    return renderer->style().primaryFont().ctFont();
 }
 
 #if PLATFORM(MAC)

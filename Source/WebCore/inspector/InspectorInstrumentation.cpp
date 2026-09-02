@@ -673,6 +673,11 @@ void InspectorInstrumentation::didPaintImpl(InstrumentingAgents& instrumentingAg
 
     if (CheckedPtr pageAgent = instrumentingAgents.enabledPageAgent())
         pageAgent->didPaint(renderer, rect);
+
+    // Under Site Isolation a cross-origin subframe process has no enabled InspectorPageAgent; its
+    // per-frame PageAgentProxy draws paint rects instead.
+    if (CheckedPtr pageProxy = instrumentingAgents.enabledPageProxy())
+        pageProxy->didPaint(renderer, rect);
 }
 
 void InspectorInstrumentation::willRecalculateStyleImpl(InstrumentingAgents& instrumentingAgents)
@@ -880,8 +885,6 @@ void InspectorInstrumentation::didCommitLoadImpl(InstrumentingAgents& instrument
         if (CheckedPtr networkAgent = instrumentingAgents.enabledNetworkAgent())
             networkAgent->mainFrameNavigated(*loader);
 
-        // The Web Inspector frontend relies on `networkAgent->mainFrameNavigated` being called first to establish the
-        // type of navigation that has occured.
         if (auto* consoleAgent = instrumentingAgents.webConsoleAgent())
             consoleAgent->mainFrameNavigated();
 
@@ -904,13 +907,16 @@ void InspectorInstrumentation::didCommitLoadImpl(InstrumentingAgents& instrument
             enabledPageHeapAgent->mainFrameNavigated();
     }
 
-    if (CheckedPtr pageAgent = instrumentingAgents.enabledPageAgent())
-        pageAgent->frameNavigated(frame);
-
-    // Under Site Isolation the cross-process proxy (PageAgentProxy) forwards this to the
-    // UIProcess ProxyingPageAgent, so frames hosted in non-main processes are reported too.
+    // Only one provider may report a commit: a second report makes the frontend re-initialize the
+    // frame, discarding the child frames and resources it learned about after the first. The proxy
+    // supersedes the in-process agent because it also covers frames hosted in other processes.
+    //
+    // Both getters resolve here because didCommitLoad passes the frame's InstrumentingAgents, where
+    // the proxy is registered, and its getters fall back to the page's instance, where the agent is.
     if (CheckedPtr pageProxy = instrumentingAgents.enabledPageProxy())
         pageProxy->frameNavigated(frame);
+    else if (CheckedPtr pageAgent = instrumentingAgents.enabledPageAgent())
+        pageAgent->frameNavigated(frame);
 
     if (auto* pageRuntimeAgent = instrumentingAgents.enabledPageRuntimeAgent())
         pageRuntimeAgent->frameNavigated(frame);
@@ -1369,6 +1375,12 @@ void InspectorInstrumentation::didChangeGPUDeviceClientNodesImpl(InstrumentingAg
 {
     if (CheckedPtr canvasAgent = instrumentingAgents.enabledCanvasAgent())
         canvasAgent->didChangeGPUDeviceClientNodes(device);
+}
+
+void InspectorInstrumentation::didChangeWebGPUMemoryImpl(InstrumentingAgents& instrumentingAgents, GPUDevice& device)
+{
+    if (CheckedPtr canvasAgent = instrumentingAgents.enabledCanvasAgent())
+        canvasAgent->didChangeWebGPUMemory(device);
 }
 
 void InspectorInstrumentation::didCreateWebGPUComputePipelineImpl(InstrumentingAgents& instrumentingAgents, GPUDevice& device, GPUComputePipeline& pipeline)

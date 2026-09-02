@@ -57,7 +57,6 @@
 #include <WebCore/Site.h>
 #include <WebCore/UserGestureTokenIdentifier.h>
 #include <pal/SessionID.h>
-#include <wtf/Expected.h>
 #include <wtf/Forward.h>
 #include <wtf/HashCountedSet.h>
 #include <wtf/HashMap.h>
@@ -235,7 +234,7 @@ public:
     void waitForSharedPreferencesForWebProcessToSync(uint64_t sharedPreferencesVersion, CompletionHandler<void(bool success)>&&);
 
     enum class SiteState : uint8_t { NotYetSpecified, MultipleSites, SharedProcess };
-    const Expected<WebCore::Site, SiteState>& site() const LIFETIME_BOUND { return m_site; }
+    const std::expected<WebCore::Site, SiteState>& site() const LIFETIME_BOUND { return m_site; }
 
     bool isSharedProcess() const { return !m_site && m_site.error() == SiteState::SharedProcess; }
     const std::optional<WebCore::Site>& sharedProcessMainFrameSite() const LIFETIME_BOUND { return m_sharedProcessMainFrameSite; }
@@ -258,8 +257,13 @@ public:
     
     PAL::SessionID NODELETE sessionID() const;
 
+    static unsigned runningProcessCount();
+    static bool isNearingProcessCountLimit();
     static bool hasReachedProcessCountLimit();
     static void NODELETE setProcessCountLimit(unsigned);
+
+    static void reclaimProcessesIfNeeded();
+    static void scheduleReclaimProcessesIfNeeded();
 
     static RefPtr<WebProcessProxy> processForIdentifier(WebCore::ProcessIdentifier);
     static Ref<WebProcessProxy> fromConnection(const IPC::Connection&);
@@ -292,6 +296,10 @@ public:
     unsigned provisionalPageCount() const;
     unsigned visiblePageCount() const { return m_visiblePageCounter.value(); }
 
+    // Unlike visiblePageCount(), this also accounts for pages this process only serves a subframe
+    // or a provisional load for.
+    bool hasVisiblePage() const;
+
     Vector<WeakPtr<RemotePageProxy>> remotePages() const;
     unsigned remotePageCount() const;
 
@@ -313,11 +321,12 @@ public:
 
     bool hasCommittedClientOrigin(const WebCore::ClientOrigin&) const;
     void didCommitLoadClientOrigin(WebCore::ClientOrigin&&);
+    void didBecomeRemoteWorkerHostForSite(const WebCore::Site&);
 
     void addVisitedLinkStoreUser(VisitedLinkStore&, WebPageProxyIdentifier);
     void removeVisitedLinkStoreUser(VisitedLinkStore&, WebPageProxyIdentifier);
 
-    void recordUserGestureAuthorizationToken(WebCore::FrameIdentifier, WebCore::PageIdentifier, WTF::UUID);
+    void recordUserGestureAuthorizationToken(WebCore::PageIdentifier, WTF::UUID);
     RefPtr<API::UserInitiatedAction> userInitiatedActivity(std::optional<WebCore::UserGestureTokenIdentifier>);
     RefPtr<API::UserInitiatedAction> userInitiatedActivity(WebCore::PageIdentifier, std::optional<WTF::UUID>, std::optional<WebCore::UserGestureTokenIdentifier>);
 
@@ -363,8 +372,8 @@ public:
     void setOptInCookiePartitioningEnabled(bool);
 #endif
 
-    void didPostMessage(WebPageProxyIdentifier, UserContentControllerIdentifier, FrameInfoData&&, ScriptMessageHandlerIdentifier, JavaScriptEvaluationResult&&, CompletionHandler<void(Expected<WebKit::JavaScriptEvaluationResult, String>&&)>&&);
-    void didPostLegacySynchronousMessage(WebPageProxyIdentifier, UserContentControllerIdentifier, FrameInfoData&&, ScriptMessageHandlerIdentifier, JavaScriptEvaluationResult&&, CompletionHandler<void(Expected<JavaScriptEvaluationResult, String>&&)>&&);
+    void didPostMessage(WebPageProxyIdentifier, UserContentControllerIdentifier, FrameInfoData&&, ScriptMessageHandlerIdentifier, JavaScriptEvaluationResult&&, CompletionHandler<void(std::expected<WebKit::JavaScriptEvaluationResult, String>&&)>&&);
+    void didPostLegacySynchronousMessage(WebPageProxyIdentifier, UserContentControllerIdentifier, FrameInfoData&&, ScriptMessageHandlerIdentifier, JavaScriptEvaluationResult&&, CompletionHandler<void(std::expected<JavaScriptEvaluationResult, String>&&)>&&);
 
     void enableSuddenTermination();
     void disableSuddenTermination();
@@ -540,8 +549,6 @@ public:
 #if PLATFORM(COCOA) && ENABLE(REMOTE_INSPECTOR)
     static bool shouldEnableRemoteInspector();
 #endif
-
-    void markProcessAsRecentlyUsed();
 
 #if PLATFORM(COCOA) || PLATFORM(GTK) || PLATFORM(WPE)
     void platformSuspendProcess();
@@ -731,6 +738,9 @@ private:
 
     void processDidTerminateOrFailedToLaunch(ProcessTerminationReason);
 
+    void didStartRunningProcess();
+    void didStopRunningProcess();
+
     // IPC::Connection::Client
     void didReceiveMessage(IPC::Connection&, IPC::Decoder&) override;
     void didReceiveSyncMessage(IPC::Connection&, IPC::Decoder&, UniqueRef<IPC::Encoder>&) override;
@@ -838,6 +848,7 @@ private:
     uint64_t m_frameProcessCount { 0 };
 
     HashSet<WebCore::ClientOrigin> m_committedClientOrigins; // Only grows because WebProcess can navigate back to an old origin in a history item.
+    HashSet<WebCore::Site> m_remoteWorkerSites; // Only grows so that messages sent by a remote worker that is going away remain valid.
 
     WeakHashMap<VisitedLinkStore, HashSet<WebPageProxyIdentifier>> m_visitedLinkStoresWithUsers;
 
@@ -855,13 +866,15 @@ private:
     bool m_hasSentMessageToUnblockAccessibilityServer { false };
 #endif
 
-    Expected<WebCore::Site, SiteState> m_site { std::unexpected<SiteState> { SiteState::NotYetSpecified } };
+    std::expected<WebCore::Site, SiteState> m_site { std::unexpected<SiteState> { SiteState::NotYetSpecified } };
     HashSet<WebCore::Site> m_committedSites;
     std::optional<WebCore::Site> m_sharedProcessMainFrameSite;
     HashSet<WebCore::RegistrableDomain> m_sharedProcessDomains;
     std::pair<LoadedWebArchive, HashSet<WebCore::RegistrableDomain>> m_allowedFirstPartiesForCookies { LoadedWebArchive::No, { } };
     bool m_isInProcessCache { false };
+    bool m_isEligibleForWebProcessCache { true };
     bool m_isShuttingDown { false };
+    bool m_isRunningProcess { false };
 
     IsolatedProcessType m_isolatedProcessType { IsolatedProcessType::Unspecified };
     std::optional<WebCore::Site> m_mainFrameSite;
@@ -973,8 +986,6 @@ private:
 #if ENABLE(WEBASSEMBLY_DEBUGGER) && ENABLE(REMOTE_INSPECTOR)
     RefPtr<WasmDebuggerDebuggable> m_wasmDebuggerDebuggable;
 #endif
-
-    bool m_isEligibleForWebProcessCache { true };
 
     HashMap<String, SandboxExtension::Handle> m_fileSandboxExtensions;
 

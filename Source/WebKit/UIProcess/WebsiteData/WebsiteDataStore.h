@@ -76,6 +76,14 @@
 #include <WebCore/SoupNetworkProxySettings.h>
 #endif
 
+#if defined(__swift__) && OS(WINDOWS)
+// The Swift C++ importer eagerly instantiates class-template members
+// (including Vector<T>::span()), and MSVC's STL rejects std::span<T> when T
+// is incomplete.
+#include "ITPThirdPartyData.h"
+#include "WebsiteDataRecord.h"
+#endif
+
 namespace API {
 class Data;
 class DownloadClient;
@@ -213,7 +221,7 @@ public:
     void setUserAgentStringQuirkForTesting(const String& domain, const String& userAgentString, CompletionHandler<void()>&&);
     void setPrivateTokenIPCForTesting(bool enabled);
 
-    void fetchDomainsWithUserInteraction(CompletionHandler<void(const HashSet<WebCore::RegistrableDomain>&)>&&);
+    void fetchDomainsWithUserInteraction(CompletionHandler<void(std::optional<HashMap<WebCore::RegistrableDomain, WallTime>>&&)>&&);
 
     void fetchData(OptionSet<WebsiteDataType>, OptionSet<WebsiteDataFetchOption>, Function<void(Vector<WebsiteDataRecord>)>&& completionHandler);
     void removeData(OptionSet<WebsiteDataType>, WallTime modifiedSince, Function<void()>&& completionHandler);
@@ -231,9 +239,10 @@ public:
     void clearUserInteraction(const URL&, CompletionHandler<void()>&&);
     void dumpResourceLoadStatistics(CompletionHandler<void(const String&)>&&);
     void logTestingEvent(const String&);
-    void didHaveUserInteractionForSiteIsolation(const URL&);
-    IsolatedSiteStore& isolatedSiteStore() { return m_isolatedSiteStore; }
-    std::optional<OptionSet<IsolatedSiteStore::Signal>> isolatedSiteSignalsForTesting(const URL&) const;
+    IsolatedSiteStore& isolatedSiteStore();
+    std::optional<OptionSet<IsolatedSiteStore::Signal>> isolatedSiteSignalsForTesting(const URL&);
+    void setHighValueFraudTargetDomainsForTesting(Vector<String>&&);
+    void setMaximumIsolatedSiteCountForTesting(size_t);
     void logUserInteraction(const URL&, CompletionHandler<void()>&&);
     void getAllStorageAccessEntries(WebPageProxyIdentifier, CompletionHandler<void(Vector<String>&& domains)>&&);
     void hasHadUserInteraction(const URL&, CompletionHandler<void(bool)>&&);
@@ -392,6 +401,7 @@ public:
     static String defaultWebSQLDatabaseDirectory(const String& baseDataDirectory = nullString());
     static String defaultHSTSStorageDirectory(const String& baseCacheDirectory = nullString());
     static String defaultIndexedDBDatabaseDirectory(const String& baseDataDirectory = nullString());
+    static String defaultIsolatedSitesDirectory(const String& baseDataDirectory = nullString());
     static String defaultCacheStorageDirectory(const String& baseCacheDirectory = nullString());
     static String defaultGeneralStorageDirectory(const String& baseDataDirectory = nullString());
     static String defaultMediaCacheDirectory(const String& baseCacheDirectory = nullString());
@@ -542,6 +552,9 @@ private:
 #endif
     void initializeManagedDomains(ForceReinitialization = ForceReinitialization::No);
 
+    bool computeSiteIsolationHighValueFraudTargetDomainsEnabled() const;
+    void updateIsolatedSiteStoreSettings();
+
     void fetchDataAndApply(OptionSet<WebsiteDataType>, OptionSet<WebsiteDataFetchOption>, Ref<WorkQueue>&&, Function<void(Vector<WebsiteDataRecord>)>&& apply);
 
     void platformInitialize();
@@ -622,10 +635,7 @@ private:
     String m_resolvedCookieStorageDirectory;
 #endif
 
-    std::optional<HashSet<WebCore::RegistrableDomain>> m_domainsWithUserInteractions;
-    Vector<WebCore::RegistrableDomain> m_pendingDomainsWithUserInteractions;
-    Vector<CompletionHandler<void(const HashSet<WebCore::RegistrableDomain>&)>> m_domainsWithUserInteractionsCompletionHandler;
-    IsolatedSiteStore m_isolatedSiteStore;
+    const RefPtr<IsolatedSiteStore> m_isolatedSiteStore;
 
     bool m_trackingPreventionDebugMode { false };
     enum class TrackingPreventionEnabled : uint8_t { Default, No, Yes };
@@ -694,7 +704,7 @@ private:
 #if HAVE(NW_PROXY_CONFIG)
     std::optional<Vector<std::pair<Vector<uint8_t>, std::optional<WTF::UUID>>>> m_proxyConfigData;
 #endif
-    bool m_storageSiteValidationEnabled { false };
+    bool m_storageSiteValidationEnabled { true };
     HashSet<URL> m_persistedSiteURLs;
 
     RemoveDataTaskCounter m_removeDataTaskCounter;

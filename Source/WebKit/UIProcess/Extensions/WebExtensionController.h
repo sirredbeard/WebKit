@@ -112,7 +112,7 @@ public:
     enum class ForPrivateBrowsing { No, Yes };
 
     WebExtensionControllerConfiguration& configuration() const LIFETIME_BOUND { return m_configuration.get(); }
-    WebExtensionControllerParameters parameters(const API::PageConfiguration&) const;
+    WebExtensionControllerParameters parameters(const API::PageConfiguration&, WebProcessProxy& destinationProcess) const;
 
     bool operator==(const WebExtensionController& other) const { return (this == &other); }
 
@@ -125,14 +125,14 @@ public:
     void getDataRecord(OptionSet<WebExtensionDataType>, WebExtensionContext&, CompletionHandler<void(RefPtr<WebExtensionDataRecord>)>&&);
     void removeData(OptionSet<WebExtensionDataType>, const Vector<Ref<WebExtensionDataRecord>>&, CompletionHandler<void()>&&);
 
-    void calculateStorageSize(RefPtr<WebExtensionStorageSQLiteStore>, WebExtensionDataType, CompletionHandler<void(Expected<size_t, WebExtensionError>&&)>&&);
-    void removeStorage(RefPtr<WebExtensionStorageSQLiteStore>, WebExtensionDataType, CompletionHandler<void(Expected<void, WebExtensionError>&&)>&&);
+    void calculateStorageSize(WebExtensionStorageSQLiteStore&, WebExtensionDataType, CompletionHandler<void(std::expected<size_t, WebExtensionError>&&)>&&);
+    void removeStorage(WebExtensionStorageSQLiteStore&, WebExtensionDataType, CompletionHandler<void(std::expected<void, WebExtensionError>&&)>&&);
 
     bool hasLoadedContexts() const { return !m_extensionContexts.isEmpty(); }
     bool isFreshlyCreated() const { return m_freshlyCreated; }
 
-    Expected<bool, RefPtr<API::Error>> load(WebExtensionContext&);
-    Expected<bool, RefPtr<API::Error>> unload(WebExtensionContext&);
+    std::expected<bool, RefPtr<API::Error>> load(WebExtensionContext&);
+    std::expected<bool, RefPtr<API::Error>> unload(WebExtensionContext&);
 
     void unloadAll();
 
@@ -163,8 +163,8 @@ public:
 
     void cookiesDidChange(API::HTTPCookieStore&);
 
-    template<typename T, typename RawValue>
-    void sendToAllProcesses(const T& message, const ObjectIdentifierGenericBase<RawValue>& destinationID);
+    template<typename T>
+    void sendToAllProcesses(const T& message, const ObjectIdentifierGenericBase& destinationID);
 
     bool isFeatureEnabled(const String& featureName) const;
 
@@ -299,8 +299,8 @@ private:
     RefPtr<HTTPCookieStoreObserver> m_cookieStoreObserver;
 };
 
-template<typename T, typename RawValue>
-void WebExtensionController::sendToAllProcesses(const T& message, const ObjectIdentifierGenericBase<RawValue>& destinationID)
+template<typename T>
+void WebExtensionController::sendToAllProcesses(const T& message, const ObjectIdentifierGenericBase& destinationID)
 {
     for (Ref process : allProcesses()) {
         if (process->canSendMessage())

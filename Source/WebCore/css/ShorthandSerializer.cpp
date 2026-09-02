@@ -357,6 +357,7 @@ String ShorthandSerializer::serialize()
     case CSSPropertyScrollMarginInline:
     case CSSPropertyScrollPaddingBlock:
     case CSSPropertyScrollPaddingInline:
+    case CSSPropertySize:
         return serializePair();
     case CSSPropertyBlockStep:
     case CSSPropertyBorderBlockEnd:
@@ -575,11 +576,8 @@ public:
 
     CSSValueID valueIDIncludingCustomIdent(unsigned index) const
     {
-        if (RefPtr customIdentValue = dynamicDowncast<CSSCustomIdentValue>(m_values[index].get())) {
-            if (auto* resolved = std::get_if<AtomString>(&customIdentValue->customIdent().value))
-                return cssValueKeywordID(*resolved);
-            return CSSValueInvalid;
-        }
+        if (RefPtr customIdentValue = dynamicDowncast<CSSCustomIdentValue>(m_values[index].get()))
+            return cssValueKeywordID(customIdentValue->customIdent().value);
         return valueID(index).value_or(CSSValueInvalid);
     }
 

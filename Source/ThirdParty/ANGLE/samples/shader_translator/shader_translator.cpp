@@ -114,6 +114,9 @@ int main(int argc, char *argv[])
                 case 'u':
                     printActiveVariables = true;
                     break;
+                case 'g':
+                    compileOptions.outputDebugInfo = true;
+                    break;
                 case 'r':
                     compileOptions.useIR = true;
                     break;
@@ -180,18 +183,12 @@ int main(int argc, char *argv[])
                                 break;
                             case 'v':
                                 output = SH_SPIRV_VULKAN_OUTPUT;
+                                compileOptions.emitSPIRV14 = true;
                                 compileOptions.initializeUninitializedLocals = true;
                                 compileOptions.removeInactiveVariables       = true;
                                 break;
                             case 'h':
-                                if (argv[0][4] == '1' && argv[0][5] == '1')
-                                {
-                                    output = SH_HLSL_4_1_OUTPUT;
-                                }
-                                else
-                                {
-                                    output = SH_HLSL_3_0_OUTPUT;
-                                }
+                                output = SH_HLSL_4_1_OUTPUT;
                                 break;
                             case 'm':
                                 output = SH_MSL_METAL_OUTPUT;
@@ -339,7 +336,6 @@ int main(int argc, char *argv[])
             {
                 switch (output)
                 {
-                    case SH_HLSL_3_0_OUTPUT:
                     case SH_HLSL_4_1_OUTPUT:
                         compileOptions.selectViewInNvGLSLVertexShader = false;
                         break;
@@ -436,11 +432,12 @@ void usage()
 {
     // clang-format off
     printf(
-        "Usage: translate [-i -o -u -l -b=e -b=g -b=h9 -x=i -x=d] file1 file2 ...\n"
+        "Usage: translate [-i -o -u -l -b=e -b=g -b=h11 -x=i -x=d] file1 file2 ...\n"
         "Where: filename : filename ending in .frag*, .vert*, .comp*, .geom*, .tcs* or .tes*\n"
         "       -i       : print intermediate tree\n"
         "       -o       : print translated code\n"
         "       -u       : print active attribs, uniforms, varyings and program outputs\n"
+        "       -g       : include debug info in the output\n"
         "       -r       : use the IR instead of AST\n"
         "       -s=e2    : use GLES2 spec (this is by default)\n"
         "       -s=e3    : use GLES3 spec\n"
@@ -452,7 +449,6 @@ void usage()
         "       -b=g     : output GLSL code (version 150)\n"
         "       -b=g[NUM]: output GLSL code (NUM can be 150, 330, 400, 410, 420, 430, 440, 450)\n"
         "       -b=v     : output Vulkan SPIR-V code\n"
-        "       -b=h9    : output HLSL9 code\n"
         "       -b=h11   : output HLSL11 code\n"
         "       -b=m     : output MSL code\n"
         "       -x=i     : enable GL_OES_EGL_image_external\n"

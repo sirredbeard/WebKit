@@ -157,8 +157,8 @@ set(WebKit_BINDINGS_IN_FILES
     WebProcess/Extensions/Interfaces/WebExtensionAPIExtension
     WebProcess/Extensions/Interfaces/WebExtensionAPILocalization
     WebProcess/Extensions/Interfaces/WebExtensionAPIMenus
-    WebProcess/Extensions/Interfaces/WebExtensionAPINamespace
     WebProcess/Extensions/Interfaces/WebExtensionAPINotifications
+    WebProcess/Extensions/Interfaces/WebExtensionAPIOffscreen
     WebProcess/Extensions/Interfaces/WebExtensionAPIPermissions
     WebProcess/Extensions/Interfaces/WebExtensionAPIPort
     WebProcess/Extensions/Interfaces/WebExtensionAPIRuntime
@@ -170,7 +170,6 @@ set(WebKit_BINDINGS_IN_FILES
     WebProcess/Extensions/Interfaces/WebExtensionAPITabs
     WebProcess/Extensions/Interfaces/WebExtensionAPIWebNavigation
     WebProcess/Extensions/Interfaces/WebExtensionAPIWebNavigationEvent
-    WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace
     WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageRuntime
     WebProcess/Extensions/Interfaces/WebExtensionAPIWebRequest
     WebProcess/Extensions/Interfaces/WebExtensionAPIWebRequestEvent
@@ -180,7 +179,9 @@ set(WebKit_BINDINGS_IN_FILES
 
 set(WebKit_CPP_BINDINGS_IN_FILES
     WebProcess/Extensions/Interfaces/WebExtensionAPIAlarms
+    WebProcess/Extensions/Interfaces/WebExtensionAPINamespace
     WebProcess/Extensions/Interfaces/WebExtensionAPITest
+    WebProcess/Extensions/Interfaces/WebExtensionAPIWebPageNamespace
 )
 
 set(WebKit_MESSAGES_IN_FILES
@@ -287,7 +288,6 @@ set(WebKit_MESSAGES_IN_FILES
     Shared/AuxiliaryProcess
     Shared/IPCConnectionTester
     Shared/IPCStreamTester
-    Shared/IPCStreamTesterProxy
     Shared/IPCTester
     Shared/IPCTesterReceiver
 
@@ -516,6 +516,7 @@ set(WebKit_SERIALIZATION_IN_FILES
     Shared/NavigationActionData.serialization.in
     Shared/NetworkProcessConnectionParameters.serialization.in
     Shared/NodeHitTestResult.serialization.in
+    Shared/PDFAccessibilityDisplayModeState.serialization.in
     Shared/PDFDisplayMode.serialization.in
     Shared/Pasteboard.serialization.in
     Shared/PlatformPopupMenuData.serialization.in
@@ -622,6 +623,7 @@ set(WebKit_SERIALIZATION_IN_FILES
     Shared/Extensions/WebExtensionMenuItem.serialization.in
     Shared/Extensions/WebExtensionMessageSenderParameters.serialization.in
     Shared/Extensions/WebExtensionMessageTargetParameters.serialization.in
+    Shared/Extensions/WebExtensionOffscreenDocumentParameters.serialization.in
     Shared/Extensions/WebExtensionSidebarParameters.serialization.in
     Shared/Extensions/WebExtensionStorage.serialization.in
     Shared/Extensions/WebExtensionTab.serialization.in
@@ -873,7 +875,6 @@ endif ()
 
 WEBKIT_FRAMEWORK_DECLARE(WebKit)
 WEBKIT_INCLUDE_CONFIG_FILES_IF_EXISTS()
-WEBKIT_ADD_TARGET_THREAD_SAFETY_WARNINGS(WebKit)
 WEBKIT_ADD_TARGET_UNSAFE_BUFFER_WARNINGS(WebKit)
 
 # The full WebKit_Internal C++ module pulls in WebPageProxy.h and friends, which
@@ -946,6 +947,9 @@ if (NOT APPLE AND SWIFT_REQUIRED)
     list(APPEND WebKit_SWIFT_CLANG_FLAG_PAIRS "-Xcc -ivfsoverlay")
     list(APPEND WebKit_SWIFT_CLANG_FLAG_PAIRS "-Xcc ${_vfs_overlay}")
 
+    # Importer flags contributed by the Platform*.cmake file (included above).
+    list(APPEND WebKit_SWIFT_CLANG_FLAG_PAIRS ${WebKit_PLATFORM_SWIFT_CLANG_FLAG_PAIRS})
+
     foreach (_pair IN LISTS WebKit_SWIFT_CLANG_FLAG_PAIRS)
         target_compile_options(WebKit PRIVATE "$<$<COMPILE_LANGUAGE:Swift>:SHELL:${_pair}>")
     endforeach ()
@@ -955,7 +959,6 @@ if (SWIFT_REQUIRED)
     set(WebKit_SWIFT_INTEROP_SOURCES
         UIProcess/ProvisionalPageProxy.cpp
         UIProcess/RemotePageProxy.cpp
-        UIProcess/ViewGestureController.cpp
         UIProcess/WebBackForwardList.cpp
         UIProcess/WebPageProxy.cpp
         UIProcess/Automation/WebAutomationSession.cpp
@@ -963,19 +966,23 @@ if (SWIFT_REQUIRED)
         ${WebKit_DERIVED_SOURCES_DIR}/UIProcess/WebBackForwardListMessageReceiver.cpp
         ${WebKit_DERIVED_SOURCES_DIR}/Shared/IPCTesterReceiverMessageReceiver.cpp
     )
+    if (NOT WIN32)
+        list(APPEND WebKit_SWIFT_INTEROP_SOURCES UIProcess/ViewGestureController.cpp)
+    endif ()
     if (APPLE)
         list(APPEND WebKit_SWIFT_INTEROP_SOURCES
             UIProcess/API/ios/WKWebViewIOS.mm
             UIProcess/API/mac/WKWebViewMac.mm
             UIProcess/ios/ViewGestureControllerIOS.mm
             UIProcess/mac/ViewGestureControllerMac.mm
-            UIProcess/mac/WKAppKitGestureController.mm
             UIProcess/mac/WebViewImpl.mm
+
+            UIProcess/mac/AppKitGestures/WKAppKitGestureController.mm
         )
     endif ()
     foreach (_f IN LISTS WebKit_SWIFT_INTEROP_SOURCES)
         cmake_path(GET _f FILENAME _fn)
-        list(APPEND WebKit_UNIFIED_SOURCE_EXCLUDES "(^|/)${_fn}( |$)")
+        list(APPEND WebKit_UNIFIED_SOURCE_EXCLUDES "(^|[/\\\\])${_fn}( |$)")
     endforeach ()
 
     # FIXME(rdar://177840132): swiftc -emit-dependencies records imported
@@ -1162,6 +1169,7 @@ foreach (in_file ${WebCore_SERIALIZATION_IN_FILES})
     list(APPEND WebKit_SERIALIZATION_DEPENDENCIES "${WebCore_PRIVATE_HEADERS_DIR}/${in_file}")
 endforeach ()
 list(APPEND WebKit_SERIALIZATION_DEPENDENCIES "${WebKit_DERIVED_SOURCES_DIR}/SharedPreferencesForWebProcess.serialization.in")
+list(APPEND WebKit_SERIALIZATION_DEPENDENCIES "${WebKit_DERIVED_SOURCES_DIR}/SecurityFlags.serialization.in")
 
 list(APPEND WebKit_DERIVED_SOURCES
     ${WebKit_DERIVED_SOURCES_DIR}/GeneratedSerializers.h
@@ -1230,6 +1238,11 @@ add_custom_command(
     WORKING_DIRECTORY ${WebKit_DERIVED_SOURCES_DIR}
     VERBATIM
 )
+
+# allSerializedTypes() is a single 29000-line function that clang takes tens of minutes to optimize.
+set_source_files_properties(${WebKit_DERIVED_SOURCES_DIR}/SerializedTypeInfo.${WebKit_GENERATED_SERIALIZERS_SUFFIX} PROPERTIES
+    COMPILE_OPTIONS "-O0;-DRELEASE_WITHOUT_OPTIMIZATIONS=ON"
+    SKIP_PRECOMPILE_HEADERS ON)
 
 # These files are very large and exhaust virtual memory on 32-bit ARM.
 if (WTF_CPU_ARM AND NOT CMAKE_CROSSCOMPILING)
@@ -1391,6 +1404,33 @@ list(APPEND WebKit_SOURCES
     ${WebKit_DERIVED_SOURCES_DIR}/WebPreferencesStoreDefaultsMap.cpp
 )
 
+set(WebKit_SECURITY_FLAGS_TEMPLATES
+    ${WEBKIT_DIR}/Scripts/SecurityFlagsTemplates/SecurityFlags.h.erb
+    ${WEBKIT_DIR}/Scripts/SecurityFlagsTemplates/SecurityFlags.cpp.erb
+    ${WEBKIT_DIR}/Scripts/SecurityFlagsTemplates/SecurityFlags.serialization.in.erb
+)
+
+set(WebKit_SECURITY_FLAGS
+    ${WTF_SCRIPTS_DIR}/Preferences/SecurityFlags.yaml
+)
+
+set_source_files_properties(${WebKit_SECURITY_FLAGS} PROPERTIES GENERATED TRUE)
+
+add_custom_command(
+    OUTPUT ${WebKit_DERIVED_SOURCES_DIR}/SecurityFlags.h ${WebKit_DERIVED_SOURCES_DIR}/SecurityFlags.cpp ${WebKit_DERIVED_SOURCES_DIR}/SecurityFlags.serialization.in
+    DEPENDS ${WebKit_SECURITY_FLAGS_TEMPLATES} ${WebKit_SECURITY_FLAGS} WTF_CopyPreferences
+    COMMAND ${Ruby_EXECUTABLE} ${WTF_SCRIPTS_DIR}/GenerateSecurityFlags.rb --outputDir "${WebKit_DERIVED_SOURCES_DIR}" --template "$<JOIN:${WebKit_SECURITY_FLAGS_TEMPLATES},;--template;>" ${WebKit_SECURITY_FLAGS}
+    COMMAND_EXPAND_LISTS
+    VERBATIM)
+
+list(APPEND WebKit_HEADERS
+    ${WebKit_DERIVED_SOURCES_DIR}/SecurityFlags.h
+)
+
+list(APPEND WebKit_SOURCES
+    ${WebKit_DERIVED_SOURCES_DIR}/SecurityFlags.cpp
+)
+
 if (ENABLE_SWIFT_DEMO_URI_SCHEME)
     list(APPEND WebKit_SOURCES
         ${WEBKIT_DIR}/UIProcess/SwiftDemoLogo.swift
@@ -1423,6 +1463,8 @@ if (SWIFT_REQUIRED)
     list(APPEND WebKit_SOURCES
         ${WEBKIT_DIR}/Shared/Foundation+Extras.swift
         ${WEBKIT_DIR}/Shared/IPCTesterReceiver.swift
+        ${WEBKIT_DIR}/Shared/WTFCompletionHandler+Extras.swift
+        ${WEBKIT_DIR}/Shared/WTFExpected+Extras.swift
         ${WebKit_DERIVED_SOURCES_DIR}/IPCTesterReceiverMessageReceiver.swift
     )
 endif ()

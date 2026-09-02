@@ -128,6 +128,7 @@
 #include <wtf/OSObjectPtr.h>
 #include <wtf/cocoa/CrashReporter.h>
 #include <wtf/cocoa/RuntimeApplicationChecksCocoa.h>
+#include <wtf/darwin/DispatchExtras.h>
 #endif
 
 #if PLATFORM(GTK)
@@ -222,8 +223,6 @@ static unsigned asyncTestExpectedPasses { 0 };
 
 }
 
-template<typename Vector>
-static bool fillBufferWithContentsOfFile(const String& fileName, Vector& buffer);
 static RefPtr<Uint8Array> fillBufferWithContentsOfFile(const String& fileName);
 
 class CommandLine;
@@ -237,7 +236,11 @@ static void checkException(GlobalObject*, bool isLastFile, bool hasException, JS
 class Message : public ThreadSafeRefCounted<Message> {
 public:
 #if ENABLE(WEBASSEMBLY)
-    using Content = Variant<ArrayBufferContents, RefPtr<SharedArrayBufferContents>>;
+    struct WasmMemory {
+        RefPtr<SharedArrayBufferContents> contents;
+        Wasm::AddressType addressType;
+    };
+    using Content = Variant<ArrayBufferContents, WasmMemory>;
 #else
     using Content = Variant<ArrayBufferContents>;
 #endif
@@ -954,7 +957,7 @@ private:
 
     static JSPromise* moduleLoaderImportModule(JSGlobalObject*, JSModuleLoader*, JSString*, RefPtr<ScriptFetchParameters>, const SourceOrigin&, bool deferred);
     static Identifier moduleLoaderResolve(JSGlobalObject*, JSModuleLoader*, JSValue, JSValue, RefPtr<ScriptFetcher>, bool useImportMap);
-    static JSPromise* moduleLoaderFetch(JSGlobalObject*, JSModuleLoader*, JSValue, RefPtr<ScriptFetchParameters>, RefPtr<ScriptFetcher>);
+    static JSPromise* moduleLoaderFetch(JSGlobalObject*, JSModuleLoader*, JSValue, const String&, RefPtr<ScriptFetchParameters>, RefPtr<ScriptFetcher>);
     static JSObject* moduleLoaderCreateImportMetaProperties(JSGlobalObject*, JSModuleLoader*, JSValue, JSModuleRecord*, RefPtr<ScriptFetcher>);
 
 #if ENABLE(FUZZILLI)
@@ -1473,7 +1476,7 @@ static bool fetchModuleFromLocalFileSystem(const URL& fileURL, Vector& buffer)
     return result;
 }
 
-JSPromise* GlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JSModuleLoader*, JSValue key, RefPtr<ScriptFetchParameters> attributes, RefPtr<ScriptFetcher>)
+JSPromise* GlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JSModuleLoader*, JSValue key, const String&, RefPtr<ScriptFetchParameters> attributes, RefPtr<ScriptFetcher>)
 {
     VM& vm = globalObject->vm();
     JSPromise* promise = JSPromise::create(vm, globalObject->promiseStructure());
@@ -1497,6 +1500,27 @@ JSPromise* GlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JSModul
     if (!fetchModuleFromLocalFileSystem(moduleURL, buffer))
         RELEASE_AND_RETURN(scope, rejectWithError(createError(globalObject, makeString("Could not open file '"_s, moduleKey, "'."_s))));
 
+    if (attributes) {
+        switch (attributes->type()) {
+        case ScriptFetchParameters::Type::JSON: {
+            auto source = SourceCode(StringSourceProvider::create(stringFromUTF(buffer), SourceOrigin { moduleURL }, WTF::move(moduleKey), SourceTaintedOrigin::Untainted, TextPosition(), SourceProviderSourceType::JSON));
+            auto sourceCode = JSSourceCode::create(vm, WTF::move(source));
+            scope.release();
+            promise->resolve(globalObject, vm, sourceCode);
+            return promise;
+        }
+        case ScriptFetchParameters::Type::Text: {
+            auto source = SourceCode(StringSourceProvider::create(stringFromUTF(buffer), SourceOrigin { moduleURL }, WTF::move(moduleKey), SourceTaintedOrigin::Untainted, TextPosition(), SourceProviderSourceType::Text));
+            auto sourceCode = JSSourceCode::create(vm, WTF::move(source));
+            scope.release();
+            promise->resolve(globalObject, vm, sourceCode);
+            return promise;
+        }
+        default:
+            break;
+        }
+    }
+
 #if ENABLE(WEBASSEMBLY)
     // FileSystem does not have mime-type header. The JSC shell recognizes WebAssembly's magic header.
     if ((buffer.size() >= 4 && buffer[0] == '\0' && buffer[1] == 'a' && buffer[2] == 's' && buffer[3] == 'm') || (attributes && attributes->type() == ScriptFetchParameters::Type::WebAssembly)) {
@@ -1507,14 +1531,6 @@ JSPromise* GlobalObject::moduleLoaderFetch(JSGlobalObject* globalObject, JSModul
         return promise;
     }
 #endif
-
-    if (attributes && attributes->type() == ScriptFetchParameters::Type::JSON) {
-        auto source = SourceCode(StringSourceProvider::create(stringFromUTF(buffer), SourceOrigin { moduleURL }, WTF::move(moduleKey), SourceTaintedOrigin::Untainted, TextPosition(), SourceProviderSourceType::JSON));
-        auto sourceCode = JSSourceCode::create(vm, WTF::move(source));
-        scope.release();
-        promise->resolve(globalObject, vm, sourceCode);
-        return promise;
-    }
 
     auto sourceCode = JSSourceCode::create(vm, jscSource(stringFromUTF(buffer), SourceOrigin { moduleURL }, WTF::move(moduleKey), TextPosition(), SourceProviderSourceType::Module));
     scope.release();
@@ -1555,7 +1571,7 @@ void GlobalObject::promiseRejectionTracker(JSGlobalObject*, JSPromise*, JSPromis
 
 #endif // ENABLE(FUZZILLI)
 
-static CString toCString(JSGlobalObject* globalObject, ThrowScope& scope, Expected<CString, UTF8ConversionError> expectedString)
+static CString toCString(JSGlobalObject* globalObject, ThrowScope& scope, std::expected<CString, UTF8ConversionError> expectedString)
 {
     if (expectedString)
         return expectedString.value();
@@ -2631,14 +2647,15 @@ JSC_DEFINE_HOST_FUNCTION(functionDollarAgentReceiveBroadcast, (JSGlobalObject* g
             return JSArrayBuffer::create(vm, globalObject->arrayBufferStructure(sharingMode), WTF::move(nativeBuffer));
         }
 #if ENABLE(WEBASSEMBLY)
-        if (std::holds_alternative<RefPtr<SharedArrayBufferContents>>(content)) {
+        if (std::holds_alternative<Message::WasmMemory>(content)) {
             JSWebAssemblyMemory* jsMemory = JSC::JSWebAssemblyMemory::create(vm, globalObject->webAssemblyMemoryStructure());
             auto handler = [&vm, jsMemory](Wasm::Memory::GrowSuccess, PageCount oldPageCount, PageCount newPageCount) { jsMemory->growSuccessCallback(vm, oldPageCount, newPageCount); };
+            auto wasmMemory = std::get<Message::WasmMemory>(WTF::move(content));
             RefPtr<Wasm::Memory> memory;
-            if (auto shared = std::get<RefPtr<SharedArrayBufferContents>>(WTF::move(content)))
-                memory = Wasm::Memory::create(shared.releaseNonNull(), jsMemory->memory().addressType(), WTF::move(handler));
+            if (auto shared = WTF::move(wasmMemory.contents))
+                memory = Wasm::Memory::create(shared.releaseNonNull(), wasmMemory.addressType, WTF::move(handler));
             else
-                memory = Wasm::Memory::createZeroSized(MemorySharingMode::Shared, jsMemory->memory().addressType(), WTF::move(handler));
+                memory = Wasm::Memory::createZeroSized(MemorySharingMode::Shared, wasmMemory.addressType, WTF::move(handler));
             jsMemory->adopt(memory.releaseNonNull());
             return jsMemory;
         }
@@ -2646,12 +2663,11 @@ JSC_DEFINE_HOST_FUNCTION(functionDollarAgentReceiveBroadcast, (JSGlobalObject* g
         return jsUndefined();
     })();
 
-    MarkedArgumentBuffer args;
-    args.append(result);
-    args.append(jsNumber(message->index()));
-    if (args.hasOverflowed()) [[unlikely]]
-        return JSValue::encode(throwOutOfMemoryError(globalObject, scope));
-    RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, callback, callData, jsNull(), args)));
+    auto args = WTF::toArray<EncodedJSValue>({
+        JSValue::encode(result),
+        JSValue::encode(jsNumber(message->index())),
+    });
+    RELEASE_AND_RETURN(scope, JSValue::encode(call(globalObject, callback, callData, jsNull(), ArgList { args.data(), args.size() })));
 }
 
 JSC_DEFINE_HOST_FUNCTION(functionDollarAgentReport, (JSGlobalObject* globalObject, CallFrame* callFrame))
@@ -2706,8 +2722,8 @@ JSC_DEFINE_HOST_FUNCTION(functionDollarAgentBroadcast, (JSGlobalObject* globalOb
     if (memory && memory->memory().sharingMode() == MemorySharingMode::Shared) {
         Workers::singleton().broadcast(
             [&] (const AbstractLocker& locker, Worker& worker) {
-                RefPtr<SharedArrayBufferContents> contents { memory->memory().shared() };
-                RefPtr<Message> message = adoptRef(new Message(WTF::move(contents), index));
+                Message::WasmMemory wasmMemory { memory->memory().shared(), memory->memory().addressType() };
+                RefPtr<Message> message = adoptRef(new Message(WTF::move(wasmMemory), index));
                 worker.enqueue(locker, message);
             });
         return JSValue::encode(jsUndefined());
@@ -2988,8 +3004,7 @@ JSC_DEFINE_HOST_FUNCTION(functionSetTimeout, (JSGlobalObject* globalObject, Call
         vmPtr->deferredWorkTimer->scheduleWorkSoonIfActive(weakTicket, [](DeferredWorkTimer::Ticket& ticket) {
             auto* callback = uncheckedDowncast<JSFunction>(ticket.target());
             JSGlobalObject* globalObject = callback->realm();
-            MarkedArgumentBuffer args;
-            call(globalObject, callback, jsUndefined(), args, "You shouldn't see this..."_s);
+            call(globalObject, callback, jsUndefined(), ArgList { }, "You shouldn't see this..."_s);
         });
     };
 
@@ -3732,7 +3747,7 @@ static void dumpException(GlobalObject* globalObject, JSValue exception)
 
     auto exceptionString = exception.toWTFString(globalObject);
     CHECK_EXCEPTION();
-    Expected<CString, UTF8ConversionError> expectedCString = exceptionString.tryGetUTF8();
+    std::expected<CString, UTF8ConversionError> expectedCString = exceptionString.tryGetUTF8();
     if (expectedCString)
         printf("Exception: %s\n", expectedCString.value().data());
     else
@@ -4011,7 +4026,7 @@ static void runInteractive(GlobalObject* globalObject)
         if (evaluationException && vm.isTerminationException(evaluationException.get()))
             vm.setExecutionForbidden();
 
-        Expected<CString, UTF8ConversionError> utf8;
+        std::expected<CString, UTF8ConversionError> utf8;
         if (evaluationException) {
             fputs("Exception: ", stdout);
             utf8 = evaluationException->value().toWTFString(globalObject).tryGetUTF8();
@@ -4634,7 +4649,7 @@ int jscmain(int argc, char** argv)
     auto& memoryPressureHandler = MemoryPressureHandler::singleton();
     {
         // FIXME: This is a false positive. rdar://160931336
-        SUPPRESS_RETAINPTR_CTOR_ADOPT auto queue = adoptOSObject(dispatch_queue_create("jsc shell memory pressure handler", DISPATCH_QUEUE_SERIAL));
+        SUPPRESS_RETAINPTR_CTOR_ADOPT OSObjectPtr queue = adoptOSObject(dispatch_queue_create("jsc shell memory pressure handler", serialQueueWithAutoreleasePoolAttrSingleton()));
         memoryPressureHandler.setDispatchQueue(WTF::move(queue));
     }
     Box<Critical> memoryPressureCriticalState = Box<Critical>::create(Critical::No);

@@ -279,7 +279,7 @@ private:
 #endif
 
     void prefetchDNS(const String&) final;
-    void sendH2Ping(const URL&, CompletionHandler<void(Expected<WTF::Seconds, WebCore::ResourceError>&&)>&&) final;
+    void sendH2Ping(const URL&, CompletionHandler<void(std::expected<WTF::Seconds, WebCore::ResourceError>&&)>&&) final;
 
     void didRestoreScrollPosition() final;
 
@@ -296,6 +296,7 @@ private:
 
     void didNotifyUserActivation(MonotonicTime) final;
     void didConsumeUserActivation() final;
+    void didHandleFirstUserGesture(MonotonicTime) final;
 
     void dispatchDecidePolicyForBackForwardNavigationAction(WebCore::FrameLoadRequest&&, const String& referer, WebCore::FrameLoadType);
 

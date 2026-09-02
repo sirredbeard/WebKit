@@ -180,6 +180,17 @@ WebExtension::StringResources WebExtension::toStringResources(const WebExtension
     return result;
 }
 
+WebExtension::WebExtension(const JSON::Value& manifest, Resources&& resources)
+    : m_manifestJSON(manifest)
+    , m_dataResources(toDataResources(resources))
+    , m_stringResources(toStringResources(resources))
+{
+    auto manifestString = manifest.toJSONString();
+    RELEASE_ASSERT(manifestString);
+
+    m_stringResources.set("manifest.json"_s, manifestString);
+}
+
 WebExtension::WebExtension(Resources&& resources)
     : m_manifestJSON(JSON::Value::null())
     , m_dataResources(toDataResources(resources))
@@ -556,7 +567,7 @@ String WebExtension::resourceMIMETypeForPath(const String& path)
     return MIMETypeRegistry::mimeTypeForPath(path);
 }
 
-Expected<String, RefPtr<API::Error>> WebExtension::resourceStringForPath(const String& originalPath, CacheResult cacheResult, SuppressNotFoundErrors suppressErrors)
+std::expected<String, RefPtr<API::Error>> WebExtension::resourceStringForPath(const String& originalPath, CacheResult cacheResult, SuppressNotFoundErrors suppressErrors)
 {
     ASSERT(originalPath);
 
@@ -1637,6 +1648,9 @@ const WebExtension::PermissionsSet& WebExtension::supportedPermissions()
 #if ENABLE(WK_WEB_EXTENSIONS_BOOKMARKS)
         WebExtensionPermission::bookmarks(),
 #endif
+#if ENABLE(WK_WEB_EXTENSIONS_OFFSCREEN)
+        WebExtensionPermission::offscreen(),
+#endif
     };
     return permissions;
 }
@@ -2411,7 +2425,7 @@ void WebExtension::populateCommandsIfNeeded()
     }
 }
 
-Expected<WebExtension::DeclarativeNetRequestRulesetData, Ref<API::Error>> WebExtension::parseDeclarativeNetRequestRulesetObject(const JSON::Object& rulesetObject)
+std::expected<WebExtension::DeclarativeNetRequestRulesetData, Ref<API::Error>> WebExtension::parseDeclarativeNetRequestRulesetObject(const JSON::Object& rulesetObject)
 {
     auto rulesetID = rulesetObject.getString(declarativeNetRequestRulesetIDManifestKey);
     if (rulesetID.isEmpty()) {

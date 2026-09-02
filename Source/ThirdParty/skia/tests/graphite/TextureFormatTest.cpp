@@ -836,13 +836,9 @@ static const FormatExpectation kExpectations[] {
      .fCompatibleColorTypes={{kARGB_4444_SkColorType, Swizzle::RGBA(), Swizzle::RGBA()}}},
 
     {.fFormat=TextureFormat::kARGB4,
-     // TODO(michaelludwig): kARGB_4444 color type is actually BGRA order. Historically, we
-     // configured kARGB4 format to swizzle the channels on read and write in the shader so that the
-     // CPU data could be uploaded directly. When we can perform a RB channel swap as part of
-     // upload/readback, then this can change to RGBA swizzles.
      .fChannels={{'a', 4, UNorm}, {'r', 4, UNorm}, {'g', 4, UNorm}, {'b', 4, UNorm}},
      .fXferSwizzle=Swizzle("rgba"),
-     .fCompatibleColorTypes={{kARGB_4444_SkColorType, Swizzle::BGRA(), Swizzle::BGRA()}}},
+     .fCompatibleColorTypes={{kARGB_4444_SkColorType, Swizzle::RGBA(), Swizzle::RGBA()}}},
 
     {.fFormat=TextureFormat::kBGRA10x6_XR,
      .fChannels={{'x', 6, Pad}, {'b', 10, XR}, {'x', 6, Pad}, {'g', 10, XR},
@@ -1173,6 +1169,27 @@ void run_texture_format_test(skiatest::Reporter* r, const Caps* caps, TextureFor
                         TextureInfo renderableInfo = caps->getDefaultSampledTextureInfo(
                                 ct, Mipmapped::kNo, Protected::kNo, Renderable::kYes);
                         REPORTER_ASSERT(r, format != TextureInfoPriv::ViewFormat(renderableInfo));
+                    }
+
+                    // Test sampled and readable copy info
+                    TextureInfo sampledInfo = caps->getDefaultSampledTextureInfo(
+                            ct, Mipmapped::kNo, Protected::kNo, Renderable::kNo);
+                    if (sampledInfo.isValid() &&
+                        TextureInfoPriv::ViewFormat(sampledInfo) == format) {
+                        REPORTER_ASSERT(r, caps->isTexturable(sampledInfo));
+                        REPORTER_ASSERT(r, caps->isReadable(sampledInfo));
+                        TextureInfo copyInfo = caps->getTextureInfoForSampledCopy(
+                                sampledInfo, Mipmapped::kNo);
+                        REPORTER_ASSERT(r, copyInfo.isValid());
+                    }
+
+                    TextureInfo readableInfo = caps->getDefaultReadableTextureInfo(
+                            ct, Protected::kNo);
+                    if (readableInfo.isValid() &&
+                        TextureInfoPriv::ViewFormat(readableInfo) == format) {
+                        REPORTER_ASSERT(r, caps->isReadable(readableInfo));
+                        TextureInfo copyInfo = caps->getTextureInfoForReadableCopy(readableInfo);
+                        REPORTER_ASSERT(r, copyInfo.isValid());
                     }
 
                     // Test all combinations of alpha type x 2 (texture vs cpu) and whether or not

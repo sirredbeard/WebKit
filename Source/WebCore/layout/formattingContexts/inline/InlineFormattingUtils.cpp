@@ -139,7 +139,7 @@ InlineRect InlineFormattingUtils::flipVisualRectToLogicalForWritingMode(const In
     return visualRect;
 }
 
-InlineLayoutUnit InlineFormattingUtils::computedTextIndent(IsIntrinsicWidthMode isIntrinsicWidthMode, IsFirstFormattedLine isFirstFormattedLine, std::optional<LineEndsWithLineBreak> previousLineEndsWithLineBreak, InlineLayoutUnit availableWidth) const
+InlineLayoutUnit InlineFormattingUtils::computedTextIndent(IsIntrinsicWidthMode isIntrinsicWidthMode, IsFirstFormattedLine isFirstFormattedLine, std::optional<PreviousLineEndsParagraph> previousLineEndsParagraph, InlineLayoutUnit availableWidth) const
 {
     CheckedRef root = formattingContext().root();
 
@@ -151,7 +151,7 @@ InlineLayoutUnit InlineFormattingUtils::computedTextIndent(IsIntrinsicWidthMode 
     // [Integration] root()->parent() would normally produce a valid layout box.
     auto shouldIndent = false;
     if (root->style().textIndent().eachLine.has_value())
-        shouldIndent = isFirstFormattedLine == IsFirstFormattedLine::Yes || (previousLineEndsWithLineBreak && *previousLineEndsWithLineBreak == LineEndsWithLineBreak::Yes);
+        shouldIndent = isFirstFormattedLine == IsFirstFormattedLine::Yes || (previousLineEndsParagraph && *previousLineEndsParagraph == PreviousLineEndsParagraph::Yes);
     else if (root->isAnonymousTextIndentCandidateForIntegration()
         || !root->isAnonymous()
         || (!root->isInlineIntegrationRoot() && root->parent().firstInFlowChild() == root.ptr()))
@@ -589,16 +589,19 @@ std::pair<InlineLayoutUnit, InlineLayoutUnit> InlineFormattingUtils::textEmphasi
 LineEndingTruncationPolicy InlineFormattingUtils::lineEndingTruncationPolicy(const Style::ComputedStyle& rootStyle, size_t numberOfContentfulLines, std::optional<size_t> numberOfVisibleLinesAllowed, bool currentLineIsContentful)
 {
     if (numberOfVisibleLinesAllowed) {
-        // text-overflow: ellipsis should not apply inside clamping content.
         if (!currentLineIsContentful) {
             // Content with no inline should never ever receive ellipsis.
             return LineEndingTruncationPolicy::NoTruncation;
         }
-        return *numberOfVisibleLinesAllowed == numberOfContentfulLines ? LineEndingTruncationPolicy::WhenContentOverflowsInBlockDirection : LineEndingTruncationPolicy::NoTruncation;
+        if (numberOfContentfulLines >= *numberOfVisibleLinesAllowed) {
+            // The clamped line's block ellipsis replaces the text-overflow ellipsis, while the lines below it are not visible at all.
+            return numberOfContentfulLines == *numberOfVisibleLinesAllowed ? LineEndingTruncationPolicy::WhenContentOverflowsInBlockDirection : LineEndingTruncationPolicy::NoTruncation;
+        }
+        // Lines above the clamp point are not affected by clamping, so text-overflow is what may truncate them.
     }
 
     // Truncation is in effect when the block container has overflow other than visible.
-    if (rootStyle.overflowX() != Overflow::Visible && rootStyle.textOverflow() == TextOverflow::Ellipsis)
+    if (rootStyle.overflowX() != Overflow::Visible && !rootStyle.textOverflow().isClip())
         return LineEndingTruncationPolicy::WhenContentOverflowsInInlineDirection;
     return LineEndingTruncationPolicy::NoTruncation;
 }

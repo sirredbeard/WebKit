@@ -207,11 +207,12 @@ public:
     std::unique_ptr<WorkerClient> createWorkerClient(SerialFunctionDispatcher&);
 
     void runOpenPanel(LocalFrame&, FileChooser&);
+    void transcodeChosenFiles(Vector<String>&& transcodingPaths, String&& destinationUTI, String&& destinationExtension, CompletionHandler<void(Vector<String>&&)>&&);
     void showShareSheet(ShareDataWithParsedURL&&, CompletionHandler<void(bool)>&&);
     void showContactPicker(ContactsRequestData&&, CompletionHandler<void(std::optional<Vector<ContactInfo>>&&)>&&);
 
 #if ENABLE(WEB_AUTHN)
-    void showDigitalCredentialsChooser(const DigitalCredentialsRequestData&, WTF::CompletionHandler<void(Expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&);
+    void showDigitalCredentialsChooser(const DigitalCredentialsRequestData&, WTF::CompletionHandler<void(std::expected<WebCore::DigitalCredentialsResponseData, WebCore::ExceptionData>&&)>&&);
     void dismissDigitalCredentialsChooser(CompletionHandler<void(bool)>&&);
 #endif
 

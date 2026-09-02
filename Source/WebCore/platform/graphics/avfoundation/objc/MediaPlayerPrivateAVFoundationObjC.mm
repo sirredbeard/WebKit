@@ -263,7 +263,7 @@ static NSArray *playerKVOProperties();
 
 static dispatch_queue_t globalLoaderDelegateQueue()
 {
-    static NeverDestroyed<OSObjectPtr<dispatch_queue_t>> globalQueue = adoptOSObject(dispatch_queue_create("WebCoreAVFLoaderDelegate queue", DISPATCH_QUEUE_SERIAL));
+    static NeverDestroyed<OSObjectPtr<dispatch_queue_t>> globalQueue = adoptOSObject(dispatch_queue_create("WebCoreAVFLoaderDelegate queue", serialQueueWithAutoreleasePoolAttrSingleton()));
     return globalQueue.get().get();
 }
 
@@ -2857,7 +2857,7 @@ void MediaPlayerPrivateAVFoundationObjC::updateLastImage(NOESCAPE UpdateCompleti
 
     MonotonicTime start = MonotonicTime::now();
 
-    m_lastImage = NativeImage::create(m_pixelBufferConformer->createImageFromPixelBuffer(m_lastPixelBuffer.get()));
+    m_lastImage = m_pixelBufferConformer->createImageFromPixelBuffer(m_lastPixelBuffer.get());
 
     INFO_LOG(LOGIDENTIFIER, "creating buffer took ", (MonotonicTime::now() - start).seconds());
 

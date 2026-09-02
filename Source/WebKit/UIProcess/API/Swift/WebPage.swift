@@ -223,7 +223,10 @@ final public class WebPage {
     let configuration: Configuration
 
     /// The webpage's back-forward list.
-    public internal(set) var backForwardList: BackForwardList = BackForwardList()
+    public var backForwardList: BackForwardList {
+        access(keyPath: \.backForwardList)
+        return BackForwardList(backingWebView.backForwardList)
+    }
 
     /// A sequence of all the navigation events that occur throughout the webpage, including both user navigation
     /// and programmatic navigation.
@@ -285,6 +288,15 @@ final public class WebPage {
     /// for more details on how to use the trust.
     public var serverTrust: SecTrust? {
         backingProperty(\.serverTrust, backedBy: \.serverTrust)
+    }
+
+    /// The trust management object for the 2-QWAC of the currently committed navigation.
+    ///
+    /// A 2-QWAC binds a qualified website authentication certificate to the TLS certificate the webpage was
+    /// served with. Since a separate fetch is needed to get the 2-QWAC data, this value becomes available
+    /// after ``serverTrust``, and only if the server has a valid 2-QWAC.
+    public var qualifiedServerTrust: SecTrust? {
+        backingProperty(\.qualifiedServerTrust, backedBy: \.qualifiedServerTrust)
     }
 
     /// Indicates whether the webpage loaded all resources on the page through securely encrypted connections.
@@ -382,6 +394,7 @@ final public class WebPage {
     public lazy var backingWebView: WebPageWebView = {
         let webView = WebPageWebView(frame: Self.defaultFrame, configuration: WKWebViewConfiguration(configuration))
         webView.navigationDelegate = backingNavigationDelegate
+        webView._historyDelegate = backingNavigationDelegate
         webView.uiDelegate = backingUIDelegate
         #if WTF_PLATFORM_MAC
         webView._usePlatformFindUI = false
@@ -677,6 +690,12 @@ extension WebPage {
                 observation.invalidate()
             }
         }
+    }
+
+    func didChangeBackForwardList() {
+        // `backForwardList` reads through to the backing web view, so there is no stored value to update
+        // here; the mutation exists solely to notify observers that the list has changed.
+        withMutation(keyPath: \.backForwardList) {}
     }
 
     func addEditorStateUpdate(_ newEditorState: [AnyHashable: Any]) {

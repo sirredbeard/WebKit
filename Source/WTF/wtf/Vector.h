@@ -221,6 +221,7 @@ public:
     bool allocateBuffer(size_t newCapacity)
     {
         static_assert(action == FailureAction::Crash || action == FailureAction::Report);
+        crashIfBorrowed();
         ASSERT(newCapacity);
         if (!isValidCapacityForVector<T>(newCapacity)) {
             if constexpr (action == FailureAction::Crash)
@@ -244,7 +245,6 @@ public:
     }
 
     ALWAYS_INLINE void allocateBuffer(size_t newCapacity) { allocateBuffer<FailureAction::Crash>(newCapacity); }
-    ALWAYS_INLINE bool tryAllocateBuffer(size_t newCapacity) { return allocateBuffer<FailureAction::Report>(newCapacity); }
 
     bool shouldReallocateBuffer(size_t newCapacity) const
     {
@@ -253,6 +253,7 @@ public:
 
     void reallocateBuffer(size_t newCapacity)
     {
+        crashIfBorrowed();
         ASSERT(shouldReallocateBuffer(newCapacity));
         if (newCapacity > std::numeric_limits<size_t>::max() / sizeof(T))
             CRASH();
@@ -263,6 +264,7 @@ public:
 
     void deallocateBuffer(T* bufferToDeallocate)
     {
+        crashIfBorrowed();
         if (!bufferToDeallocate)
             return;
         
@@ -284,6 +286,7 @@ public:
 
     MallocSpan<T, Malloc> releaseBuffer()
     {
+        crashIfBorrowed();
         m_capacity = 0;
         return adoptMallocSpan<T, Malloc>(unsafeMakeSpan(std::exchange(m_buffer, nullptr), std::exchange(m_size, 0)));
     }
@@ -307,6 +310,7 @@ protected:
 
     ~VectorBufferBase()
     {
+        crashIfBorrowed();
         // FIXME: It would be nice to find a way to ASSERT that m_buffer hasn't leaked here.
     }
 
@@ -370,6 +374,8 @@ public:
     
     void swap(VectorBuffer<T, 0, Malloc>& other, size_t, size_t)
     {
+        crashIfBorrowed();
+        other.crashIfBorrowed();
         std::swap(m_buffer, other.m_buffer);
         Base::swapCapacity(other);
     }
@@ -384,7 +390,6 @@ public:
 #endif
 
     using Base::allocateBuffer;
-    using Base::tryAllocateBuffer;
     using Base::shouldReallocateBuffer;
     using Base::reallocateBuffer;
     using Base::deallocateBuffer;
@@ -403,6 +408,7 @@ protected:
 
     VectorBuffer(VectorBuffer<T, 0, Malloc>&& other)
     {
+        other.crashIfBorrowed();
         m_buffer = std::exchange(other.m_buffer, nullptr);
         m_capacity = other.exchangeCapacity(0);
         m_size = std::exchange(other.m_size, 0);
@@ -410,6 +416,8 @@ protected:
 
     void adopt(VectorBuffer&& other)
     {
+        crashIfBorrowed();
+        other.crashIfBorrowed();
         deallocateBuffer(buffer());
         m_buffer = std::exchange(other.m_buffer, nullptr);
         m_capacity = other.exchangeCapacity(0);
@@ -448,6 +456,7 @@ public:
     template<FailureAction action>
     bool allocateBuffer(size_t newCapacity)
     {
+        crashIfBorrowed();
         // FIXME: This should ASSERT(!m_buffer) to catch misuse/leaks. https://bugs.webkit.org/show_bug.cgi?id=250801
         if (newCapacity > inlineCapacity)
             return Base::template allocateBuffer<action>(newCapacity);
@@ -457,10 +466,10 @@ public:
     }
 
     ALWAYS_INLINE void allocateBuffer(size_t newCapacity) { allocateBuffer<FailureAction::Crash>(newCapacity); }
-    ALWAYS_INLINE bool tryAllocateBuffer(size_t newCapacity) { return allocateBuffer<FailureAction::Report>(newCapacity); }
 
     void deallocateBuffer(T* bufferToDeallocate)
     {
+        crashIfBorrowed();
         if (bufferToDeallocate == inlineBuffer())
             return;
         Base::deallocateBuffer(bufferToDeallocate);
@@ -480,6 +489,8 @@ public:
 
     void swap(VectorBuffer& other, size_t mySize, size_t otherSize)
     {
+        crashIfBorrowed();
+        other.crashIfBorrowed();
         if (buffer() == inlineBuffer() && other.buffer() == other.inlineBuffer()) {
             swapInlineBuffer(other, mySize, otherSize);
             Base::swapCapacity(other);
@@ -543,6 +554,7 @@ protected:
     VectorBuffer(VectorBuffer&& other)
         : Base(inlineBuffer(), inlineCapacity, 0)
     {
+        other.crashIfBorrowed();
         if (other.buffer() == other.inlineBuffer())
             VectorTypeOperations<T>::move(other.inlineBuffer(), other.inlineBuffer() + other.m_size, inlineBuffer());
         else {
@@ -554,6 +566,8 @@ protected:
 
     void adopt(VectorBuffer&& other)
     {
+        crashIfBorrowed();
+        other.crashIfBorrowed();
         if (buffer() != inlineBuffer()) {
             deallocateBuffer(buffer());
             m_buffer = inlineBuffer();
@@ -997,7 +1011,6 @@ private:
     using Base::swap;
     using Base::allocateBuffer;
     using Base::deallocateBuffer;
-    using Base::tryAllocateBuffer;
     using Base::shouldReallocateBuffer;
     using Base::reallocateBuffer;
     using Base::restoreInlineBufferIfNeeded;

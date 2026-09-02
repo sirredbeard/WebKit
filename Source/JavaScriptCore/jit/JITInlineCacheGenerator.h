@@ -48,6 +48,7 @@ class CallSiteIndex;
 class CodeBlock;
 class JIT;
 class PropertyInlineCache;
+class RepatchingPropertyInlineCache;
 struct UnlinkedPropertyInlineCache;
 struct BaselineUnlinkedPropertyInlineCache;
 
@@ -73,11 +74,6 @@ public:
 
     CCallHelpers::Label slowPathBegin() const { return m_slowPathBegin; }
 
-    void reportBaselineDataICSlowPathBegin(CCallHelpers::Label slowPathBegin)
-    {
-        m_slowPathBegin = slowPathBegin;
-    }
-
     void NODELETE finalize(
         LinkBuffer& fastPathLinkBuffer, LinkBuffer& slowPathLinkBuffer,
         CodeLocationLabel<JITStubRoutinePtrTag> start);
@@ -92,18 +88,19 @@ public:
         if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
             propertyCache.bytecodeIndex = codeOrigin.bytecodeIndex();
             UNUSED_PARAM(callSiteIndex);
-            UNUSED_PARAM(usedRegisters);
-            UNUSED_PARAM(codeBlock);
         } else {
             propertyCache.codeOrigin = codeOrigin;
             propertyCache.callSiteIndex = callSiteIndex;
-            propertyCache.setUsedRegisters(usedRegisters.toScalarRegisterSet());
         }
         if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            downcast<RepatchingPropertyInlineCache>(propertyCache).m_usedRegisters = usedRegisters.toScalarRegisterSet();
             if (codeOrigin.inlineCallFrame())
                 propertyCache.m_globalObject = baselineCodeBlockForInlineCallFrame(codeOrigin.inlineCallFrame())->globalObject();
             else
                 propertyCache.m_globalObject = codeBlock->globalObject();
+        } else {
+            UNUSED_PARAM(codeBlock);
+            UNUSED_PARAM(usedRegisters);
         }
     }
 
@@ -128,7 +125,7 @@ protected:
 
     JITByIdGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, AccessType,
-        JSValueRegs base, JSValueRegs value);
+        GPRReg base, GPRReg value);
 
 public:
     CCallHelpers::Jump slowPathJump() const
@@ -143,18 +140,18 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCacheImpl(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier propertyName,
-        JSValueRegs baseRegs, JSValueRegs valueRegs, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg valueGPR, GPRReg propertyCacheGPR)
     {
         JITInlineCacheGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters);
         propertyCache.m_identifier = propertyName;
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_baseGPR = baseRegs.payloadGPR();
-            propertyCache.m_valueGPR = valueRegs.payloadGPR();
-            propertyCache.m_extraGPR = InvalidGPRReg;
-            propertyCache.m_propertyCacheGPR = propertyCacheGPR;
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            auto& registers = downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers;
+            registers.baseGPR = baseGPR;
+            registers.valueGPR = valueGPR;
+            registers.propertyCacheGPR = propertyCacheGPR;
         } else {
-            UNUSED_PARAM(baseRegs);
-            UNUSED_PARAM(valueRegs);
+            UNUSED_PARAM(baseGPR);
+            UNUSED_PARAM(valueGPR);
             UNUSED_PARAM(propertyCacheGPR);
         }
     }
@@ -165,8 +162,8 @@ protected:
     void generateFastCommon(CCallHelpers&, size_t size);
     void emitDataICSlowPath(CCallHelpers&, GPRReg propertyCacheGPR);
 
-    JSValueRegs m_base;
-    JSValueRegs m_value;
+    GPRReg m_base { InvalidGPRReg };
+    GPRReg m_value { InvalidGPRReg };
 
 public:
     CCallHelpers::Jump m_slowPathJump;
@@ -179,7 +176,7 @@ public:
 
     JITGetByIdGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier,
-        JSValueRegs base, JSValueRegs value, GPRReg propertyCacheGPR, AccessType, CacheType);
+        GPRReg base, GPRReg value, GPRReg propertyCacheGPR, AccessType, CacheType);
     
     void generateFastPath(CCallHelpers&);
     void generateDataICFastPath(CCallHelpers&);
@@ -188,9 +185,9 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier propertyName,
-        JSValueRegs baseRegs, JSValueRegs valueRegs, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg valueGPR, GPRReg propertyCacheGPR)
     {
-        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseRegs, valueRegs, propertyCacheGPR);
+        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseGPR, valueGPR, propertyCacheGPR);
     }
 
 private:
@@ -204,7 +201,7 @@ public:
 
     JITGetByIdWithThisGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier,
-        JSValueRegs value, JSValueRegs base, JSValueRegs thisRegs, GPRReg propertyCacheGPR);
+        GPRReg value, GPRReg base, GPRReg thisGPR, GPRReg propertyCacheGPR);
 
     void generateFastPath(CCallHelpers&);
     void generateDataICFastPath(CCallHelpers&);
@@ -213,13 +210,13 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier propertyName,
-        JSValueRegs valueRegs, JSValueRegs baseRegs, JSValueRegs thisRegs, GPRReg propertyCacheGPR)
+        GPRReg valueGPR, GPRReg baseGPR, GPRReg thisGPR, GPRReg propertyCacheGPR)
     {
-        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseRegs, valueRegs, propertyCacheGPR);
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_extraGPR = thisRegs.payloadGPR();
-        } else
-            UNUSED_PARAM(thisRegs);
+        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseGPR, valueGPR, propertyCacheGPR);
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>)
+            downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers.extraGPR = thisGPR;
+        else
+            UNUSED_PARAM(thisGPR);
     }
 };
 
@@ -229,7 +226,7 @@ public:
 
     JITPutByIdGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier,
-        JSValueRegs base, JSValueRegs value, GPRReg propertyCacheGPR, GPRReg scratch, AccessType);
+        GPRReg base, GPRReg value, GPRReg propertyCacheGPR, GPRReg scratch, AccessType);
     
     void generateFastPath(CCallHelpers&);
     void generateDataICFastPath(CCallHelpers&);
@@ -238,11 +235,11 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier propertyName,
-        JSValueRegs baseRegs, JSValueRegs valueRegs, GPRReg propertyCacheGPR, GPRReg scratchGPR)
+        GPRReg baseGPR, GPRReg valueGPR, GPRReg propertyCacheGPR, GPRReg scratchGPR)
     {
-        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseRegs, valueRegs, propertyCacheGPR);
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>)
-            propertyCache.removeUsedRegister(scratchGPR);
+        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseGPR, valueGPR, propertyCacheGPR);
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>)
+            downcast<RepatchingPropertyInlineCache>(propertyCache).m_usedRegisters.remove(scratchGPR);
         else
             UNUSED_PARAM(scratchGPR);
     }
@@ -255,7 +252,7 @@ public:
 
     JITPutByValGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, AccessType, const RegisterSet& usedRegisters,
-        JSValueRegs base, JSValueRegs property, JSValueRegs result, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR);
+        GPRReg base, GPRReg property, GPRReg result, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR);
 
     CCallHelpers::Jump slowPathJump() const
     {
@@ -271,29 +268,27 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters,
-        JSValueRegs baseRegs, JSValueRegs propertyRegs, JSValueRegs valueRegs, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg propertyGPR, GPRReg valueGPR, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR)
     {
         JITInlineCacheGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters);
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_baseGPR = baseRegs.payloadGPR();
-            propertyCache.m_extraGPR = propertyRegs.payloadGPR();
-            propertyCache.m_valueGPR = valueRegs.payloadGPR();
-            propertyCache.m_propertyCacheGPR = propertyCacheGPR;
-            if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, DFG::UnlinkedPropertyInlineCache>)
-                propertyCache.m_arrayProfileGPR = arrayProfileGPR;
-            else
-                UNUSED_PARAM(arrayProfileGPR);
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            auto& registers = downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers;
+            registers.baseGPR = baseGPR;
+            registers.extraGPR = propertyGPR;
+            registers.valueGPR = valueGPR;
+            registers.propertyCacheGPR = propertyCacheGPR;
+            registers.arrayProfileGPR = arrayProfileGPR;
         } else {
-            UNUSED_PARAM(baseRegs);
-            UNUSED_PARAM(propertyRegs);
-            UNUSED_PARAM(valueRegs);
+            UNUSED_PARAM(baseGPR);
+            UNUSED_PARAM(propertyGPR);
+            UNUSED_PARAM(valueGPR);
             UNUSED_PARAM(propertyCacheGPR);
             UNUSED_PARAM(arrayProfileGPR);
         }
     }
 
-    JSValueRegs m_base;
-    JSValueRegs m_value;
+    GPRReg m_base { InvalidGPRReg };
+    GPRReg m_value { InvalidGPRReg };
 
     CCallHelpers::PatchableJump m_slowPathJump;
 };
@@ -305,7 +300,7 @@ public:
 
     JITDelByValGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, AccessType, const RegisterSet& usedRegisters,
-        JSValueRegs base, JSValueRegs property, JSValueRegs result, GPRReg propertyCacheGPR);
+        GPRReg base, GPRReg property, GPRReg result, GPRReg propertyCacheGPR);
 
     CCallHelpers::Jump slowPathJump() const
     {
@@ -322,18 +317,19 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters,
-        JSValueRegs baseRegs, JSValueRegs propertyRegs, JSValueRegs resultRegs, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg propertyGPR, GPRReg resultGPR, GPRReg propertyCacheGPR)
     {
         JITInlineCacheGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters);
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_baseGPR = baseRegs.payloadGPR();
-            propertyCache.m_extraGPR = propertyRegs.payloadGPR();
-            propertyCache.m_valueGPR = resultRegs.payloadGPR();
-            propertyCache.m_propertyCacheGPR = propertyCacheGPR;
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            auto& registers = downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers;
+            registers.baseGPR = baseGPR;
+            registers.extraGPR = propertyGPR;
+            registers.valueGPR = resultGPR;
+            registers.propertyCacheGPR = propertyCacheGPR;
         } else {
-            UNUSED_PARAM(baseRegs);
-            UNUSED_PARAM(propertyRegs);
-            UNUSED_PARAM(resultRegs);
+            UNUSED_PARAM(baseGPR);
+            UNUSED_PARAM(propertyGPR);
+            UNUSED_PARAM(resultGPR);
             UNUSED_PARAM(propertyCacheGPR);
         }
     }
@@ -348,7 +344,7 @@ public:
 
     JITDelByIdGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, AccessType, const RegisterSet& usedRegisters, CacheableIdentifier,
-        JSValueRegs base, JSValueRegs result, GPRReg propertyCacheGPR);
+        GPRReg base, GPRReg result, GPRReg propertyCacheGPR);
 
     CCallHelpers::Jump slowPathJump() const
     {
@@ -365,9 +361,9 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier propertyName,
-        JSValueRegs baseRegs, JSValueRegs resultRegs, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg resultGPR, GPRReg propertyCacheGPR)
     {
-        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseRegs, resultRegs, propertyCacheGPR);
+        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseGPR, resultGPR, propertyCacheGPR);
     }
 
     CCallHelpers::PatchableJump m_slowPathJump;
@@ -380,7 +376,7 @@ public:
 
     JITInByValGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, AccessType, const RegisterSet& usedRegisters,
-        JSValueRegs base, JSValueRegs property, JSValueRegs result, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR);
+        GPRReg base, GPRReg property, GPRReg result, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR);
 
     CCallHelpers::Jump slowPathJump() const
     {
@@ -397,23 +393,22 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters,
-        JSValueRegs baseRegs, JSValueRegs propertyRegs, JSValueRegs resultRegs, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg propertyGPR, GPRReg resultGPR, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR)
     {
         JITInlineCacheGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters);
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_baseGPR = baseRegs.payloadGPR();
-            propertyCache.m_extraGPR = propertyRegs.payloadGPR();
-            propertyCache.m_valueGPR = resultRegs.payloadGPR();
-            propertyCache.m_propertyCacheGPR = propertyCacheGPR;
-            if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, DFG::UnlinkedPropertyInlineCache>)
-                propertyCache.m_arrayProfileGPR = arrayProfileGPR;
-            else
-                UNUSED_PARAM(arrayProfileGPR);
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            auto& registers = downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers;
+            registers.baseGPR = baseGPR;
+            registers.extraGPR = propertyGPR;
+            registers.valueGPR = resultGPR;
+            registers.propertyCacheGPR = propertyCacheGPR;
+            registers.arrayProfileGPR = arrayProfileGPR;
         } else {
-            UNUSED_PARAM(baseRegs);
-            UNUSED_PARAM(propertyRegs);
-            UNUSED_PARAM(resultRegs);
+            UNUSED_PARAM(baseGPR);
+            UNUSED_PARAM(propertyGPR);
+            UNUSED_PARAM(resultGPR);
             UNUSED_PARAM(propertyCacheGPR);
+            UNUSED_PARAM(arrayProfileGPR);
         }
     }
 
@@ -426,7 +421,7 @@ public:
 
     JITInByIdGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier,
-        JSValueRegs base, JSValueRegs value, GPRReg propertyCacheGPR);
+        GPRReg base, GPRReg value, GPRReg propertyCacheGPR);
 
     void generateFastPath(CCallHelpers&);
     void generateDataICFastPath(CCallHelpers&);
@@ -435,9 +430,9 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters, CacheableIdentifier propertyName,
-        JSValueRegs baseRegs, JSValueRegs valueRegs, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg valueGPR, GPRReg propertyCacheGPR)
     {
-        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseRegs, valueRegs, propertyCacheGPR);
+        JITByIdGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters, propertyName, baseGPR, valueGPR, propertyCacheGPR);
     }
 };
 
@@ -469,11 +464,12 @@ public:
     {
         JITInlineCacheGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters);
         propertyCache.prototypeIsKnownObject = prototypeIsKnownObject;
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_baseGPR = valueGPR;
-            propertyCache.m_valueGPR = resultGPR;
-            propertyCache.m_extraGPR = prototypeGPR;
-            propertyCache.m_propertyCacheGPR = propertyCacheGPR;
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            auto& registers = downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers;
+            registers.baseGPR = valueGPR;
+            registers.valueGPR = resultGPR;
+            registers.extraGPR = prototypeGPR;
+            registers.propertyCacheGPR = propertyCacheGPR;
         } else {
             UNUSED_PARAM(valueGPR);
             UNUSED_PARAM(resultGPR);
@@ -492,7 +488,7 @@ public:
 
     JITGetByValGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, AccessType, const RegisterSet& usedRegisters,
-        JSValueRegs base, JSValueRegs property, JSValueRegs result, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR);
+        GPRReg base, GPRReg property, GPRReg result, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR);
 
     CCallHelpers::Jump slowPathJump() const
     {
@@ -511,28 +507,27 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters,
-        JSValueRegs baseRegs, JSValueRegs propertyRegs, JSValueRegs resultRegs, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg propertyGPR, GPRReg resultGPR, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR)
     {
         JITInlineCacheGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters);
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_baseGPR = baseRegs.payloadGPR();
-            propertyCache.m_extraGPR = propertyRegs.payloadGPR();
-            propertyCache.m_valueGPR = resultRegs.payloadGPR();
-            propertyCache.m_propertyCacheGPR = propertyCacheGPR;
-            if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, DFG::UnlinkedPropertyInlineCache>)
-                propertyCache.m_arrayProfileGPR = arrayProfileGPR;
-            else
-                UNUSED_PARAM(arrayProfileGPR);
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            auto& registers = downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers;
+            registers.baseGPR = baseGPR;
+            registers.extraGPR = propertyGPR;
+            registers.valueGPR = resultGPR;
+            registers.propertyCacheGPR = propertyCacheGPR;
+            registers.arrayProfileGPR = arrayProfileGPR;
         } else {
-            UNUSED_PARAM(baseRegs);
-            UNUSED_PARAM(propertyRegs);
-            UNUSED_PARAM(resultRegs);
+            UNUSED_PARAM(baseGPR);
+            UNUSED_PARAM(propertyGPR);
+            UNUSED_PARAM(resultGPR);
             UNUSED_PARAM(propertyCacheGPR);
+            UNUSED_PARAM(arrayProfileGPR);
         }
     }
 
-    JSValueRegs m_base;
-    JSValueRegs m_result;
+    GPRReg m_base { InvalidGPRReg };
+    GPRReg m_result { InvalidGPRReg };
 
     CCallHelpers::PatchableJump m_slowPathJump;
 };
@@ -544,7 +539,7 @@ public:
 
     JITGetByValWithThisGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, AccessType, const RegisterSet& usedRegisters,
-        JSValueRegs base, JSValueRegs property, JSValueRegs thisRegs, JSValueRegs result, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR);
+        GPRReg base, GPRReg property, GPRReg thisGPR, GPRReg result, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR);
 
     CCallHelpers::Jump slowPathJump() const
     {
@@ -562,30 +557,29 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters,
-        JSValueRegs baseRegs, JSValueRegs propertyRegs, JSValueRegs thisRegs, JSValueRegs resultRegs, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg propertyGPR, GPRReg thisGPR, GPRReg resultGPR, GPRReg arrayProfileGPR, GPRReg propertyCacheGPR)
     {
         JITInlineCacheGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters);
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_baseGPR = baseRegs.payloadGPR();
-            propertyCache.m_extraGPR = thisRegs.payloadGPR();
-            propertyCache.m_valueGPR = resultRegs.payloadGPR();
-            propertyCache.m_extra2GPR = propertyRegs.payloadGPR();
-            propertyCache.m_propertyCacheGPR = propertyCacheGPR;
-            if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, DFG::UnlinkedPropertyInlineCache>)
-                propertyCache.m_arrayProfileGPR = arrayProfileGPR;
-            else
-                UNUSED_PARAM(arrayProfileGPR);
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            auto& registers = downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers;
+            registers.baseGPR = baseGPR;
+            registers.extraGPR = thisGPR;
+            registers.valueGPR = resultGPR;
+            registers.extra2GPR = propertyGPR;
+            registers.propertyCacheGPR = propertyCacheGPR;
+            registers.arrayProfileGPR = arrayProfileGPR;
         } else {
-            UNUSED_PARAM(baseRegs);
-            UNUSED_PARAM(propertyRegs);
-            UNUSED_PARAM(thisRegs);
-            UNUSED_PARAM(resultRegs);
+            UNUSED_PARAM(baseGPR);
+            UNUSED_PARAM(propertyGPR);
+            UNUSED_PARAM(thisGPR);
+            UNUSED_PARAM(resultGPR);
             UNUSED_PARAM(propertyCacheGPR);
+            UNUSED_PARAM(arrayProfileGPR);
         }
     }
 
-    JSValueRegs m_base;
-    JSValueRegs m_result;
+    GPRReg m_base { InvalidGPRReg };
+    GPRReg m_result { InvalidGPRReg };
 
     CCallHelpers::PatchableJump m_slowPathJump;
 };
@@ -597,7 +591,7 @@ public:
 
     JITPrivateBrandAccessGenerator(
         CodeBlock*, CompileTimePropertyInlineCache, JITType, CodeOrigin, CallSiteIndex, AccessType, const RegisterSet& usedRegisters,
-        JSValueRegs base, JSValueRegs brand, GPRReg propertyCacheGPR);
+        GPRReg base, GPRReg brand, GPRReg propertyCacheGPR);
 
     CCallHelpers::Jump slowPathJump() const
     {
@@ -614,17 +608,17 @@ public:
     template<typename PropertyInlineCache>
     static void setUpPropertyInlineCache(PropertyInlineCache& propertyCache, CodeBlock* codeBlock,
         AccessType accessType, CacheType cacheType, CodeOrigin codeOrigin, CallSiteIndex callSiteIndex, const RegisterSet& usedRegisters,
-        JSValueRegs baseRegs, JSValueRegs brandRegs, GPRReg propertyCacheGPR)
+        GPRReg baseGPR, GPRReg brandGPR, GPRReg propertyCacheGPR)
     {
         JITInlineCacheGenerator::setUpPropertyInlineCacheImpl(propertyCache, codeBlock, accessType, cacheType, codeOrigin, callSiteIndex, usedRegisters);
-        if constexpr (!std::is_same_v<std::decay_t<PropertyInlineCache>, BaselineUnlinkedPropertyInlineCache>) {
-            propertyCache.m_baseGPR = baseRegs.payloadGPR();
-            propertyCache.m_extraGPR = brandRegs.payloadGPR();
-            propertyCache.m_valueGPR = InvalidGPRReg;
-            propertyCache.m_propertyCacheGPR = propertyCacheGPR;
+        if constexpr (std::is_same_v<std::decay_t<PropertyInlineCache>, JSC::PropertyInlineCache>) {
+            auto& registers = downcast<RepatchingPropertyInlineCache>(propertyCache).m_registers;
+            registers.baseGPR = baseGPR;
+            registers.extraGPR = brandGPR;
+            registers.propertyCacheGPR = propertyCacheGPR;
         } else {
-            UNUSED_PARAM(baseRegs);
-            UNUSED_PARAM(brandRegs);
+            UNUSED_PARAM(baseGPR);
+            UNUSED_PARAM(brandGPR);
             UNUSED_PARAM(propertyCacheGPR);
         }
     }

@@ -145,11 +145,13 @@ public:
     bool NODELETE hasNonBMPCharacters() const { return m_characterWidths & CharacterClassWidths::HasNonBMPChars; }
 
     bool hasOneCharacterSize() const { return m_characterWidths == CharacterClassWidths::HasBMPChars || m_characterWidths == CharacterClassWidths::HasNonBMPChars; }
+    bool hasOnlyBMPCharacters() const { return m_characterWidths == CharacterClassWidths::HasBMPChars; }
     bool hasOnlyNonBMPCharacters() const { return m_characterWidths == CharacterClassWidths::HasNonBMPChars; }
     bool hasStrings() const { return !m_strings.isEmpty(); }
     bool hasSingleCharacters() const { return !m_matches8.isEmpty() || !m_ranges8.isEmpty() || !m_matches32.isEmpty() || !m_ranges32.isEmpty(); }
 
     std::optional<char16_t> hasSharedLeadSurrogate() const;
+    bool hasOnlyNonSurrogateBMPCharacters() const;
 
     Vector<Vector<char32_t>> m_strings;
     Vector<char32_t> m_matches8;
@@ -745,21 +747,7 @@ struct YarrPattern {
         }
         return nonwordUnicodeIgnoreCasecharCached;
     }
-    CharacterClass* unicodeCharacterClassFor(BuiltInCharacterClassID unicodeClassID)
-    {
-        ASSERT(unicodeClassID >= BuiltInCharacterClassID::BaseUnicodePropertyID);
-
-        unsigned classID = static_cast<unsigned>(unicodeClassID);
-
-        if (unicodePropertiesCached.find(classID) == unicodePropertiesCached.end()) {
-            m_userCharacterClasses.append(createUnicodeCharacterClassFor(unicodeClassID));
-            CharacterClass* result = m_userCharacterClasses.last().get();
-            unicodePropertiesCached.add(classID, result);
-            return result;
-        }
-
-        return unicodePropertiesCached.get(classID);
-    }
+    CharacterClass* unicodeCharacterClassFor(BuiltInCharacterClassID, bool ignoreCase, bool invert);
 
     unsigned offsetVectorBaseForNamedCaptures() const
     {

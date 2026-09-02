@@ -77,6 +77,7 @@ class ImageBufferSetClient;
 class WebPage;
 class RemoteSnapshotRecorderProxy;
 class RemoteImageBufferProxy;
+class RemoteNativeImageProxy;
 class RemoteSerializedImageBufferProxy;
 class RemoteSharedResourceCacheProxy;
 class RemoteLayerBackingStore;
@@ -118,7 +119,9 @@ public:
     // Returns backing store bitmap for the RemoteNativeImageProxy.
     RefPtr<WebCore::ShareableBitmap> nativeImageBitmap(const RemoteNativeImageProxy&);
     void cacheNativeImage(WebCore::ShareableBitmap::Handle&&, WebCore::RenderingResourceIdentifier);
-    void cacheNativeImageFromSharedNativeImage(const RemoteNativeImageProxy&);
+    // Adopts a shared NativeImage (whose contents the GPU process publishes in the shared resource
+    // cache) into this backend's cache, so that drawing it needs no further set up.
+    void cacheNativeImageFromSharedNativeImage(RemoteNativeImageProxy&);
     void releaseNativeImage(WebCore::RenderingResourceIdentifier);
     void cachePathImpl(Ref<WebCore::PathImpl>&&, RemotePathImplIdentifier);
     void releasePathImpl(RemotePathImplIdentifier);
@@ -186,8 +189,6 @@ public:
 
     bool isGPUProcessConnectionClosed() const { return !m_connection; }
 
-    void didInitialize(IPC::Semaphore&& wakeUpSemaphore, IPC::Semaphore&& clientWaitSemaphore);
-
     RefPtr<IPC::StreamClientConnection> connection();
 
     bool isCurrent() const final;
@@ -201,11 +202,11 @@ public:
 private:
     explicit RemoteRenderingBackendProxy(SerialFunctionDispatcher&);
 
-    template<typename T, typename U, typename V, typename W> auto send(T&& message, ObjectIdentifierGeneric<U, V, W>);
+    template<typename T, typename U, typename V> auto send(T&& message, ObjectIdentifierGeneric<U, V>);
     template<typename T> auto send(T&& message) { return send(std::forward<T>(message), renderingBackendIdentifier()); }
-    template<typename T, typename U, typename V, typename W> auto sendSync(T&& message, ObjectIdentifierGeneric<U, V, W>);
+    template<typename T, typename U, typename V> auto sendSync(T&& message, ObjectIdentifierGeneric<U, V>);
     template<typename T> auto sendSync(T&& message) { return sendSync(std::forward<T>(message), renderingBackendIdentifier()); }
-    template<typename T, typename C, typename U, typename V, typename W> auto sendWithAsyncReply(T&& message, C&& callback, ObjectIdentifierGeneric<U, V, W>);
+    template<typename T, typename C, typename U, typename V> auto sendWithAsyncReply(T&& message, C&& callback, ObjectIdentifierGeneric<U, V>);
     template<typename T, typename C> auto sendWithAsyncReply(T&& message, C&& callback) { return sendWithAsyncReply(std::forward<T>(message), std::forward<C>(callback), renderingBackendIdentifier()); }
 
     // IPC::MessageReceiver

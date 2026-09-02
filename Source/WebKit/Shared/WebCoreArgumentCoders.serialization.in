@@ -252,23 +252,25 @@ enum class WebCore::ScrollGranularity : uint8_t {
     Pixel
 };
 
-[AdditionalEncoder=StreamConnectionEncoder] class WebCore::TransformationMatrix {
-    double m11()
-    double m12()
-    double m13()
-    double m14()
-    double m21()
-    double m22()
-    double m23()
-    double m24()
-    double m31()
-    double m32()
-    double m33()
-    double m34()
-    double m41()
-    double m42()
-    double m43()
-    double m44()
+webkit_platform_headers: <WebCore/TransformationMatrix.h>
+
+[CustomHeader, Nested, AdditionalEncoder=StreamConnectionEncoder, WebKitPlatform] struct WebCore::TransformationMatrix::Translation2DIPCData {
+    double m41;
+    double m42;
+};
+
+[CustomHeader, Nested, AdditionalEncoder=StreamConnectionEncoder, WebKitPlatform] struct WebCore::TransformationMatrix::Translation3DIPCData {
+    double m41;
+    double m42;
+    double m43;
+};
+
+[CustomHeader, Nested, AdditionalEncoder=StreamConnectionEncoder, WebKitPlatform] struct WebCore::TransformationMatrix::FullIPCData {
+    std::array<double, 16> values;
+};
+
+[AdditionalEncoder=StreamConnectionEncoder, CreateUsing=fromIPCData, WebKitPlatform] class WebCore::TransformationMatrix {
+    Variant<std::monostate, WebCore::TransformationMatrix::Translation2DIPCData, WebCore::TransformationMatrix::Translation3DIPCData, WebCore::AffineTransform, WebCore::TransformationMatrix::FullIPCData> ipcData();
 }
 
 struct WebCore::CacheQueryOptions {
@@ -282,7 +284,9 @@ struct WebCore::CharacterRange {
     [Validator='!(CheckedUint64 { *location } + *length).hasOverflowed()'] uint64_t length
 }
 
-[AdditionalEncoder=StreamConnectionEncoder] class WebCore::AffineTransform {
+webkit_platform_headers: <WebCore/AffineTransform.h>
+
+[AdditionalEncoder=StreamConnectionEncoder, WebKitPlatform] class WebCore::AffineTransform {
     std::span<const double, 6> span();
 }
 
@@ -1053,6 +1057,14 @@ header: <WebCore/RectEdges.h>
     bool left();
 }
 
+header: <WebCore/RectCorners.h>
+[CustomHeader] class WebCore::RectCorners<float> {
+    float topLeft();
+    float topRight();
+    float bottomLeft();
+    float bottomRight();
+}
+
 [CustomHeader] class WebCore::RectEdges<WebCore::Color> {
     WebCore::Color top();
     WebCore::Color right();
@@ -1328,12 +1340,24 @@ class WebCore::LayoutRect {
 using WebCore::ScrollPosition = WebCore::IntPoint;
 
 [RefCounted] class WebCore::RemoteFrameLayoutInfo {
+    WebCore::LayoutRect windowClipRectInParent();
     std::optional<WebCore::LayoutRect> visibleRectInParent();
+#if PLATFORM(IOS_FAMILY)
+    std::optional<WebCore::LayoutRect> exposedContentRectInParent();
+#endif
+    bool ownerHasRenderer();
     WebCore::TransformationMatrix childFrameOwnerToRootContentTransform();
     WebCore::TransformationMatrix absoluteToChildFrameOwnerLocalTransform();
     float usedZoom();
     WebCore::LayoutPoint contentBoxLocation();
     OptionSet<WebCore::FrameOwnerElementAppearance> ownerElementAppearance();
+};
+
+header: <WebCore/FrameGeometrySyncData.h>
+struct WebCore::FrameGeometrySyncData {
+    WebCore::LayoutRect layoutViewportRect;
+    WebCore::IntSize contentsSize;
+    HashMap<WebCore::FrameIdentifier, Ref<WebCore::RemoteFrameLayoutInfo>> childrenFrameLayoutInfo;
 };
 
 header: <WebCore/VP9Utilities.h>
@@ -2074,6 +2098,7 @@ header: <WebCore/MotionPath.h>
     WebCore::FloatRoundedRect containingBlockBoundingRect;
     WebCore::FloatPoint offsetFromContainingBlock;
     WebCore::FloatPoint usedStartingPosition;
+    WebCore::RectCorners<float> cornerCurvatures;
 };
 
 header: <WebCore/TransformOperationData.h>
@@ -2160,7 +2185,9 @@ enum class WebCore::FetchOptionsDestination : uint8_t {
     Track,
     Video,
     Worker,
-    Xslt
+    Xslt,
+    Text,
+    CompressionDictionary
 };
 
 enum class WebCore::FetchOptionsMode : uint8_t {
@@ -3850,11 +3877,23 @@ enum class WebCore::PlatformVideoMatrixCoefficients : uint8_t {
     Unspecified,
 };
 
+enum class WebCore::PlatformVideoChromaLocation : uint8_t {
+    Left,
+    Center,
+    TopLeft,
+    Top,
+    BottomLeft,
+    Bottom,
+    Dv420,
+    Unspecified,
+};
+
 [AdditionalEncoder=StreamConnectionEncoder] struct WebCore::PlatformVideoColorSpace {
     std::optional<WebCore::PlatformVideoColorPrimaries> primaries;
     std::optional<WebCore::PlatformVideoTransferCharacteristics> transfer;
     std::optional<WebCore::PlatformVideoMatrixCoefficients> matrix;
     std::optional<bool> fullRange;
+    std::optional<WebCore::PlatformVideoChromaLocation> chromaLocation;
 };
 
 #if ENABLE(CONTENT_EXTENSIONS)
@@ -5614,6 +5653,16 @@ struct WebCore::NowPlayingInfo {
 #endif
 }
 
+header: <WebCore/NowPlayingInfo.h>
+[CustomHeader] struct WebCore::NowPlayingCandidateState {
+    std::optional<WebCore::PageIdentifier> pageIdentifier;
+    std::optional<WallTime> mostRecentUserInteractionTime;
+    WebCore::MediaSessionIdentifier sessionIdentifier;
+    WebCore::PlatformMediaSessionMediaType presentationType;
+    bool isLargeEnoughForMainContent;
+    bool isPlaying;
+}
+
 struct WebCore::PlatformMediaCapabilitiesVideoConfiguration {
     String contentType;
     uint32_t width;
@@ -6900,6 +6949,20 @@ enum class WebCore::EncryptionBoxType : uint8_t {
     TransportStreamEncryptionInitData
 };
 
+header: <WebCore/TrackInfo.h>
+enum class WebCore::PlatformVideoFieldCount : uint8_t {
+    Progressive,
+    Interlaced
+};
+
+header: <WebCore/TrackInfo.h>
+enum class WebCore::PlatformVideoFieldDetail : uint8_t {
+    TemporalTopFirst,
+    TemporalBottomFirst,
+    SpatialFirstLineEarly,
+    SpatialFirstLineLate
+};
+
 using WebCore::TrackInfoAtomData = std::pair<WebCore::FourCC, Ref<WebCore::SharedBuffer>>;
 
 header: <WebCore/TrackInfo.h>
@@ -6935,6 +6998,8 @@ header: <WebCore/TrackInfo.h>
     WebCore::FloatSize displaySize;
     uint8_t bitDepth;
     WebCore::PlatformVideoColorSpace colorSpace;
+    std::optional<WebCore::PlatformVideoFieldCount> fieldCount;
+    std::optional<WebCore::PlatformVideoFieldDetail> fieldDetail;
     Vector<std::pair<WebCore::FourCC, Ref<WebCore::SharedBuffer>>> extensionAtoms;
 
 #if PLATFORM(VISION)
@@ -7003,6 +7068,9 @@ enum class WebCore::PortalTransformKind : uint8_t {
     None,
     Auto
 };
+
+header: <WebCore/PortalAction.h>
+enum class WebCore::PortalActionKind : bool;
 #endif
 
 header: <WebCore/FixedContainerEdges.h>

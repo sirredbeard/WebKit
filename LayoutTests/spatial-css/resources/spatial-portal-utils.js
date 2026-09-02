@@ -1,4 +1,4 @@
-const createPortal = (test, { width, height, portalTransform } = {}) => {
+const createPortal = (test, { width, height, portalTransform, portalAction } = {}) => {
     const portal = document.createElement("div");
     portal.className = "portal";
     if (width)
@@ -7,13 +7,17 @@ const createPortal = (test, { width, height, portalTransform } = {}) => {
         portal.style.height = height;
     if (portalTransform)
         portal.style.portalTransform = portalTransform;
+    if (portalAction)
+        portal.style.portalAction = portalAction;
     document.body.appendChild(portal);
     test.add_cleanup(() => portal.remove());
     return portal;
 };
 
-const appendModel = (portal, asset) => {
+const appendModel = (portal, asset, stageMode) => {
     const model = document.createElement("model");
+    if (stageMode)
+        model.stageMode = stageMode;
     portal.appendChild(model);
     const source = document.createElement("source");
     source.src = `../model-element/resources/${asset}`;
@@ -46,6 +50,17 @@ const portalTransformScaleIsUnit = transform => {
 const portalTransformIsResolved = transform => !!transform;
 const portalTransformIsCleared = transform => transform === null;
 
+async function waitFor(predicate, description, timeout = 5000) {
+    const startTime = Date.now();
+
+    while (!predicate()) {
+        if (Date.now() - startTime > timeout)
+            throw new Error(`Timeout waiting for ${description}`);
+
+        await sleepForSeconds(0.05);
+    }
+}
+
 async function waitForPortalTransform(portal, predicate, description, timeout = 5000) {
     const startTime = Date.now();
 
@@ -60,3 +75,22 @@ async function waitForPortalTransform(portal, predicate, description, timeout = 
         await sleepForSeconds(0.1);
     }
 }
+
+async function waitForEntityTransform(model, predicate, description, timeout = 5000) {
+    const startTime = Date.now();
+
+    while (true) {
+        const transform = model.entityTransform;
+        if (predicate(transform))
+            return transform;
+
+        if (Date.now() - startTime > timeout)
+            throw new Error(`Timeout waiting for the child's entity transform: ${description}`);
+
+        await sleepForSeconds(0.1);
+    }
+}
+
+// The 3D matrix assertions reject a 2D argument outright, and DOMMatrix stays 2D until an operation touches z.
+const as3d = matrix => new DOMMatrixReadOnly(matrix.toFloat64Array());
+

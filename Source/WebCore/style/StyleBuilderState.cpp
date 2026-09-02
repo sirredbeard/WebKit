@@ -46,6 +46,7 @@
 #include "CSSLightDarkImageValue.h"
 #include "CSSNamedImageValue.h"
 #include "CSSPaintImageValue.h"
+#include "CSSParserIdioms.h"
 #include "DocumentInlines.h"
 #include "DocumentView.h"
 #include "ElementInlines.h"
@@ -92,8 +93,17 @@ BuilderState::BuilderState(ComputedStyle& style, BuilderContext&& context)
 
 const CSSRegisteredCustomProperty* BuilderState::registeredProperty(const AtomString& name) const
 {
-    if (m_context.localPropertyRegistry)
-        return m_context.localPropertyRegistry->get(name);
+    // "Only the custom property registrations in registrations are visible" covers the names a custom
+    // function introduces. A name it does not introduce arrives by inheritance carrying the calling
+    // element's computed value, so it keeps the document registration.
+    // https://drafts.csswg.org/css-mixins/#resolve-function-styles
+    if (m_context.localPropertyRegistry) {
+        if (auto* local = m_context.localPropertyRegistry->get(name))
+            return local;
+        // The result descriptor is never registered document-wide.
+        if (!isCustomPropertyName(name))
+            return nullptr;
+    }
     return document().customPropertyRegistry().get(name);
 }
 
@@ -206,7 +216,8 @@ void BuilderState::updateFontForTextSizeAdjust()
     float zoomFactor = m_style.usedZoom();
     if (auto* frame = document().frame(); frame && m_style.textZoom() != TextZoom::Reset)
         zoomFactor *= frame->textZoomFactor();
-    newFontDescription.setComputedSize(baseSize * zoomFactor, zoomFactor);
+    newFontDescription.setSpecifiedSize(baseSize);
+    newFontDescription.setUsedSize(baseSize * zoomFactor, zoomFactor);
 
     m_style.setFontDescriptionWithoutUpdate(WTF::move(newFontDescription));
 }
@@ -286,13 +297,23 @@ void BuilderState::updateFontForSizeChange()
 void BuilderState::setFontSize(FontCascadeDescription& fontDescription, float size)
 {
     fontDescription.setSpecifiedSize(size);
-    auto computedFontSize = Style::computedFontSizeFromSpecifiedSize(size, fontDescription.isAbsoluteSize(), useSVGZoomRules(), style(), document());
-    fontDescription.setComputedSize(computedFontSize.size, computedFontSize.usedZoomFactor);
+    auto usedFontSize = Style::usedFontSizeFromSpecifiedSize(size, fontDescription.isAbsoluteSize(), useSVGZoomRules(), style(), document());
+    fontDescription.setUsedSize(usedFontSize.size, usedFontSize.zoomFactor);
 }
 
 CSSPropertyID BuilderState::cssPropertyID() const
 {
     return m_currentProperty ? m_currentProperty->id : CSSPropertyInvalid;
+}
+
+// Every custom property shares CSSPropertyCustom, so anything keying on cssPropertyID() needs this to
+// tell them apart. Null unless a custom property is being applied.
+AtomString BuilderState::customPropertyName() const
+{
+    if (cssPropertyID() != CSSPropertyCustom)
+        return nullAtom();
+    RefPtr customPropertyValue = dynamicDowncast<CSSCustomPropertyValue>(m_currentProperty->cssValue[SelectorChecker::MatchDefault]);
+    return customPropertyValue ? customPropertyValue->name() : nullAtom();
 }
 
 bool BuilderState::isCurrentPropertyInvalidAtComputedValueTime() const

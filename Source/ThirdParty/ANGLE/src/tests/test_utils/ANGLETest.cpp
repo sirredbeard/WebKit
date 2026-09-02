@@ -35,7 +35,10 @@ const GLColorRGB GLColorRGB::black(0u, 0u, 0u);
 const GLColorRGB GLColorRGB::blue(0u, 0u, 255u);
 const GLColorRGB GLColorRGB::green(0u, 255u, 0u);
 const GLColorRGB GLColorRGB::red(255u, 0u, 0u);
-const GLColorRGB GLColorRGB::yellow(255u, 255u, 0);
+const GLColorRGB GLColorRGB::yellow(255u, 255u, 0u);
+const GLColorRGB GLColorRGB::magenta(255u, 0u, 255u);
+const GLColorRGB GLColorRGB::cyan(0u, 255u, 255u);
+const GLColorRGB GLColorRGB::white(255u, 255u, 255u);
 
 const GLColor GLColor::black            = GLColor(0u, 0u, 0u, 255u);
 const GLColor GLColor::blue             = GLColor(0u, 0u, 255u, 255u);
@@ -218,8 +221,6 @@ GPUTestConfig::API GetTestConfigAPIFromRenderer(angle::GLESDriverType driverType
     {
         case EGL_PLATFORM_ANGLE_TYPE_D3D11_ANGLE:
             return GPUTestConfig::kAPID3D11;
-        case EGL_PLATFORM_ANGLE_TYPE_D3D9_ANGLE:
-            return GPUTestConfig::kAPID3D9;
         case EGL_PLATFORM_ANGLE_TYPE_OPENGL_ANGLE:
             return GPUTestConfig::kAPIGLDesktop;
         case EGL_PLATFORM_ANGLE_TYPE_OPENGLES_ANGLE:

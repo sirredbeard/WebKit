@@ -239,6 +239,9 @@ bool hasCapacityToUseLargeGigacage();
     v(Double, gcIncrementBytes, 10000, Normal, nullptr) \
     v(Double, gcIncrementMaxBytes, 100000, Normal, nullptr) \
     v(Double, gcIncrementScale, 0, Normal, nullptr) \
+    v(Bool, useWarmUpMarkedBlocks, true, Normal, "hand MarkedBlock allocation pages that a helper thread already made resident"_s) \
+    v(Unsigned, warmUpMarkedBlockCount, 32, Normal, "how many MarkedBlocks the helper thread keeps ready with their pages already resident; 0 turns it off"_s) \
+    v(Double, warmUpMarkedBlockIdleTimeout, 10, Normal, "seconds without a MarkedBlock request before the helper thread releases what it is holding and shuts down"_s) \
     v(Bool, scribbleFreeCells, false, Normal, nullptr) \
     v(Double, sizeClassProgression, 1.4, Normal, nullptr) \
     v(Unsigned, preciseAllocationCutoff, 100000, Normal, nullptr) \
@@ -329,10 +332,21 @@ bool hasCapacityToUseLargeGigacage();
     /* from super long compiles that take a lot of memory. */\
     v(Unsigned, maximumInliningCallerBytecodeCost, 10000, Normal, nullptr) \
     \
+    v(Bool, useGlobalInliningPlanner, false, Normal, "Survey and rank every inlining candidate before parsing and spend one compilation-wide budget on the best of them, instead of deciding each call site in bytecode order"_s) \
+    v(Unsigned, globalInliningPlanBudgetForDFG, 2500, Normal, "Total callee bytecode cost the DFG may plan to inline in one compilation"_s) \
+    v(Unsigned, globalInliningPlanBudgetForFTL, 12000, Normal, "Total callee bytecode cost the FTL may plan to inline in one compilation"_s) \
+    v(Unsigned, maximumGlobalInliningPlanSites, 20000, Normal, "Cap on how many call sites one inlining plan will survey"_s) \
+    v(Double, inliningPlanTierBonusBase, 2.0, Normal, "Multiplicative benefit per tier the callee has reached (LLInt, Baseline, DFG, FTL) when ranking inlining candidates"_s) \
+    v(Double, inliningPlanTierBonusPowerForFTL, 3.0, Normal, "Base for the bonus multiplier for FTL callees"_s) \
+    v(Double, inliningPlanTierBonusPowerForDFG, 2.0, Normal, "Base for the bonus multiplier for DFG callees"_s) \
+    v(Double, inliningPlanTierBonusPowerForBaseline, 1.0, Normal, "Base for the bonus multiplier for Baseline callees"_s) \
+    v(Double, inliningPlanDepthPenalty, 1.5, Normal, "Divisive benefit penalty per level of inline-stack nesting when ranking inlining candidates"_s) \
+    \
     v(Unsigned, maximumVarargsForInlining, 100, Normal, nullptr) \
     \
     v(Unsigned, maximumBinaryStringSwitchCaseLength, 50, Normal, nullptr) \
     v(Unsigned, maximumBinaryStringSwitchTotalLength, 2000, Normal, nullptr) \
+    v(Unsigned, maximumInlineStringSwitchCaseCount, 64, Normal, "Maximum number of cases for which the baseline JIT dispatches op_switch_string inline instead of calling out."_s) \
     v(Unsigned, maximumRegExpTestInlineCodesize, 500, Normal, "Maximum code size in bytes for inlined RegExp.test JIT code."_s) \
     v(Unsigned, maximumRegExpJITCodeSize, 16 * MB, Normal, "Maximum generated code size in bytes for RegExp JIT compilation before falling back to the interpreter."_s) \
     \
@@ -347,9 +361,9 @@ bool hasCapacityToUseLargeGigacage();
     v(Unsigned, wasmInliningSmallFunctionThreshold, 50, Normal, "Wasm size threshold for small wasm functions"_s) \
     \
     v(Double, jitPolicyScale, 1.0, Normal, "scale JIT thresholds to this specified ratio between 0.0 (compile ASAP) and 1.0 (compile like normal)."_s) \
-    v(Int32, numberOfP0CoresOverrides, 0, Normal, "If non-zero, overrides the number of P0 (highest-performance) cores reported by hwNumberOfP0Cores(); 0 means use the value reported by the hardware."_s) \
-    v(Double, dfgThresholdScaleForLowP0Cores, 2.0, Normal, "On low P0-core-count Apple silicon Macs, scale the DFG tier-up thresholds (thresholdForOptimize*) by this factor."_s) \
-    v(Double, ftlThresholdScaleForLowP0Cores, 1.5, Normal, "On low P0-core-count Apple silicon Macs, scale the FTL tier-up thresholds (thresholdForFTLOptimize*) by this factor."_s) \
+    v(Int32, numberOfSuperAndPerformanceCoresOverride, 0, Normal, "If non-zero, overrides the number of Super and Performance (i.e. non-Efficiency) cores reported by the hardware; 0 means use the value reported by the hardware."_s) \
+    v(Double, dfgThresholdScaleForFewPerformanceCores, 2.0, Normal, "On Apple silicon Macs with few Super and Performance cores, scale the DFG tier-up thresholds (thresholdForOptimize*) by this factor."_s) \
+    v(Double, ftlThresholdScaleForFewPerformanceCores, 1.5, Normal, "On Apple silicon Macs with few Super and Performance cores, scale the FTL tier-up thresholds (thresholdForFTLOptimize*) by this factor."_s) \
     v(Bool, forceEagerCompilation, false, Normal, nullptr) \
     v(Int32, thresholdForJITAfterWarmUp, 500, Normal, nullptr) \
     v(Int32, thresholdForJITSoon, 100, Normal, nullptr) \
@@ -564,6 +578,7 @@ bool hasCapacityToUseLargeGigacage();
     v(Size, wasmSmallPartialCompileLimit, 5000, Normal, "Limit on the number of bytes a Wasm::Plan::compile should attempt for small wasm binary before checking for other work."_s) \
     v(Size, wasmLargePartialCompileLimit, 20000, Normal, "Limit on the number of bytes a Wasm::Plan::compile should attempt for large wasm binary before checking for other work."_s) \
     v(Unsigned, wasmOMGOptimizationLevel, Options::defaultB3OptLevel(), Normal, "B3 Optimization level for OMG Web Assembly module compilations."_s) \
+    v(Bool, useWasmByteLoopReplacement, true, Normal, "If true, OMG replaces a loop that copies or fills linear memory one byte per iteration with the equivalent bulk memory operation."_s) \
     \
     v(Bool, useBBQTierUpChecks, true, Normal, "Enables tier up checks for our BBQ code."_s) \
     v(Bool, useWasmOSR, true, Normal, nullptr) \

@@ -1026,6 +1026,7 @@ void TestController::configureWebsiteDataStoreTemporaryDirectories(WKWebsiteData
         WKWebsiteDataStoreConfigurationSetMediaKeysStorageDirectory(configuration, toWK(makeString(temporaryFolder, pathSeparator, "MediaKeys"_s, pathSeparator, randomNumber)).get());
         WKWebsiteDataStoreConfigurationSetResourceLoadStatisticsDirectory(configuration, toWK(makeString(temporaryFolder, pathSeparator, "ResourceLoadStatistics"_s, pathSeparator, randomNumber)).get());
         WKWebsiteDataStoreConfigurationSetServiceWorkerRegistrationDirectory(configuration, toWK(makeString(temporaryFolder, pathSeparator, "ServiceWorkers"_s, pathSeparator, randomNumber)).get());
+        WKWebsiteDataStoreConfigurationSetIsolatedSitesDirectory(configuration, toWK(makeString(temporaryFolder, pathSeparator, "IsolatedSites"_s, pathSeparator, randomNumber)).get());
         WKWebsiteDataStoreConfigurationSetGeneralStorageDirectory(configuration, toWK(makeString(temporaryFolder, pathSeparator, "Default"_s, pathSeparator, randomNumber)).get());
         WKWebsiteDataStoreConfigurationSetResourceMonitorThrottlerDirectory(configuration, toWK(makeString(temporaryFolder, pathSeparator, "ResourceMonitorThrottler"_s, pathSeparator, randomNumber)).get());
 #if PLATFORM(WIN)
@@ -3819,6 +3820,9 @@ void TestController::didReceiveSynchronousMessageFromInjectedBundle(WKStringRef 
     if (WKStringIsEqualToUTF8CString(messageName, "AXCopyAttributeValueAsBoolean"))
         return completionHandler(handleAXCopyAttributeValueAsBoolean(dictionaryValue(messageBody)).get());
 
+    if (WKStringIsEqualToUTF8CString(messageName, "AXElementsAreEqual"))
+        return completionHandler(handleAXElementsAreEqual(dictionaryValue(messageBody)).get());
+
     if (WKStringIsEqualToUTF8CString(messageName, "AXCopyAttributeValueAsPoint"))
         return completionHandler(handleAXCopyAttributeValueAsPoint(dictionaryValue(messageBody)).get());
 
@@ -4620,11 +4624,11 @@ void TestController::decidePolicyForNavigationAction(WKPageRef page, WKNavigatio
     auto request = adoptWK(WKNavigationActionCopyRequest(navigationAction));
     auto targetFrame = adoptWK(WKNavigationActionCopyTargetFrameInfo(navigationAction));
 
-    // Block access to external URLs in subframe navigations when site isolation is enabled.
-    // With site isolation, the injected bundle's willSendRequestForFrame callback cannot emit
-    // the console message because WKBundleFrameGetJavaScriptContext returns null for provisional
-    // frames in the new process. Without site isolation, the injected bundle handles this.
-    if (targetFrame && !WKFrameInfoGetIsMainFrame(targetFrame.get()) && protectedCurrentInvocation()->options().siteIsolationEnabled()) {
+    // Block access to external URLs in subframe navigations.
+    // The injected bundle's willSendRequestForFrame callback cannot emit the console message because
+    // WKBundleFrameGetJavaScriptContext returns null for provisional frames in the new process when
+    // site isolation is enabled.
+    if (targetFrame && !WKFrameInfoGetIsMainFrame(targetFrame.get())) {
         if (auto url = adoptWK(WKURLRequestCopyURL(request.get()))) {
             auto host = adoptWK(WKURLCopyHostName(url.get()));
             auto scheme = adoptWK(WKURLCopyScheme(url.get()));
@@ -5999,6 +6003,17 @@ WKRetainPtr<WKTypeRef> TestController::handleAXCopyAttributeValueAsBoolean(WKDic
     bool boolValue = CFBooleanGetValue(static_cast<CFBooleanRef>(value.get()));
 
     return adoptWK(WKBooleanCreate(boolValue));
+}
+
+// Compare underlying AXUIElementRefs rather than tokens.
+WKRetainPtr<WKTypeRef> TestController::handleAXElementsAreEqual(WKDictionaryRef messageBody)
+{
+    RetainPtr first = getAXElement(uint64Value(messageBody, "elementToken"));
+    RetainPtr second = getAXElement(uint64Value(messageBody, "otherElementToken"));
+    if (!first || !second)
+        return adoptWK(WKBooleanCreate(false));
+
+    return adoptWK(WKBooleanCreate(CFEqual(first.get(), second.get())));
 }
 
 WKRetainPtr<WKTypeRef> TestController::handleAXCopyAttributeValueAsPoint(WKDictionaryRef messageBody)
